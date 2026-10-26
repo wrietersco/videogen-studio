@@ -2,6 +2,9 @@ import { app, BrowserWindow, ipcMain, safeStorage } from 'electron'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+
+// ESM output: derive the directory from import.meta.url
+const moduleDir = dirname(fileURLToPath(import.meta.url))
 import { Orchestrator, type GenerateOptions } from './pipeline/orchestrator'
 import { ProjectStore } from './store/projectStore'
 import { providerRegistry } from './providers/registry'
@@ -66,7 +69,7 @@ function createWindow(): void {
     backgroundColor: '#0B0B12',
     titleBarStyle: 'hidden',
     webPreferences: {
-      preload: join(__dirname, '../preload/index.js'),
+      preload: join(moduleDir, '../preload/index.mjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
@@ -75,7 +78,7 @@ function createWindow(): void {
   if (process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    win.loadFile(join(__dirname, '../renderer/index.html'))
+    win.loadFile(join(moduleDir, '../renderer/index.html'))
   }
 }
 
