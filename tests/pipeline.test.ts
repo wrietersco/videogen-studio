@@ -39,11 +39,11 @@ describe('full pipeline (mock provider, draft render)', () => {
   it('generates a real MP4 from a freestyle prompt and is deterministic on re-render', { timeout: 420_000 }, async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'vg-e2e-'))
     const store = new ProjectStore(join(workDir, 'projects'))
-    const orch = new Orchestrator(store, new MockProvider())
+    const orch = new Orchestrator(store, () => new MockProvider())
     const result = await orch.generate({
       prompt: 'quick hype clip about retro gaming',
       platform: 'tiktok',
-      quality: 'draft',
+      quality: 'standard', // deterministic path: software GL + single worker
       onEvent: () => {}
     })
     expect(existsSync(result.output)).toBe(true)
@@ -54,13 +54,18 @@ describe('full pipeline (mock provider, draft render)', () => {
     const dir = dirname(result.output)
     const render2 = join(dir, 'rerender.mp4')
     const svc = new RenderService()
-    const again = await svc.render(store.dir(result.projectId), render2, { quality: 'draft', fps: result.spec.fps })
+    const again = await svc.render(store.dir(result.projectId), render2, { quality: 'standard', fps: result.spec.fps })
     expect(again.ok).toBe(true)
 
     const h1 = frameHashes(result.output, join(workDir, 'f1'), 6, result.spec.fps, result.spec.durationSec)
     const h2 = frameHashes(render2, join(workDir, 'f2'), 6, result.spec.fps, result.spec.durationSec)
     expect(h1).toEqual(h2)
 
-    rmSync(workDir, { recursive: true, force: true })
+    // cleanup can EPERM on Windows while Chrome/ffmpeg handles are still closing
+    try {
+      rmSync(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 })
+    } catch {
+      /* leftover in %TEMP% is harmless */
+    }
   })
 })

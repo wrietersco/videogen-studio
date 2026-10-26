@@ -3,6 +3,7 @@ import { PLATFORM_PRESETS } from '@shared/presets'
 import { designContext, type DesignContext, typeScale } from './layout'
 import type { AnimStep } from './anim'
 import { KITS, type StyleKit } from './kits'
+import { validateSelectors } from './selectors'
 import { renderScene } from './scenes'
 import { TRANSITIONS } from './anim'
 
@@ -18,10 +19,15 @@ export interface ComposeResult {
   needsThree: boolean
 }
 
+export interface AudioLayer {
+  clips: Array<{ file: string; startSec: number; durationSec: number; volume: number; trackIndex: number }>
+  captions: Array<{ startSec: number; endSec: number; text: string }>
+}
+
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
-export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string): ComposeResult {
+export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string, audio?: AudioLayer): ComposeResult {
   const preset = PLATFORM_PRESETS[spec.platform]
   const ctx = designContext(spec, preset)
   const kit = KITS[spec.style]
@@ -84,6 +90,12 @@ export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string): C
   // whole-film atmosphere motion (no dead stretches)
   steps.push(...kit.atmoIdle(totalSec, ctx))
 
+  // self-heal: drop any step targeting elements that don't exist in the
+  // assembled markup (guarantees no "GSAP target not found" at render time)
+  const markup = sceneHTML.join('\n') + kit.atmosphere(ctx)
+  const invalid = new Set(validateSelectors(markup, steps).map((i) => i.selector))
+  const safeSteps = invalid.size > 0 ? steps.filter((s) => !invalid.has((s as { sel?: string }).sel)) : steps
+
   // ---- assets ----
   const assets: ComposeResult['assets'] = [
     { from: `${vendorDir}/gsap.min.js`, to: 'assets/vendor/gsap.min.js' }
@@ -97,7 +109,7 @@ export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string): C
     assets.push({ from: `${fontsDir}/${f}`, to: `assets/fonts/${f}` })
   }
 
-  const html = buildDocument(spec, ctx, kit, sceneHTML, steps, threeScripts, sceneStart, totalSec)
+  const html = buildDocument(spec, ctx, kit, sceneHTML, safeSteps, threeScripts, sceneStart, totalSec, audio)
   return { html, assets, needsThree }
 }
 
@@ -139,7 +151,7 @@ function fontFaceCSS(spec: VideoSpec): string {
     .join('\n')
 }
 
-function baseCSS(ctx: DesignContext): string {
+function baseCSS(ctx: DesignContext, captionUppercase: boolean): string {
   const { palette: p, typography: t } = ctx
   const ts = typeScale(ctx)
   const caps = t.capsDisplay ? 'text-transform: uppercase;' : ''
@@ -300,6 +312,27 @@ function baseCSS(ctx: DesignContext): string {
     .kb-scrim {
       position: absolute; inset: 0;
       background: linear-gradient(180deg, transparent 40%, ${p.bg}E6 100%);
+    }
+    .caption-layer {
+      position: absolute; left: ${ctx.safe.x}px; right: ${ctx.safe.x}px; z-index: 50;
+      display: flex; justify-content: center; pointer-events: none;
+    }
+    .caption-bottom { bottom: ${Math.round(ctx.safe.y + ctx.safe.h * 0.02)}px; }
+    .caption-center { top: 50%; transform: translateY(-50%); }
+    .caption-top { top: ${Math.round(ctx.safe.y + ctx.safe.h * 0.02)}px; }
+    .caption-bar {
+      max-width: 92%;
+      font-family: ${fam(t.body)};
+      font-size: ${ts.caption}px;
+      font-weight: 800;
+      line-height: 1.2;
+      text-align: center;
+      color: #ffffff;
+      background: rgba(0, 0, 0, 0.55);
+      padding: ${Math.round(10 * ctx.scale)}px ${Math.round(20 * ctx.scale)}px;
+      border-radius: ${Math.round(12 * ctx.scale)}px;
+      ${captionUppercase ? 'text-transform: uppercase;' : ''}
+      opacity: 0;
     }`
 }
 
@@ -368,9 +401,24 @@ function buildDocument(
   steps: AnimStep[],
   threeScripts: string[],
   sceneStart: Record<string, number>,
-  totalSec: number
+  totalSec: number,
+  audio?: AudioLayer
 ): string {
-  const style = [fontFaceCSS(spec), baseCSS(ctx), kit.atmosphereCSS(ctx)].join('\n')
+  const captionLayer =
+    audio && audio.captions.length > 0
+      ? `<div class="caption-layer caption-${spec.captionStyle.position}"><div class="caption-bar" id="caption-text"></div></div>`
+      : ''
+  const audioClips = (audio?.clips ?? [])
+    .map(
+      (c) =>
+        `<audio class="clip" src="${esc(c.file)}" data-start="${c.startSec}" data-duration="${c.durationSec.toFixed(
+          2
+        )}" data-track-index="${c.trackIndex}" data-volume="${c.volume}"></audio>`
+    )
+    .join('\n')
+  const captionRegistry =
+    audio && audio.captions.length > 0 ? JSON.stringify(audio.captions) : '[]'
+  const style = [fontFaceCSS(spec), baseCSS(ctx, spec.captionStyle.uppercase), kit.atmosphereCSS(ctx)].join('\n')
 
   const interpreter = INTERPRETER.replace('__SCENE_START__', JSON.stringify(sceneStart)).replace(
     '__STEPS__',
@@ -400,10 +448,24 @@ ${style}
     >
       <div class="atmo">${kit.atmosphere(ctx)}</div>
 ${sceneHTML.join('\n')}
+${captionLayer}
+${audioClips}
     </div>
     <script src="assets/vendor/gsap.min.js"></script>
     <script>
 ${interpreter}
+    </script>
+    <script>
+      // seek-driven captions (never wall-clock)
+      const CAPTIONS = ${captionRegistry};
+      const capEl = document.getElementById('caption-text');
+      window.addEventListener('hf-seek', (e) => {
+        if (!capEl) return;
+        const t = e.detail.time;
+        const cue = CAPTIONS.find((c) => t >= c.startSec && t < c.endSec);
+        capEl.textContent = cue ? cue.text : '';
+        capEl.style.opacity = cue ? '1' : '0';
+      });
     </script>
 ${threeScripts.join('\n')}
   </body>

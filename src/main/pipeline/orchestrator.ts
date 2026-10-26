@@ -2,11 +2,23 @@ import { join } from 'node:path'
 import type { VideoSpec } from '@shared/spec'
 import type { LLMProvider } from '../providers/types'
 import { Planner } from './planner'
+import { CompositionFixer } from './fixer'
+import { buildAudio } from './audio'
 import { compose } from '../composer'
 import { ProjectStore } from '../store/projectStore'
 import { RenderService, type CheckReport, type RenderProgress } from '../rendererService/hyperframes'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+
+function readComposition(dir: string): string {
+  const p = join(dir, 'index.html')
+  return existsSync(p) ? readFileSync(p, 'utf8') : ''
+}
+
+function writeComposition(dir: string, html: string): void {
+  writeFileSync(join(dir, 'index.html'), html)
+}
 
 /**
  * Orchestrator — the pipeline: plan → compose → QA fix-loop → render.
@@ -18,6 +30,7 @@ import { fileURLToPath } from 'node:url'
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const vendorDir = resolve(appRoot, 'vendor')
 const fontsDir = resolve(appRoot, 'vendor', 'fonts')
+const musicDir = resolve(appRoot, 'music')
 
 export interface GenerateOptions {
   prompt: string
@@ -101,7 +114,18 @@ export class Orchestrator {
 
     // ---------- compose ----------
     emit({ stage: 'compose', status: 'started' })
-    const composed = compose(spec, vendorDir, fontsDir)
+    // scene windows are recomputed here to place audio clips at scene starts
+    let acc = 0
+    const sceneWindows = spec.scenes.map((s) => {
+      const w = { id: s.id, start: acc, end: acc + s.durationSec }
+      acc += s.durationSec
+      return w
+    })
+    // audio is enhancement-only: any failure degrades to a silent video
+    const audio = await buildAudio(spec, sceneWindows, this.providerFor(), this.store.dir(projectId), musicDir).catch(
+      () => ({ clips: [], captions: [], hasNarration: false })
+    )
+    const composed = compose(spec, vendorDir, fontsDir, audio)
     this.store.saveComposition(projectId, composed)
     emit({ stage: 'compose', status: 'done' })
 
@@ -113,12 +137,23 @@ export class Orchestrator {
       attempt += 1
       const issues = qa.errors.map((e) => e.message)
       emit({ stage: 'qa', status: 'fixing', attempt, issues })
+
+      // rung 1: deterministic spec-level fixes (no LLM)
       const fixedSpec = applyDeterministicFixes(spec, qa)
-      if (fixedSpec === spec) break // nothing deterministic to try; stop
-      spec = fixedSpec
-      this.store.saveSpec(projectId, spec)
-      const recomposed = compose(spec, vendorDir, fontsDir)
-      this.store.saveComposition(projectId, recomposed)
+      if (fixedSpec !== spec) {
+        spec = fixedSpec
+        this.store.saveSpec(projectId, spec)
+        const recomposed = compose(spec, vendorDir, fontsDir, audio)
+        this.store.saveComposition(projectId, recomposed)
+      } else {
+        // rung 2: LLM-assisted composition patch (mock provider declines)
+        const current = this.store.readMeta(projectId)
+        void current
+        const html = readComposition(this.store.dir(projectId))
+        const patched = await new CompositionFixer(this.providerFor()).fix(html, qa.errors)
+        if (!patched) break // nothing more to try
+        writeComposition(this.store.dir(projectId), patched)
+      }
       qa = await this.renders.check(this.store.dir(projectId))
     }
     if (qa.ok) {

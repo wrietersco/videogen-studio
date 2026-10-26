@@ -57,9 +57,11 @@ export class RenderService {
     opts: { fps?: number; quality?: string; gpu?: boolean; onProgress?: (p: RenderProgress) => void },
     jobKey = 'default'
   ): Promise<RenderResult> {
-    // Software rasterization by default: Chrome's GPU path is NOT deterministic
-    // run-to-run, and pixel-stable re-renders are the foundation of editing and
-    // the QA fix-loop. GPU is an opt-in fast mode for throwaway drafts.
+    // Determinism strategy (measured empirically):
+    //  - Chrome's GPU rasterization varies run-to-run  -> --no-browser-gpu default
+    //  - multi-worker capture varies text antialiasing  -> single worker for
+    //    standard/delivery (byte-stable re-renders), parallel workers only for drafts
+    const quality = opts.quality ?? 'standard'
     const args = [
       ...hfArgs(),
       'render',
@@ -68,8 +70,9 @@ export class RenderService {
       output,
       '--quiet',
       ...(opts.gpu ? [] : ['--no-browser-gpu']),
+      ...(quality === 'draft' ? ['--workers', 'auto'] : ['--workers', '1']),
       ...(opts.fps ? ['--fps', String(opts.fps)] : []),
-      ...(opts.quality ? ['--quality', opts.quality] : [])
+      ...(opts.quality ? ['--quality', quality] : [])
     ]
     return new Promise((resolvePromise) => {
       const started = Date.now()
