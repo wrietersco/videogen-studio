@@ -1,0 +1,173 @@
+import { app, BrowserWindow, ipcMain, safeStorage } from 'electron'
+import { join, resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { Orchestrator, type GenerateOptions } from './pipeline/orchestrator'
+import { ProjectStore } from './store/projectStore'
+import { providerRegistry } from './providers/registry'
+import type { ProviderId } from './providers/types'
+import { DEFAULT_SETTINGS, type Settings } from './settings'
+
+/**
+ * Electron main process — owns the pipeline, project store, provider keys
+ * (safeStorage-encrypted on disk), and the render job queue.
+ */
+
+const appRoot = app.isPackaged ? dirname(app.getAppPath()) : resolve(dirname(fileURLToPath(import.meta.url)), '../..')
+const projectsDir = join(appRoot, 'projects')
+const store = new ProjectStore(projectsDir)
+const orchestrator = new Orchestrator(store, () => providerRegistry.active())
+
+// ---------------- settings (encrypted key storage) ----------------
+
+const settingsPath = join(app.getPath('userData'), 'settings.json')
+let settings: Settings = { ...DEFAULT_SETTINGS }
+
+function loadSettings(): void {
+  if (!existsSync(settingsPath)) return
+  try {
+    const raw = JSON.parse(readFileSync(settingsPath, 'utf8')) as Partial<Settings>
+    settings = { ...settings, ...raw }
+  } catch {
+    /* corrupt settings — keep defaults */
+  }
+}
+
+function saveSettings(): void {
+  mkdirSync(dirname(settingsPath), { recursive: true })
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2))
+}
+
+function encryptKey(plain: string): string {
+  if (!plain) return ''
+  if (safeStorage.isEncryptionAvailable()) {
+    return `enc:${safeStorage.encryptString(plain).toString('base64')}`
+  }
+  return `plain:${plain}` // fallback: no OS keychain (Linux without kwallet etc.)
+}
+
+function decryptKey(stored: string | undefined): string {
+  if (!stored) return ''
+  if (stored.startsWith('enc:')) return safeStorage.decryptString(Buffer.from(stored.slice(4), 'base64'))
+  if (stored.startsWith('plain:')) return stored.slice(6)
+  return ''
+}
+
+// ---------------- window ----------------
+
+let win: BrowserWindow | null = null
+
+function createWindow(): void {
+  win = new BrowserWindow({
+    width: 1440,
+    height: 920,
+    minWidth: 1080,
+    minHeight: 720,
+    backgroundColor: '#0B0B12',
+    titleBarStyle: 'hidden',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+  if (process.env.ELECTRON_RENDERER_URL) {
+    win.loadURL(process.env.ELECTRON_RENDERER_URL)
+  } else {
+    win.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+// ---------------- job management ----------------
+
+let busy = false
+
+function emit(channel: string, payload: unknown): void {
+  win?.webContents.send(channel, payload)
+}
+
+// ---------------- ipc ----------------
+
+function registerIpc(): void {
+  ipcMain.handle('settings:get', () => ({
+    ...settings,
+    keys: {} // never send raw keys back to the UI; presence flags only
+  }))
+  ipcMain.handle('settings:hasKey', (_e, provider: ProviderId) => Boolean(settings.keys[provider]))
+  ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
+    if (patch.provider) settings.provider = patch.provider
+    if (patch.models) settings.models = { ...settings.models, ...patch.models }
+    if (patch.quality) settings.quality = patch.quality
+    if (typeof patch.allowGpu === 'boolean') settings.allowGpu = patch.allowGpu
+    saveSettings()
+    providerRegistry.reconfigure(settings)
+    return true
+  })
+  ipcMain.handle('settings:setKey', (_e, provider: ProviderId, key: string) => {
+    settings.keys[provider] = encryptKey(key.trim())
+    saveSettings()
+    providerRegistry.reconfigure(settings, { [provider]: decryptKey(settings.keys[provider]) })
+    return true
+  })
+  ipcMain.handle('settings:clearKey', (_e, provider: ProviderId) => {
+    delete settings.keys[provider]
+    saveSettings()
+    providerRegistry.reconfigure(settings)
+    return true
+  })
+
+  ipcMain.handle('providers:list', async () => {
+    return providerRegistry.describe()
+  })
+  ipcMain.handle('providers:models', async (_e, provider: ProviderId) => {
+    return providerRegistry.get(provider).listModels()
+  })
+
+  ipcMain.handle('projects:list', () => store.list())
+  ipcMain.handle('project:get', (_e, id: string) => {
+    const meta = store.readMeta(id)
+    const spec = store.readSpec(id)
+    const html = existsSync(join(store.dir(id), 'index.html'))
+      ? readFileSync(join(store.dir(id), 'index.html'), 'utf8')
+      : null
+    return { meta, spec, html, dir: store.dir(id) }
+  })
+
+  ipcMain.handle('gen:generate', async (_e, opts: GenerateOptions) => {
+    if (busy) return { ok: false, error: 'A generation job is already running' }
+    busy = true
+    const onEvent = (ev: unknown) => emit('gen:event', ev)
+    // run async; UI streams events
+    orchestrator
+      .generate({ ...opts, quality: settings.quality, gpu: settings.allowGpu, onEvent })
+      .catch((err) => emit('gen:event', { stage: 'render', status: 'failed', error: String(err) }))
+      .finally(() => {
+        busy = false
+      })
+    return { ok: true }
+  })
+  ipcMain.handle('gen:cancel', () => {
+
+    return true
+  })
+  ipcMain.handle('gen:busy', () => busy)
+}
+
+app.whenReady().then(() => {
+  loadSettings()
+  providerRegistry.reconfigure(settings, {
+    openai: decryptKey(settings.keys.openai),
+    anthropic: decryptKey(settings.keys.anthropic),
+    gemini: decryptKey(settings.keys.gemini)
+  })
+  registerIpc()
+  createWindow()
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit()
+})

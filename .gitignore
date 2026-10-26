@@ -1,0 +1,9 @@
+node_modules/
+out/
+dist/
+projects/
+tmp-test/
+vendor/fonts/*.woff2
+.hyperframes/
+*.log
+.DS_Store
