@@ -56,6 +56,7 @@ export type PipelineEvent =
   | { stage: 'render'; status: 'progress'; pct: number }
   | { stage: 'render'; status: 'done'; output: string; wallSec: number }
   | { stage: 'render'; status: 'failed'; error: string }
+  | { stage: 'pipeline'; status: 'failed'; error: string }
   | { stage: 'done'; projectId: string; output: string }
 
 export interface GenerateResult {

@@ -144,7 +144,7 @@ function registerIpc(): void {
     // run async; UI streams events
     orchestrator
       .generate({ ...opts, quality: settings.quality, gpu: settings.allowGpu, onEvent })
-      .catch((err) => emit('gen:event', { stage: 'render', status: 'failed', error: String(err) }))
+      .catch((err) => emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) }))
       .finally(() => {
         busy = false
       })

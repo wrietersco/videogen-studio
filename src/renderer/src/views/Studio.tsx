@@ -53,6 +53,10 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
           setRunning(false)
         }
       }
+      if (e.stage === 'pipeline' && e.status === 'failed') {
+        setError(e.error)
+        setRunning(false)
+      }
       if (e.stage === 'done') {
         setDone({ projectId: e.projectId, output: e.output })
         setRunning(false)

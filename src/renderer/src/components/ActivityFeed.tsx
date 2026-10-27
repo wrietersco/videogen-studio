@@ -5,6 +5,7 @@ const STAGE_META: Record<PipelineEvent['stage'], { label: string; icon: string }
   compose: { label: 'Composer', icon: '🎼' },
   qa: { label: 'QA Agents', icon: '🛡' },
   render: { label: 'Renderer', icon: '🎬' },
+  pipeline: { label: 'Pipeline', icon: '⚠️' },
   done: { label: 'Pipeline', icon: '✅' }
 }
 
@@ -60,6 +61,9 @@ function toRows(events: PipelineEvent[]): Row[] {
       if (e.status === 'done')
         rows.push({ key, ...meta, detail: `done in ${e.wallSec.toFixed(1)}s`, state: 'ok' })
       if (e.status === 'failed') rows.push({ key, ...meta, detail: e.error, state: 'fail' })
+    }
+    if (e.stage === 'pipeline' && e.status === 'failed') {
+      rows.push({ key, ...meta, detail: e.error, state: 'fail' })
     }
     if (e.stage === 'done') {
       rows.push({ key, ...meta, detail: e.output.split(/[\\/]/).pop() ?? e.output, state: 'ok' })

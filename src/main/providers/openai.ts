@@ -23,6 +23,11 @@ const API = 'https://api.openai.com/v1'
 
 type KeyFn = () => string
 
+/** Reasoning-family models (gpt-5, o-series) reject custom temperature and count reasoning tokens toward output budget. */
+function isReasoningModel(model: string): boolean {
+  return /^(o\d|gpt-5)/.test(model)
+}
+
 export class OpenAIProvider implements LLMProvider {
   readonly id: ProviderId = 'openai'
   readonly label = 'OpenAI'
@@ -52,11 +57,12 @@ export class OpenAIProvider implements LLMProvider {
 
   async generateJSON<T>(req: GenerateJSONRequest): Promise<T> {
     const model = this.modelOverride?.() ?? 'gpt-5'
+    const reasoning = isReasoningModel(model)
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: req.prompt }]
     for (const img of req.images ?? []) {
       content.push({ type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.base64}` } })
     }
-    const body = {
+    const body: Record<string, unknown> = {
       model,
       messages: [
         { role: 'system', content: req.system },
@@ -66,30 +72,53 @@ export class OpenAIProvider implements LLMProvider {
         type: 'json_schema',
         json_schema: { name: req.schemaName, schema: req.jsonSchema, strict: false }
       },
-      temperature: req.temperature ?? 0.8,
-      max_completion_tokens: req.maxTokens ?? 8000
+      // reasoning models burn reasoning tokens from this budget — raise it
+      max_completion_tokens: reasoning ? Math.max(req.maxTokens ?? 8000, 16000) : req.maxTokens ?? 8000
     }
-    const json = await this.request<{ choices: Array<{ message: { content: string } }> }>('POST', '/chat/completions', body)
-    const text = json.choices[0]?.message?.content ?? ''
-    return this.parseJSON<T>(text)
+    if (!reasoning) body.temperature = req.temperature ?? 0.8
+    try {
+      const json = await this.request<{ choices: Array<{ message: { content: string } }> }>('POST', '/chat/completions', body)
+      const text = json.choices[0]?.message?.content ?? ''
+      return this.parseJSON<T>(text)
+    } catch (e) {
+      if (e instanceof ProviderError && e.kind === 'invalid-request' && /temperature/i.test(e.message)) {
+        // future model rejects sampling params — retry without them
+        delete body.temperature
+        const json = await this.request<{ choices: Array<{ message: { content: string } }> }>('POST', '/chat/completions', body)
+        const text = json.choices[0]?.message?.content ?? ''
+        return this.parseJSON<T>(text)
+      }
+      throw e
+    }
   }
 
   async generateText(req: GenerateTextRequest): Promise<string> {
     const model = this.modelOverride?.() ?? 'gpt-5'
+    const reasoning = isReasoningModel(model)
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: req.prompt }]
     for (const img of req.images ?? []) {
       content.push({ type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.base64}` } })
     }
-    const json = await this.request<{ choices: Array<{ message: { content: string } }> }>('POST', '/chat/completions', {
+    const body: Record<string, unknown> = {
       model,
       messages: [
         { role: 'system', content: req.system },
         { role: 'user', content }
       ],
-      temperature: req.temperature ?? 0.8,
-      max_completion_tokens: req.maxTokens ?? 4000
-    })
-    return json.choices[0]?.message?.content ?? ''
+      max_completion_tokens: reasoning ? Math.max(req.maxTokens ?? 4000, 16000) : req.maxTokens ?? 4000
+    }
+    if (!reasoning) body.temperature = req.temperature ?? 0.8
+    try {
+      const json = await this.request<{ choices: Array<{ message: { content: string } }> }>('POST', '/chat/completions', body)
+      return json.choices[0]?.message?.content ?? ''
+    } catch (e) {
+      if (e instanceof ProviderError && e.kind === 'invalid-request' && /temperature/i.test(e.message)) {
+        delete body.temperature
+        const json = await this.request<{ choices: Array<{ message: { content: string } }> }>('POST', '/chat/completions', body)
+        return json.choices[0]?.message?.content ?? ''
+      }
+      throw e
+    }
   }
 
   async generateImage(req: ImageGenRequest): Promise<Buffer> {
