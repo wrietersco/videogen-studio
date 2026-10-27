@@ -35,6 +35,7 @@ export const socialKit: StyleKit = {
       <div class="atmo-shape atmo-shape-1"></div>
       <div class="atmo-shape atmo-shape-2"></div>
       <div class="atmo-shape atmo-shape-3"></div>
+      <div class="atmo-vignette"></div>
       <div class="atmo-grain"></div>`.trim()
   },
   atmosphereCSS(ctx) {
@@ -46,6 +47,10 @@ export const socialKit: StyleKit = {
           radial-gradient(120% 90% at 85% 10%, ${accent}33 0%, transparent 55%),
           radial-gradient(100% 80% at 10% 90%, ${accent2}2A 0%, transparent 50%),
           linear-gradient(160deg, ${bg} 0%, ${bg} 60%, ${ctx.palette.surface} 100%);
+      }
+      .atmo-vignette {
+        position: absolute; inset: 0;
+        background: radial-gradient(125% 125% at 50% 46%, transparent 58%, rgba(0,0,0,0.42) 100%);
       }
       .atmo-shape {
         position: absolute; border-radius: 50%; filter: blur(2px); opacity: 0.16;
@@ -117,13 +122,23 @@ export const explainerKit: StyleKit = {
   atmosphere(ctx) {
     return `
       <div class="atmo-bg"></div>
+      <div class="atmo-blob atmo-blob-1"></div>
+      <div class="atmo-blob atmo-blob-2"></div>
       <div class="atmo-grid"></div>
+      <div class="atmo-vignette"></div>
       <div class="atmo-progress"><div class="atmo-progress-fill"></div></div>`.trim()
   },
   atmosphereCSS(ctx) {
-    const { bg, surface, fg, accent, muted } = ctx.palette
+    const { bg, surface, fg, accent, accent2, muted } = ctx.palette
     return `
       .atmo-bg { position: absolute; inset: 0; background: linear-gradient(180deg, ${surface} 0%, ${bg} 100%); }
+      .atmo-blob { position: absolute; border-radius: 50%; filter: blur(${Math.round(70 * ctx.scale)}px); opacity: 0.14; }
+      .atmo-blob-1 { width: ${Math.round(520 * ctx.scale)}px; height: ${Math.round(520 * ctx.scale)}px; background: ${accent}; top: -14%; right: -10%; }
+      .atmo-blob-2 { width: ${Math.round(430 * ctx.scale)}px; height: ${Math.round(430 * ctx.scale)}px; background: ${accent2}; bottom: -12%; left: -8%; }
+      .atmo-vignette {
+        position: absolute; inset: 0;
+        background: radial-gradient(125% 125% at 50% 46%, transparent 60%, rgba(0,0,0,0.34) 100%);
+      }
       .atmo-grid {
         position: absolute; inset: 0; opacity: 0.5;
         background-image: radial-gradient(${muted}22 ${Math.max(1, Math.round(1.5 * ctx.scale))}px, transparent ${Math.max(1, Math.round(1.5 * ctx.scale))}px);

@@ -20,6 +20,7 @@ Creative guidance:
 - Respect the platform preset given in the prompt (duration range, aspect, pacing bias).
 - Pick palette/typography that serve the topic and mood; be intentional, never random.
 - Scene kinds must match the chosen style family (3D scenes for motion3d, punchy text for social, structured flow for explainer).
+- Visual rhythm: vary scene kinds — never use the same kind more than twice in a row; alternate hero moments with informational ones.
 - Narration lines must be speakable and synchronized with their scene's duration (roughly 2.5 words per second).
 - Durations across scenes must sum to durationSec.
 - Output ONLY the JSON object. No markdown, no commentary.`

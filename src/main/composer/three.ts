@@ -124,6 +124,8 @@ export function buildThreeShowcase(
     renderer.toneMappingExposure = 1.15
     host.appendChild(renderer.domElement)
     const scene = new THREE.Scene()
+    // depth cue: distant geometry falls into the dark instead of floating on black
+    scene.fog = new THREE.FogExp2(0x07070c, 0.024)
     const camera = new THREE.PerspectiveCamera(40, W / H, 0.1, 100)
     camera.position.set(0, 0.3, 4.6)
 
@@ -186,6 +188,20 @@ export function buildThreeShowcase(
     const mat = ${materialSnippet(material, accentHex, accent2Hex)}
     const mesh = new THREE.Mesh(geometry, mat)
     rig.add(mesh)
+    ${objectStyle === 'crystal' || objectStyle === 'productBox' ? `
+    // precision edge overlay — reads as deliberate product/CAD design
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(geometry, 18),
+      new THREE.LineBasicMaterial({ color: ${accent2Hex}, transparent: true, opacity: 0.4 })
+    )
+    mesh.add(edges)` : ''}
+    // tilted orbit ring — an art-directed accent circling the hero
+    const orbit = new THREE.Mesh(
+      new THREE.TorusGeometry(1.95, 0.012, 8, 128),
+      new THREE.MeshBasicMaterial({ color: ${accent2Hex}, transparent: true, opacity: 0.55 })
+    )
+    orbit.rotation.x = 1.32
+    rig.add(orbit)
     ${needsShell ? `
     const shell = new THREE.Mesh(
       new THREE.IcosahedronGeometry(1.56, 1),
@@ -209,6 +225,7 @@ export function buildThreeShowcase(
     function update(globalT) {
       const t = Math.min(Math.max(globalT - START, 0), DUR)
       stars.rotation.y = t * 0.02
+      orbit.rotation.z = t * 0.22
       ${motionSnippet(motion)}
       camera.lookAt(0, -0.5, 0)
       renderer.render(scene, camera)
@@ -273,6 +290,28 @@ export function buildThreeParticles(
     const points = new THREE.Points(geo, mat)
     scene.add(points)
 
+    // far dust layer — parallax depth behind the main field
+    const N2 = Math.round(${n} * 0.45)
+    const pos2 = new Float32Array(N2 * 3)
+    for (let i = 0; i < N2; i++) {
+      const r = 5.2 + rand() * 3.6
+      const theta = rand() * Math.PI * 2
+      const phi = Math.acos(2 * rand() - 1)
+      pos2[i * 3] = r * Math.sin(phi) * Math.cos(theta)
+      pos2[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta) * 0.72
+      pos2[i * 3 + 2] = r * Math.cos(phi) * 0.6
+    }
+    const geo2 = new THREE.BufferGeometry()
+    geo2.setAttribute('position', new THREE.BufferAttribute(pos2, 3))
+    const dust = new THREE.Points(geo2, new THREE.PointsMaterial({
+      color: 0xaeb8dd,
+      size: 0.016,
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false
+    }))
+    scene.add(dust)
+
     const glow = new THREE.Mesh(
       new THREE.SphereGeometry(0.9, 32, 32),
       new THREE.MeshBasicMaterial({ color: ${hexToLiteral(accent)}, transparent: true, opacity: 0.12 })
@@ -284,6 +323,7 @@ export function buildThreeParticles(
     function update(globalT) {
       const t = Math.min(Math.max(globalT - START, 0), DUR)
       points.rotation.y = t * 0.10
+      dust.rotation.y = -t * 0.055
       points.rotation.z = Math.sin(t * 0.2) * 0.06
       const s = 1 + Math.sin(t * 0.9) * 0.04
       glow.scale.setScalar(s)

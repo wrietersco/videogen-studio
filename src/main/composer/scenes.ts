@@ -83,6 +83,88 @@ function headlineHTML(
 /** decorative corner brackets — the "produced frame" signature on hero scenes */
 const CORNERS = `<div class="corners" aria-hidden="true"><i></i><i></i><i></i><i></i></div>`
 
+/**
+ * Editorial dressing — depth layers that make a scene feel art-directed:
+ * a giant ghost scene-number drifting behind the content, and orbit rings
+ * for statement/quote moments. All motion is seekable (explicit tweens).
+ */
+function sceneDressing(
+  id: string,
+  num: number,
+  opts: { ghost?: boolean; rings?: boolean },
+  startSec: number,
+  dur: number,
+  ctx: DesignContext
+): { html: string; steps: AnimStep[] } {
+  const steps: AnimStep[] = []
+  let html = ''
+  if (opts.ghost) {
+    html += `<div class="ghost" id="${id}-ghost">${String(num).padStart(2, '0')}</div>`
+    steps.push(
+      {
+        kind: 'tween',
+        t: startSec,
+        sel: `#${id}-ghost`,
+        from: { autoAlpha: 0, y: 46 * ctx.scale },
+        to: { autoAlpha: 0.07, y: 0 },
+        dur: 0.8,
+        ease: EASE.rise
+      },
+      {
+        kind: 'tween',
+        t: startSec + 0.9,
+        sel: `#${id}-ghost`,
+        from: { y: 0 },
+        to: { y: -64 * ctx.scale },
+        dur: Math.max(1.2, dur - 1.4),
+        ease: 'none'
+      }
+    )
+  }
+  if (opts.rings) {
+    html += `<div class="ring" id="${id}-ring" aria-hidden="true"></div><div class="ring2" id="${id}-ring2" aria-hidden="true"></div>`
+    steps.push(
+      {
+        kind: 'tween',
+        t: startSec,
+        sel: `#${id}-ring`,
+        from: { autoAlpha: 0, scale: 0.86, xPercent: -50, yPercent: -50, rotation: 0 },
+        to: { autoAlpha: 0.24, scale: 1, xPercent: -50, yPercent: -50, rotation: 0 },
+        dur: 0.9,
+        ease: EASE.glide
+      },
+      {
+        kind: 'tween',
+        t: startSec + 0.15,
+        sel: `#${id}-ring`,
+        from: { rotation: 0 },
+        to: { rotation: 26 },
+        dur: Math.max(1.2, dur - 0.6),
+        ease: 'none'
+      },
+      {
+        kind: 'tween',
+        t: startSec + 0.3,
+        sel: `#${id}-ring2`,
+        from: { autoAlpha: 0, scale: 1.08, xPercent: -50, yPercent: -50, rotation: 12 },
+        to: { autoAlpha: 0.15, scale: 1, xPercent: -50, yPercent: -50, rotation: 12 },
+        dur: 1.1,
+        ease: EASE.glide
+      },
+      {
+        kind: 'tween',
+        t: startSec + 0.4,
+        sel: `#${id}-ring2`,
+        from: { rotation: 12 },
+        to: { rotation: -16 },
+        dur: Math.max(1.2, dur - 0.8),
+        ease: 'none'
+      }
+    )
+  }
+  return { html, steps }
+}
+
 export function renderScene(
   scene: Scene,
   index: number,
@@ -116,13 +198,16 @@ export function renderScene(
       const lines = fitLines(scene.headline, 3, ctx.safe.w * 0.94, ts.display)
       const fs = Math.round(Math.min(ts.display, (ctx.safe.w * 0.94) / (Math.max(...lines.map((l) => l.length)) * 0.56)))
       const hl = highlightWord(scene.headline)
+      const dress = sceneDressing(id, index + 1, { ghost: true }, startSec, dur, ctx)
       const inner = `
+        ${dress.html}
         ${clean.kicker ? `<div class="kicker" id="${id}-kicker">${esc(clean.kicker)}</div>` : ''}
         ${headlineHTML(`${id}-hl`, lines, hl, fs, 'display', fitAttrs(ctx.safe.w * 0.94, ctx.safe.h * 0.46, 'lines'))}
         ${clean.subline ? `<p class="subline" id="${id}-sub" ${fitAttrs(ctx.safe.w * 0.86, ctx.safe.h * 0.16, 'box')}>${esc(clean.subline)}</p>` : ''}
         <div class="underline" id="${id}-bar"></div>
         ${CORNERS}`
       html = sceneShell(id, scene.kind, inner)
+      steps.push(...dress.steps)
       steps.push(...enter(`#${id}-hl`))
       if (clean.kicker) {
         steps.push({
@@ -164,11 +249,14 @@ export function renderScene(
       const lines = fitLines(scene.headline, 3, ctx.safe.w * 0.92, ts.headline)
       const fs = Math.round(Math.min(ts.headline, (ctx.safe.w * 0.92) / (Math.max(...lines.map((l) => l.length)) * 0.56)))
       const hl = highlightWord(scene.headline)
+      const dress = sceneDressing(id, index + 1, { rings: true }, startSec, dur, ctx)
       const inner = `
+        ${dress.html}
         <div class="mark" id="${id}-mark">“</div>
         ${headlineHTML(`${id}-hl`, lines, hl, fs, 'headline', fitAttrs(ctx.safe.w * 0.92, ctx.safe.h * 0.4, 'lines'))}
         ${clean.subline ? `<p class="subline" id="${id}-sub" ${fitAttrs(ctx.safe.w * 0.84, ctx.safe.h * 0.15, 'box')}>${esc(clean.subline)}</p>` : ''}`
       html = sceneShell(id, scene.kind, inner)
+      steps.push(...dress.steps)
       steps.push(...enter(`#${id}-hl`))
       steps.push({
         kind: 'tween',
@@ -191,10 +279,13 @@ export function renderScene(
             `<li id="${id}-b${i}"><span class="idx">${String(i + 1).padStart(2, '0')}</span><span class="bl" ${fitAttrs(ctx.safe.w * 0.62, ctx.safe.h * 0.1, 'box')}>${esc(b)}</span></li>`
         )
         .join('\n')
+      const dress = sceneDressing(id, index + 1, { ghost: true }, startSec, dur, ctx)
       const inner = `
+        ${dress.html}
         <h3 class="headline sm" id="${id}-hl" ${fitAttrs(ctx.safe.w * 0.92, ctx.safe.h * 0.16, 'lines')}>${esc(clean.headline)}</h3>
         <ul class="bullets" ${fitAttrs(ctx.safe.w * 0.94, ctx.safe.h * 0.6, 'box')}>${items}</ul>`
       html = sceneShell(id, scene.kind, inner)
+      steps.push(...dress.steps)
       steps.push(...enter(`#${id}-hl`))
       steps.push(...popStagger(`${sel} ul`, startSec + 0.4, ctx, scene.bullets.length))
       break
@@ -253,12 +344,15 @@ export function renderScene(
       const valueHTML = hasNumeric
         ? `<span class="stat-num" id="${id}-num">${esc(String(numeric))}</span>${esc(scene.value.replace(/[\d.,]/g, ''))}`
         : esc(scene.value)
+      const dress = sceneDressing(id, index + 1, { ghost: true, rings: true }, startSec, dur, ctx)
       const inner = `
+        ${dress.html}
         <div class="stat-glow" aria-hidden="true"></div>
         <div class="stat-value" id="${id}-val" ${fitAttrs(ctx.safe.w * 0.9, ctx.safe.h * 0.34, 'lines')}>${valueHTML}</div>
         <div class="stat-label" id="${id}-label" ${fitAttrs(ctx.safe.w * 0.9, ctx.safe.h * 0.1, 'box')}>${esc(scene.label)}</div>
         ${scene.context ? `<div class="stat-context" id="${id}-ctx" ${fitAttrs(ctx.safe.w * 0.82, ctx.safe.h * 0.14, 'box')}>${esc(scene.context)}</div>` : ''}`
       html = sceneShell(id, scene.kind, inner)
+      steps.push(...dress.steps)
       steps.push(
         {
           kind: 'tween',
@@ -297,11 +391,14 @@ export function renderScene(
 
     case 'quote': {
       const lines = fitLines(scene.text, 4, ctx.safe.w * 0.88, ts.quote)
+      const dress = sceneDressing(id, index + 1, { rings: true }, startSec, dur, ctx)
       const inner = `
+        ${dress.html}
         <div class="mark" id="${id}-mark">“</div>
         <blockquote class="quote" id="${id}-q" ${fitAttrs(ctx.safe.w * 0.88, ctx.safe.h * 0.5, 'box')}>${lines.map((l) => `<span class="line">${esc(l)}</span>`).join('')}</blockquote>
         ${scene.attribution ? `<div class="stat-label" id="${id}-attr">— ${esc(scene.attribution)}</div>` : ''}`
       html = sceneShell(id, scene.kind, inner)
+      steps.push(...dress.steps)
       steps.push(
         {
           kind: 'tween',
@@ -331,12 +428,15 @@ export function renderScene(
       const hl = highlightWord(scene.headline)
       const lines = fitLines(scene.headline, 2, ctx.safe.w * 0.92, ts.cta)
       const fs = Math.round(Math.min(ts.cta, (ctx.safe.w * 0.92) / (Math.max(...lines.map((l) => l.length)) * 0.56)))
+      const dress = sceneDressing(id, index + 1, { ghost: true }, startSec, dur, ctx)
       const inner = `
+        ${dress.html}
         ${headlineHTML(`${id}-hl`, lines, hl, fs, 'display', fitAttrs(ctx.safe.w * 0.92, ctx.safe.h * 0.34, 'lines'))}
         ${clean.subline ? `<p class="subline" id="${id}-sub" ${fitAttrs(ctx.safe.w * 0.84, ctx.safe.h * 0.15, 'box')}>${esc(clean.subline)}</p>` : ''}
         ${scene.action ? `<div class="cta-pill" id="${id}-pill">${esc(scene.action)}<span class="cta-arrow" id="${id}-arrow">→</span></div>` : ''}
         ${CORNERS}`
       html = sceneShell(id, scene.kind, inner)
+      steps.push(...dress.steps)
       steps.push(...enter(`#${id}-hl`))
       if (clean.subline) steps.push(riseIn(`#${id}-sub`, startSec + 0.4, ctx))
       steps.push({

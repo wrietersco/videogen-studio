@@ -1,6 +1,9 @@
-import { BrowserWindow } from 'electron'
+import electronModule from 'electron'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+
+/** BrowserWindow only exists inside the Electron runtime; CLI/tsx runs get a string export. */
+const BrowserWindow = (electronModule as unknown as Partial<typeof import('electron')>).BrowserWindow
 
 /**
  * Live storyboard captures — after compose, load the actual composition in a
@@ -89,8 +92,8 @@ export async function captureSceneThumbs(
       )
       await sleep(750) // let 3D scenes settle their first rendered frame
       const img = await win.webContents.capturePage()
-      const scaled = img.getSize().width > 320 ? img.resize({ width: 320 }) : img
-      const jpeg = scaled.toJPEG(72)
+      const scaled = img.getSize().width > 480 ? img.resize({ width: 480 }) : img
+      const jpeg = scaled.toJPEG(80)
       if (jpeg.length === 0) continue
       writeFileSync(join(thumbsDir, `scene-${i + 1}.jpg`), jpeg)
       await opts.onThumb({ index: i, sceneId: w.id, dataUrl: `data:image/jpeg;base64,${jpeg.toString('base64')}` })

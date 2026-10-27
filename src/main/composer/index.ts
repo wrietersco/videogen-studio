@@ -242,8 +242,7 @@ function baseCSS(ctx: DesignContext, captionUppercase: boolean): string {
       font-size: ${Math.round(ts.display * 1.6)}px;
       color: ${p.accent}; opacity: 0.25; line-height: 1;
     }
-    .corners { position: absolute; inset: ${Math.round(-14 * ctx.scale)}px; pointer-events: none; }
-    .corners i {
+    .corners { position: absolute; inset: ${Math.round(-14 * ctx.scale)}px; pointer-events: none; }    .corners i {
       position: absolute; width: ${Math.round(46 * ctx.scale)}px; height: ${Math.round(46 * ctx.scale)}px;
       border: ${Math.max(2, Math.round(4 * ctx.scale))}px solid ${p.accent}; opacity: 0.85;
     }
@@ -251,6 +250,33 @@ function baseCSS(ctx: DesignContext, captionUppercase: boolean): string {
     .corners i:nth-child(2) { top: 0; right: 0; border-left: none; border-bottom: none; }
     .corners i:nth-child(3) { bottom: 0; left: 0; border-right: none; border-top: none; }
     .corners i:nth-child(4) { bottom: 0; right: 0; border-left: none; border-top: none; }
+    /* editorial dressing — depth layers behind the content */
+    .ghost {
+      position: absolute; right: ${Math.round(24 * ctx.scale)}px; top: ${Math.round(ctx.safe.h * 0.03)}px;
+      font-family: ${fam(t.display)};
+      font-size: ${Math.round(ts.display * 2.6)}px; line-height: 1;
+      letter-spacing: -0.04em;
+      color: ${p.accent};
+      opacity: 0;
+      pointer-events: none;
+      text-shadow: none;
+    }
+    .ring, .ring2 {
+      position: absolute; top: 50%; left: 50%;
+      border-radius: 50%; pointer-events: none;
+    }
+    .ring {
+      width: ${Math.round(Math.min(ctx.safe.w, ctx.safe.h) * 0.82)}px;
+      height: ${Math.round(Math.min(ctx.safe.w, ctx.safe.h) * 0.82)}px;
+      border: ${Math.max(2, Math.round(2.5 * ctx.scale))}px solid ${p.accent2};
+      opacity: 0;
+    }
+    .ring2 {
+      width: ${Math.round(Math.min(ctx.safe.w, ctx.safe.h) * 1.08)}px;
+      height: ${Math.round(Math.min(ctx.safe.w, ctx.safe.h) * 1.08)}px;
+      border: ${Math.max(2, Math.round(2 * ctx.scale))}px dashed ${p.accent};
+      opacity: 0;
+    }
     .bullets { list-style: none; text-align: left; width: 100%; }
     .bullets li {
       display: flex; align-items: baseline; gap: ${Math.round(22 * ctx.scale)}px;
@@ -462,8 +488,13 @@ const INTERPRETER = `
       for (let pass = 0; pass < 3; pass++) {
         const gap = parseFloat(getComputedStyle(box).gap) || 0;
         let contentH = 0;
-        kids.forEach(function (c) { contentH += c.offsetHeight; });
-        contentH += Math.max(0, kids.length - 1) * gap;
+        let flowCount = 0;
+        kids.forEach(function (c) {
+          if (getComputedStyle(c).position === 'absolute') return; // dressing layers live outside the flow
+          contentH += c.offsetHeight;
+          flowCount += 1;
+        });
+        contentH += Math.max(0, flowCount - 1) * gap;
         if (contentH <= box.clientHeight + 2) break;
         const k = Math.max(0.5, (box.clientHeight / contentH) * 0.985);
         fitted.forEach(function (el) {
@@ -518,7 +549,7 @@ const INTERPRETER = `
 `
 
 /** bump when presentation changes enough to re-compose old projects */
-export const COMPOSER_VERSION = 3
+export const COMPOSER_VERSION = 4
 
 function buildDocument(
   spec: VideoSpec,
