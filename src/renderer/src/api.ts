@@ -53,6 +53,13 @@ declare global {
       deleteProject: (id: string) => Promise<{ ok: boolean; error?: string }>
       revealProject: (id: string, filePath?: string) => Promise<boolean>
       rerenderProject: (id: string) => Promise<{ ok: boolean; error?: string }>
+      resumeProject: (id: string) => Promise<{ ok: boolean; error?: string }>
+      getProjectState: (id: string) => Promise<{
+        version: number
+        stages: Record<string, { status: string; detail?: string }>
+        events: Array<{ at: string; text: string }>
+        updatedAt: string
+      }>
       listProviders: () => Promise<ProviderStatus[]>
       listModels: (provider: ProviderId) => Promise<ModelInfo[]>
       listImageModels: () => Promise<ModelInfo[]>

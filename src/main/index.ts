@@ -190,8 +190,25 @@ function registerIpc(): void {
     return { ok: true }
   })
 
-  ipcMain.handle('project:delete', (_e, id: string) => {
-    if (orchestrator.activeProjectId === id) {
+  ipcMain.handle('gen:resume', async (_e, projectId: string) => {
+    if (busy) return { ok: false, error: 'Another job is running' }
+    busy = true
+    orchestrator
+      .resume(projectId, { quality: settings.quality, gpu: settings.allowGpu, onEvent: (ev) => emit('gen:event', ev) })
+      .catch((err) => {
+        if (!(err instanceof GenerationCancelled)) {
+          emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) })
+        }
+      })
+      .finally(() => {
+        busy = false
+      })
+    return { ok: true }
+  })
+
+  ipcMain.handle('project:state', (_e, id: string) => store.readState(id))
+
+  ipcMain.handle('project:delete', (_e, id: string) => {    if (orchestrator.activeProjectId === id) {
       return { ok: false, error: 'This project is currently generating — stop it first' }
     }
     return { ok: store.delete(id) }

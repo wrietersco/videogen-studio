@@ -5,7 +5,7 @@ import { Planner } from './planner'
 import { CompositionFixer } from './fixer'
 import { buildAudio } from './audio'
 import { compose } from '../composer'
-import { ProjectStore } from '../store/projectStore'
+import { ProjectStore, type StageName, type StageState } from '../store/projectStore'
 import { RenderService, type CheckReport, type RenderProgress } from '../rendererService/hyperframes'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -89,6 +89,15 @@ export class Orchestrator {
     private readonly providerFor: () => LLMProvider
   ) {}
 
+  /** Persist stage progress to state.json — the resume contract. */
+  private track(projectId: string, stage: StageName, status: StageState['status'], detail?: string): void {
+    const patch: Partial<StageState> = { status, detail }
+    if (status === 'running') patch.startedAt = new Date().toISOString()
+    if (status === 'done' || status === 'failed') patch.finishedAt = new Date().toISOString()
+    this.store.setStage(projectId, stage, patch)
+    if (detail) this.store.appendEvent(projectId, `${stage}: ${detail}`)
+  }
+
   /** The project currently generating, if any (used to guard deletes). */
   get activeProjectId(): string | null {
     return this.activeJobId
@@ -113,12 +122,12 @@ export class Orchestrator {
     // self-heal: if the composition is missing, rebuild it from the spec
     const composition = join(dir, 'index.html')
     if (!existsSync(composition)) {
-      const audio = { clips: [], captions: [], hasNarration: false }
-      this.store.saveComposition(projectId, compose(spec, vendorDir, fontsDir, audio))
+      this.store.saveComposition(projectId, compose(spec, vendorDir, fontsDir, { clips: [], captions: [] }))
     }
-    this.store.setStatus(projectId, 'rendering')
-    const output = join(dir, 'renders', `${slugish(spec.title)}-${spec.platform}-r${Date.now().toString(36)}.mp4`)
+    this.store.appendEvent(projectId, 'manual re-render')
+    this.track(projectId, 'render', 'running')
     opts.onEvent?.({ stage: 'render', status: 'started' })
+    const output = join(dir, 'renders', `${slugish(spec.title)}-${spec.platform}-r${Date.now().toString(36)}.mp4`)
     const result = await this.renders.render(
       dir,
       output,
@@ -142,6 +151,7 @@ export class Orchestrator {
     }
     this.store.addRender(projectId, result.output, spec.platform)
     this.store.setStatus(projectId, 'done')
+    this.track(projectId, 'render', 'done', `${(result.durationSec ?? 0).toFixed(1)}s wall`)
     opts.onEvent?.({ stage: 'render', status: 'done', output: result.output, wallSec: result.durationSec ?? 0 })
     return result.output
   }
@@ -157,6 +167,15 @@ export class Orchestrator {
     const projectId = provisional.id
     this.activeJobId = projectId
     this.store.setStatus(projectId, 'planning')
+    const createdMeta = this.store.readMeta(projectId)
+    if (createdMeta) {
+      createdMeta.platform = opts.platform
+      this.store.writeMeta(projectId, createdMeta)
+    }
+    this.store.writeState(projectId, (s) => {
+      s.stages = { plan: { status: 'running', startedAt: new Date().toISOString() }, compose: { status: 'pending' }, qa: { status: 'pending' }, render: { status: 'pending' } }
+      s.events = [{ at: new Date().toISOString(), text: `started: "${opts.prompt.slice(0, 60)}"` }]
+    })
     let spec: VideoSpec
     try {
       spec = await planner.plan({
@@ -176,6 +195,7 @@ export class Orchestrator {
       this.store.writeMeta(projectId, meta)
     }
     this.store.saveSpec(projectId, spec)
+    this.track(projectId, 'plan', 'done', `${spec.scenes.length} scenes · ${spec.durationSec}s`)
     emit({
       stage: 'plan',
       status: 'done',
@@ -185,6 +205,22 @@ export class Orchestrator {
     })
 
     // ---------- compose ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    const audio = await this.runCompose(projectId, spec, emit)
+
+    // ---------- QA fix-loop ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    const qa = await this.runQaLoop(projectId, spec, audio, emit)
+
+    // ---------- render ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    return this.runRender(projectId, spec, opts.platform, opts, emit, qa)
+  }
+
+  // ---------------- shared stage implementations (used by generate + resume) ----------------
+
+  private async runCompose(projectId: string, spec: VideoSpec, emit: (e: PipelineEvent) => void) {
+    this.track(projectId, 'compose', 'running')
     emit({ stage: 'compose', status: 'started' })
     // scene windows are recomputed here to place audio clips at scene starts
     let acc = 0
@@ -199,9 +235,18 @@ export class Orchestrator {
     )
     const composed = compose(spec, vendorDir, fontsDir, audio)
     this.store.saveComposition(projectId, composed)
+    this.track(projectId, 'compose', 'done', 'composition written')
     emit({ stage: 'compose', status: 'done' })
+    return audio
+  }
 
-    // ---------- QA fix-loop ----------
+  private async runQaLoop(
+    projectId: string,
+    spec: VideoSpec,
+    audio: Awaited<ReturnType<Orchestrator['runCompose']>>,
+    emit: (e: PipelineEvent) => void
+  ): Promise<CheckReport> {
+    this.track(projectId, 'qa', 'running')
     emit({ stage: 'qa', status: 'started' })
     let qa = await this.renders.check(this.store.dir(projectId))
     let attempt = 0
@@ -219,8 +264,6 @@ export class Orchestrator {
         this.store.saveComposition(projectId, recomposed)
       } else {
         // rung 2: LLM-assisted composition patch (mock provider declines)
-        const current = this.store.readMeta(projectId)
-        void current
         const html = readComposition(this.store.dir(projectId))
         const patched = await new CompositionFixer(this.providerFor()).fix(html, qa.errors)
         if (!patched) break // nothing more to try
@@ -229,17 +272,28 @@ export class Orchestrator {
       qa = await this.renders.check(this.store.dir(projectId))
     }
     if (qa.ok) {
+      this.track(projectId, 'qa', 'done', qa.warnings.length ? `${qa.warnings.length} warnings` : 'clean')
       emit({ stage: 'qa', status: 'done', clean: qa.errors.length === 0, warnings: qa.warnings.length })
     } else {
       // continue to render anyway (warnings don't block), but record failure state
+      this.track(projectId, 'qa', 'failed', qa.errors[0]?.message)
       emit({ stage: 'qa', status: 'failed', issues: qa.errors.map((e) => e.message) })
     }
+    return qa
+  }
 
-    // ---------- render ----------
-    if (this.cancelled) return this.abort(projectId, emit)
+  private async runRender(
+    projectId: string,
+    spec: VideoSpec,
+    platform: VideoSpec['platform'],
+    opts: { quality?: 'draft' | 'standard' | 'delivery'; gpu?: boolean },
+    emit: (e: PipelineEvent) => void,
+    qa: CheckReport
+  ): Promise<GenerateResult> {
+    this.track(projectId, 'render', 'running')
     emit({ stage: 'render', status: 'started' })
     this.store.setStatus(projectId, 'rendering')
-    const output = join(this.store.dir(projectId), 'renders', `${slugish(spec.title)}-${opts.platform}.mp4`)
+    const output = join(this.store.dir(projectId), 'renders', `${slugish(spec.title)}-${platform}.mp4`)
     const onProgress = (p: RenderProgress) => emit({ stage: 'render', status: 'progress', pct: p.pct })
     const result = await this.renders.render(
       this.store.dir(projectId),
@@ -249,8 +303,9 @@ export class Orchestrator {
     )
     if (this.cancelled) return this.abort(projectId, emit)
     if (result.ok && result.output) {
-      this.store.addRender(projectId, result.output, opts.platform)
+      this.store.addRender(projectId, result.output, platform)
       this.store.setStatus(projectId, 'done')
+      this.track(projectId, 'render', 'done', `${(result.durationSec ?? 0).toFixed(1)}s wall`)
       emit({ stage: 'render', status: 'done', output: result.output, wallSec: result.durationSec ?? 0 })
       emit({ stage: 'done', projectId, output: result.output })
       return { projectId, spec, output: result.output, qa }
@@ -258,6 +313,84 @@ export class Orchestrator {
     this.store.setStatus(projectId, 'error', result.error)
     emit({ stage: 'render', status: 'failed', error: result.error ?? 'unknown' })
     throw new Error(`Render failed: ${result.error}`)
+  }
+
+  /**
+   * Resume an interrupted project: replans only when the spec is missing,
+   * recomposes only when the composition is missing, re-runs QA only when it
+   * never completed — then renders. Survives crashes, force-quits, restarts.
+   */
+  async resume(
+    projectId: string,
+    opts: { quality?: 'draft' | 'standard' | 'delivery'; gpu?: boolean; onEvent?: (e: PipelineEvent) => void }
+  ): Promise<string> {
+    const emit = opts.onEvent ?? (() => {})
+    const meta = this.store.readMeta(projectId)
+    if (!meta) throw new Error(`unknown project ${projectId}`)
+    this.cancelled = false
+    this.activeJobId = projectId
+
+    let spec = this.store.readSpec(projectId)
+    this.store.appendEvent(projectId, 'resuming pipeline')
+
+    // ---------- plan ----------
+    if (!spec) {
+      if (!meta.platform) throw new Error('cannot replan: project has no saved platform')
+      emit({ stage: 'plan', status: 'started' })
+      this.track(projectId, 'plan', 'running')
+      const planner = new Planner(this.providerFor())
+      spec = await planner.plan({
+        userPrompt: meta.prompt,
+        platform: meta.platform as VideoSpec['platform']
+      })
+      const fresh = this.store.readMeta(projectId)
+      if (fresh) {
+        fresh.title = spec.title
+        this.store.writeMeta(projectId, fresh)
+      }
+      this.store.saveSpec(projectId, spec)
+      this.track(projectId, 'plan', 'done', `${spec.scenes.length} scenes · ${spec.durationSec}s`)
+      emit({ stage: 'plan', status: 'done', title: spec.title, scenes: spec.scenes.length, durationSec: spec.durationSec })
+    } else {
+      // spec survived — skip the LLM entirely
+      emit({ stage: 'plan', status: 'done', title: spec.title, scenes: spec.scenes.length, durationSec: spec.durationSec })
+      this.store.appendEvent(projectId, 'plan: resumed from saved spec (no LLM call)')
+    }
+
+    // ---------- compose ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    const composition = join(this.store.dir(projectId), 'index.html')
+    let audio: Awaited<ReturnType<Orchestrator['runCompose']>> = { clips: [], captions: [], hasNarration: false }
+    if (!existsSync(composition)) {
+      audio = await this.runCompose(projectId, spec, emit)
+    } else {
+      this.store.appendEvent(projectId, 'compose: resumed (composition intact)')
+      emit({ stage: 'compose', status: 'done' })
+    }
+
+    // ---------- QA ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    const state = this.store.readState(projectId)
+    let qa: CheckReport
+    if (state.stages.qa.status === 'done' && existsSync(composition)) {
+      qa = { ok: true, errors: [], warnings: [] }
+      this.store.appendEvent(projectId, 'qa: resumed (already passed)')
+      emit({ stage: 'qa', status: 'done', clean: true, warnings: 0 })
+    } else {
+      qa = await this.runQaLoop(projectId, spec, audio, emit)
+    }
+
+    // ---------- render ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    const result = await this.runRender(
+      projectId,
+      spec,
+      (meta.platform as VideoSpec['platform']) ?? spec.platform,
+      opts,
+      emit,
+      qa
+    )
+    return result.output
   }
 
   /** Shared cancellation path: mark the project, tell the UI, stop the pipeline. */

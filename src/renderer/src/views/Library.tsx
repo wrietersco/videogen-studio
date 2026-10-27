@@ -60,6 +60,20 @@ export default function Library({ onOpenEditor }: { onOpenEditor: () => void }) 
     setRerendering({ id, pct: 0 })
   }
 
+  const resume = async (id: string) => {
+    const res = await api.resumeProject(id)
+    if (!res.ok) {
+      setToast(res.error ?? 'Could not resume')
+      return
+    }
+    setRerendering({ id, pct: 0 })
+    setToast('Resuming from last saved stage…')
+  }
+
+  /** projects that never finished → resumable (crash / quit / stop) */
+  const isInterrupted = (p: ProjectMeta) =>
+    p.status === 'planning' || p.status === 'composed' || p.status === 'rendering' || p.status === 'cancelled'
+
   const statusColor: Record<ProjectMeta['status'], string> = {
     planning: 'bg-amber-400',
     composed: 'bg-sky-400',
@@ -141,6 +155,16 @@ export default function Library({ onOpenEditor }: { onOpenEditor: () => void }) 
 
               {/* actions */}
               <div className="mt-4 flex flex-wrap gap-1.5">
+                {isInterrupted(p) && (
+                  <button
+                    onClick={() => resume(p.id)}
+                    disabled={Boolean(rerendering)}
+                    title="Continue from the last saved stage (spec, composition and QA results are reused — no repeat LLM cost)"
+                    className="rounded-lg bg-emerald-500/20 px-2.5 py-1.5 text-[11px] font-bold text-emerald-300 hover:bg-emerald-500/35 disabled:opacity-40"
+                  >
+                    ▶ Resume
+                  </button>
+                )}
                 <button
                   onClick={() => rerender(p.id)}
                   disabled={Boolean(rerendering)}

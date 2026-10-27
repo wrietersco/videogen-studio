@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync, readdirSync, rmSync, renameSync } from 'node:fs'
 import { resolve, join, dirname as pathDirname } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import type { VideoSpec } from '@shared/spec'
@@ -16,9 +16,41 @@ export interface ProjectMeta {
   createdAt: string
   updatedAt: string
   prompt: string
+  platform?: string
   status: 'planning' | 'composed' | 'rendering' | 'done' | 'error' | 'cancelled'
   lastError?: string
   renders: Array<{ file: string; platform: string; createdAt: string }>
+}
+
+// ---------------- pipeline state (crash-safe resume) ----------------
+
+export type StageName = 'plan' | 'compose' | 'qa' | 'render'
+
+export interface StageState {
+  status: 'pending' | 'running' | 'done' | 'failed'
+  startedAt?: string
+  finishedAt?: string
+  detail?: string
+}
+
+export interface ProjectState {
+  version: 1
+  stages: Record<StageName, StageState>
+  /** rolling activity log, newest last (capped) */
+  events: Array<{ at: string; text: string }>
+  updatedAt: string
+}
+
+const EMPTY_STATE: ProjectState = {
+  version: 1,
+  stages: {
+    plan: { status: 'pending' },
+    compose: { status: 'pending' },
+    qa: { status: 'pending' },
+    render: { status: 'pending' }
+  },
+  events: [],
+  updatedAt: now()
 }
 
 export class ProjectStore {
@@ -55,6 +87,48 @@ export class ProjectStore {
     if (!existsSync(dir)) return false
     rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 })
     return !existsSync(dir)
+  }
+
+  // ---------------- pipeline state (crash-safe resume) ----------------
+
+  private statePath(id: string): string {
+    return join(this.dir(id), 'state.json')
+  }
+
+  readState(id: string): ProjectState {
+    const p = this.statePath(id)
+    if (!existsSync(p)) return structuredClone(EMPTY_STATE)
+    try {
+      const raw = JSON.parse(readFileSync(p, 'utf8')) as ProjectState
+      // merge over defaults so new stages appear after app updates
+      return { ...structuredClone(EMPTY_STATE), ...raw, stages: { ...EMPTY_STATE.stages, ...raw.stages } }
+    } catch {
+      return structuredClone(EMPTY_STATE) // corrupted state — start clean
+    }
+  }
+
+  /** Atomic write (tmp + rename) so a crash mid-write can't corrupt state. */
+  writeState(id: string, mutate: (s: ProjectState) => void): void {
+    const state = this.readState(id)
+    mutate(state)
+    state.updatedAt = now()
+    const p = this.statePath(id)
+    const tmp = `${p}.tmp`
+    writeFileSync(tmp, JSON.stringify(state, null, 2))
+    renameSync(tmp, p)
+  }
+
+  setStage(id: string, stage: StageName, patch: Partial<StageState>): void {
+    this.writeState(id, (s) => {
+      s.stages[stage] = { ...s.stages[stage], ...patch }
+    })
+  }
+
+  appendEvent(id: string, text: string): void {
+    this.writeState(id, (s) => {
+      s.events.push({ at: now(), text })
+      if (s.events.length > 60) s.events = s.events.slice(-60)
+    })
   }
 
   list(): ProjectMeta[] {

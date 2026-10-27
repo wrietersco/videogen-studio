@@ -48,6 +48,15 @@ const CHAT_MODELS: ModelInfo[] = [
     priceNote: '$0.20 in / $1.20 out per 1M tok'
   },
   {
+    id: 'gpt-6-terra',
+    label: 'GPT-6 Terra',
+    provider: 'openai',
+    supportsJSON: true,
+    supportsVision: true,
+    kind: 'chat',
+    priceNote: 'recently announced — rates not published yet'
+  },
+  {
     id: 'gpt-6-sol',
     label: 'GPT-6 Sol',
     provider: 'openai',
@@ -55,6 +64,15 @@ const CHAT_MODELS: ModelInfo[] = [
     supportsVision: true,
     kind: 'chat',
     priceNote: '$2 in / $10 out per 1M tok'
+  },
+  {
+    id: 'gpt-6.1-sol',
+    label: 'GPT-6.1 Sol',
+    provider: 'openai',
+    supportsJSON: true,
+    supportsVision: true,
+    kind: 'chat',
+    priceNote: '$2 in / $10 out per 1M tok · newer tuning'
   },
   {
     id: 'gpt-5.6-terra',
@@ -73,6 +91,15 @@ const CHAT_MODELS: ModelInfo[] = [
     supportsVision: true,
     kind: 'chat',
     priceNote: '$4 in / $20 out per 1M tok'
+  },
+  {
+    id: 'gpt-6-astra',
+    label: 'GPT-6 Astra',
+    provider: 'openai',
+    supportsJSON: true,
+    supportsVision: true,
+    kind: 'chat',
+    priceNote: '$10 in / $50 out per 1M tok · premium tier'
   }
 ]
 
