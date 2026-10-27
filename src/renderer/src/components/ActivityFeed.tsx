@@ -5,6 +5,7 @@ const STAGE_META: Record<PipelineEvent['stage'], { label: string; icon: string }
   compose: { label: 'Composer', icon: '🎼' },
   qa: { label: 'QA Agents', icon: '🛡' },
   thumbs: { label: 'Storyboard', icon: '📸' },
+  revise: { label: 'Scene Revision', icon: '🔁' },
   render: { label: 'Renderer', icon: '🎬' },
   pipeline: { label: 'Pipeline', icon: '⚠️' },
   done: { label: 'Pipeline', icon: '✅' }
@@ -50,6 +51,14 @@ function toRows(events: PipelineEvent[]): Row[] {
         rows.push({ key, ...meta, detail: `clean · ${e.warnings} warning(s)`, state: 'ok' })
       if (e.status === 'failed')
         rows.push({ key, ...meta, detail: e.issues.slice(0, 2).join(' · '), state: 'fail' })
+    }
+    if (e.stage === 'revise') {
+      if (e.status === 'started')
+        rows.push({ key, ...meta, detail: `scene ${e.sceneIndex + 1}: “${e.feedback.slice(0, 60)}”`, state: 'run' })
+      if (e.status === 'scene-updated')
+        rows.push({ key, ...meta, detail: `new scene ${e.sceneIndex + 1}: “${e.label.slice(0, 60)}”`, state: 'ok' })
+      if (e.status === 'failed') rows.push({ key, ...meta, detail: e.error, state: 'fail' })
+      if (e.status === 'done') rows.push({ key, ...meta, detail: `scene ${e.sceneIndex + 1} rebuilt + re-rendered`, state: 'ok' })
     }
     if (e.stage === 'thumbs') {
       if (e.status === 'started')

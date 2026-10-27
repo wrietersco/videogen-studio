@@ -241,6 +241,27 @@ function registerIpc(): void {
     return { ok: true }
   })
 
+  ipcMain.handle('gen:revise', async (_e, projectId: string, sceneId: string, feedback: string) => {
+    if (busy) return { ok: false, error: 'Another job is running' }
+    if (!feedback || !feedback.trim()) return { ok: false, error: 'Feedback is empty' }
+    busy = true
+    orchestrator
+      .reviseScene(projectId, sceneId, feedback.trim(), {
+        quality: settings.quality,
+        gpu: settings.allowGpu,
+        onEvent: (ev) => emit('gen:event', ev)
+      })
+      .catch((err) => {
+        if (!(err instanceof GenerationCancelled)) {
+          emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) })
+        }
+      })
+      .finally(() => {
+        busy = false
+      })
+    return { ok: true }
+  })
+
   ipcMain.handle('gen:resume', async (_e, projectId: string) => {
     if (busy) return { ok: false, error: 'Another job is running' }
     busy = true

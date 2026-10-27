@@ -80,6 +80,10 @@ export type PipelineEvent =
   | { stage: 'thumbs'; status: 'started'; total: number }
   | { stage: 'thumbs'; status: 'progress'; index: number; sceneId: string; dataUrl: string }
   | { stage: 'thumbs'; status: 'done'; captured: number }
+  | { stage: 'revise'; status: 'started'; sceneId: string; sceneIndex: number; feedback: string }
+  | { stage: 'revise'; status: 'scene-updated'; sceneId: string; sceneIndex: number; label: string }
+  | { stage: 'revise'; status: 'failed'; sceneId: string; error: string }
+  | { stage: 'revise'; status: 'done'; sceneId: string; sceneIndex: number }
   | { stage: 'render'; status: 'started' }
   | { stage: 'render'; status: 'progress'; pct: number }
   | { stage: 'render'; status: 'done'; output: string; wallSec: number }
@@ -238,6 +242,85 @@ export class Orchestrator {
     return result.output
   }
 
+  /**
+   * Per-scene feedback loop: ONE focused LLM call rewrites the scene, then the
+   * standard deterministic stages take over — recompose (narration + captions
+   * rebuilt), QA, fresh storyboard captures, full re-render.
+   */
+  async reviseScene(
+    projectId: string,
+    sceneId: string,
+    feedback: string,
+    opts: { quality?: 'draft' | 'standard' | 'delivery'; gpu?: boolean; onEvent?: (e: PipelineEvent) => void } = {}
+  ): Promise<void> {
+    const emit = (e: PipelineEvent) => opts.onEvent?.(e)
+    const spec0 = this.store.readSpec(projectId)
+    if (!spec0) throw new Error(`project ${projectId} has no spec`)
+    const sceneIndex = spec0.scenes.findIndex((s) => s.id === sceneId)
+    if (sceneIndex < 0) throw new Error(`scene ${sceneId} not found`)
+    this.cancelled = false
+    this.activeJobId = projectId
+
+    // the revision itself needs a real provider — the mock planner only plans whole films
+    if (this.providerFor().id === 'mock') {
+      throw new Error('Scene revision needs a configured AI provider (the mock planner can only plan whole films)')
+    }
+
+    emit({ stage: 'revise', status: 'started', sceneId, sceneIndex, feedback })
+    this.store.setStatus(projectId, 'planning')
+    this.track(projectId, 'plan', 'running')
+    let spec: VideoSpec
+    try {
+      spec = await new Planner(this.providerFor()).reviseScene({ spec: spec0, sceneId, feedback })
+    } catch (err) {
+      const msg = String((err as Error)?.message ?? err)
+      this.store.setStatus(projectId, 'error', msg)
+      this.track(projectId, 'plan', 'failed', msg)
+      emit({ stage: 'revise', status: 'failed', sceneId, error: msg })
+      throw err
+    }
+    this.store.saveSpec(projectId, spec)
+    this.track(projectId, 'plan', 'done', `scene ${sceneIndex + 1} revised: ${sceneLabel(spec.scenes[sceneIndex])}`)
+    emit({
+      stage: 'revise',
+      status: 'scene-updated',
+      sceneId,
+      sceneIndex,
+      label: sceneLabel(spec.scenes[sceneIndex])
+    })
+    // keeps any open Studio storyboard text in sync with the revised scene
+    emit({
+      stage: 'plan',
+      status: 'done',
+      title: spec.title,
+      scenes: spec.scenes.length,
+      durationSec: spec.durationSec,
+      sceneCards: spec.scenes.map((s) => ({ kind: s.kind, label: sceneLabel(s), durationSec: s.durationSec }))
+    })
+
+    // ---------- recompose (narration + captions for the revised text) ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    const audio = await this.runCompose(projectId, spec, emit)
+    const qa = await this.runQaLoop(projectId, spec, audio, emit)
+
+    // ---------- fresh storyboard captures ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    await this.captureThumbs(projectId, spec, emit)
+
+    // ---------- re-render the film ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    const meta = this.store.readMeta(projectId)
+    await this.runRender(
+      projectId,
+      spec,
+      (meta?.platform as VideoSpec['platform']) ?? spec.platform,
+      { quality: opts.quality, gpu: opts.gpu, suffix: `rev${Date.now().toString(36)}` },
+      emit,
+      qa
+    )
+    emit({ stage: 'revise', status: 'done', sceneId, sceneIndex })
+  }
+
   async generate(opts: GenerateOptions): Promise<GenerateResult> {
     const emit = (e: PipelineEvent) => opts.onEvent?.(e)
     this.cancelled = false
@@ -379,14 +462,14 @@ export class Orchestrator {
     projectId: string,
     spec: VideoSpec,
     platform: VideoSpec['platform'],
-    opts: { quality?: 'draft' | 'standard' | 'delivery'; gpu?: boolean },
+    opts: { quality?: 'draft' | 'standard' | 'delivery'; gpu?: boolean; suffix?: string },
     emit: (e: PipelineEvent) => void,
     qa: CheckReport
   ): Promise<GenerateResult> {
     this.track(projectId, 'render', 'running')
     emit({ stage: 'render', status: 'started' })
     this.store.setStatus(projectId, 'rendering')
-    const output = join(this.store.dir(projectId), 'renders', `${slugish(spec.title)}-${platform}.mp4`)
+    const output = join(this.store.dir(projectId), 'renders', `${slugish(spec.title)}-${platform}${opts.suffix ? `-${opts.suffix}` : ''}.mp4`)
     const onProgress = (p: RenderProgress) => emit({ stage: 'render', status: 'progress', pct: p.pct })
     const result = await this.renders.render(
       this.store.dir(projectId),

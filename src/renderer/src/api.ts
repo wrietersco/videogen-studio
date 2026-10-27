@@ -56,6 +56,7 @@ declare global {
       revealProject: (id: string, filePath?: string) => Promise<boolean>
       playProject: (id: string, filePath?: string) => Promise<boolean>
       rerenderProject: (id: string) => Promise<{ ok: boolean; error?: string }>
+      reviseScene: (projectId: string, sceneId: string, feedback: string) => Promise<{ ok: boolean; error?: string }>
       resumeProject: (id: string) => Promise<{ ok: boolean; error?: string }>
       getProjectState: (id: string) => Promise<{
         version: number

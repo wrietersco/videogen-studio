@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { VideoSpec, PlatformId, StyleFamily, type VideoSpec as VideoSpecT } from '@shared/spec'
+import { VideoSpec, Scene, PlatformId, StyleFamily, type VideoSpec as VideoSpecT } from '@shared/spec'
 import { PLATFORM_PRESETS } from '@shared/presets'
 import type { GenerateJSONRequest, LLMProvider } from '../providers/types'
 
@@ -32,6 +32,12 @@ let cachedSpecSchema: Record<string, unknown> | null = null
 export function videoSpecJsonSchema(): Record<string, unknown> {
   cachedSpecSchema ??= zodToJsonSchema(VideoSpec)
   return cachedSpecSchema
+}
+
+let cachedSceneSchema: Record<string, unknown> | null = null
+export function sceneJsonSchema(): Record<string, unknown> {
+  cachedSceneSchema ??= zodToJsonSchema(Scene)
+  return cachedSceneSchema
 }
 
 export interface PlanInput {
@@ -81,6 +87,87 @@ export class Planner {
       throw new Error(`Planner produced an invalid VideoSpec — ${issues}`)
     }
     return result.data
+  }
+
+  /**
+   * Per-scene feedback loop: ONE focused LLM call that rewrites a single scene
+   * of an existing spec. Cheap even for small models — the film context and
+   * scene schema keep it on the rails, and everything downstream (compose, QA,
+   * thumbs, render) is deterministic.
+   */
+  async reviseScene(input: { spec: VideoSpecT; sceneId: string; feedback: string }): Promise<VideoSpecT> {
+    const { spec, sceneId, feedback } = input
+    const idx = spec.scenes.findIndex((s) => s.id === sceneId)
+    if (idx < 0) throw new Error(`scene ${sceneId} not found`)
+    const current = spec.scenes[idx]
+
+    const neighbors = spec.scenes.map((s, i) => ({
+      position: i === idx ? 'THIS scene (the one to rewrite)' : i < idx ? 'earlier scene (context only)' : 'later scene (context only)',
+      kind: s.kind,
+      summary: 'headline' in s && s.headline ? s.headline : 'value' in s ? `${s.value} ${s.label}` : 'text' in s ? s.text : s.kind
+    }))
+
+    const payload = {
+      filmTitle: spec.title,
+      overallStyle: `${spec.style} · pacing ${spec.pacing} · palette ${spec.palette.bg}/${spec.palette.accent}/${spec.palette.accent2}`,
+      platform: spec.platform,
+      scenePosition: `scene ${idx + 1} of ${spec.scenes.length}`,
+      neighbors,
+      currentScene: current,
+      userFeedback: feedback,
+      rules: [
+        'Rewrite ONLY this one scene. Return a single scene JSON object matching the Scene schema exactly.',
+        'Same "id" as the current scene. Keep or change "kind" — every kind is renderable.',
+        'Honor the user feedback above all; keep what the feedback does not ask to change.',
+        'Text must stay concise and screen-readable (headlines ≤ 8 words, bullets ≤ 8 per scene, bullets ≤ 8 words each).',
+        `durationSec between 2 and ${Math.max(6, Math.round(current.durationSec * 2))} seconds.`,
+        'Output ONLY the JSON object. No markdown, no commentary.'
+      ]
+    }
+
+    const REVISE_SYSTEM = `You are the revision engine of a programmatic video generator.
+You receive the full context of an existing video (its scenes, style, platform) plus the JSON
+of ONE scene and the user's feedback about it. Rewrite that single scene as directed.
+Be a good director: concrete visuals, strong on-screen text, honest pacing.`
+    const req: GenerateJSONRequest = {
+      system: REVISE_SYSTEM,
+      prompt: JSON.stringify(payload),
+      schemaName: 'Scene',
+      jsonSchema: sceneJsonSchema(),
+      temperature: 0.8
+    }
+
+    const raw = await this.provider.generateJSON<unknown>(req)
+    const parsed = Scene.safeParse(raw)
+    if (!parsed.success) {
+      const issues = parsed.error.issues
+        .slice(0, 6)
+        .map((i) => `${i.path.join('.')}: ${i.message}`)
+        .join('; ')
+      throw new Error(`Revised scene failed validation — ${issues}`)
+    }
+    // deterministic guards: pin the id, clamp the duration, respect the readability floor
+    const minDur = 2
+    const maxDur = Math.max(6, Math.round(current.durationSec * 2 * 10) / 10)
+    let revised = { ...parsed.data, id: sceneId } as VideoSpecT['scenes'][number]
+    revised.durationSec = Math.min(maxDur, Math.max(minDur, Math.round(revised.durationSec * 10) / 10))
+    const textWords = [
+      'headline' in revised && revised.headline ? revised.headline : '',
+      'subline' in revised && revised.subline ? revised.subline : '',
+      'bullets' in revised ? revised.bullets.join(' ') : '',
+      'text' in revised && revised.text ? revised.text : ''
+    ]
+      .join(' ')
+      .split(/\s+/)
+      .filter(Boolean).length
+    revised.durationSec = Math.max(revised.durationSec, Math.round(Math.min(4.6, 1.0 + 0.26 * textWords) * 10) / 10)
+
+    const scenes = spec.scenes.map((s, i) => (i === idx ? revised : s))
+    return {
+      ...spec,
+      scenes,
+      durationSec: Math.round(scenes.reduce((a, s) => a + s.durationSec, 0) * 10) / 10
+    }
   }
 
   /** Deterministic post-processing: platform clamps the LLM can get slightly wrong. */
