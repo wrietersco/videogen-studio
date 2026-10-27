@@ -37,6 +37,7 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
   const [progress, setProgress] = useState(0)
   const [done, setDone] = useState<{ projectId: string; output: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
@@ -57,6 +58,10 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
         setError(e.error)
         setRunning(false)
       }
+      if (e.stage === 'pipeline' && e.status === 'cancelled') {
+        setNotice('Generation stopped — the project is kept so you can re-render it from the Library.')
+        setRunning(false)
+      }
       if (e.stage === 'done') {
         setDone({ projectId: e.projectId, output: e.output })
         setRunning(false)
@@ -71,6 +76,7 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
     setProgress(0)
     setDone(null)
     setError(null)
+    setNotice(null)
     setRunning(true)
     const res = await api.generate({
       prompt: prompt.trim(),
@@ -82,6 +88,10 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
       setError(res.error ?? 'failed to start')
       setRunning(false)
     }
+  }
+
+  const stop = async () => {
+    await api.cancel()
   }
 
   return (
@@ -163,14 +173,23 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
           </div>
         </div>
 
-        {/* generate */}
-        <button
-          onClick={generate}
-          disabled={!prompt.trim() || running}
-          className="mt-8 w-full rounded-2xl bg-gradient-to-r from-[#7C5CFF] to-[#00E5FF] py-4 text-base font-black uppercase tracking-widest text-[#0b0b12] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-30"
-        >
-          {running ? 'Generating…' : 'Generate video'}
-        </button>
+        {/* generate / stop */}
+        {running ? (
+          <button
+            onClick={stop}
+            className="mt-8 w-full rounded-2xl border border-red-500/50 bg-red-500/15 py-4 text-base font-black uppercase tracking-widest text-red-200 transition-all hover:bg-red-500/25"
+          >
+            ■ Stop generation
+          </button>
+        ) : (
+          <button
+            onClick={generate}
+            disabled={!prompt.trim()}
+            className="mt-8 w-full rounded-2xl bg-gradient-to-r from-[#7C5CFF] to-[#00E5FF] py-4 text-base font-black uppercase tracking-widest text-[#0b0b12] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-30"
+          >
+            Generate video
+          </button>
+        )}
         {running && (
           <div className="mt-4">
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
@@ -188,6 +207,11 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
         {error && (
           <div className="slide-up mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
             {error}
+          </div>
+        )}
+        {notice && (
+          <div className="slide-up mt-4 rounded-xl border border-sky-500/30 bg-sky-500/10 p-4 text-sm text-sky-200">
+            {notice}
           </div>
         )}
         {done && (

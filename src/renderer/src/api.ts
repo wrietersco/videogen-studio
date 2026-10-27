@@ -45,6 +45,9 @@ declare global {
       onEvent: (cb: (event: PipelineEvent) => void) => () => void
       listProjects: () => Promise<ProjectMeta[]>
       getProject: (id: string) => Promise<ProjectView>
+      deleteProject: (id: string) => Promise<{ ok: boolean; error?: string }>
+      revealProject: (id: string, filePath?: string) => Promise<boolean>
+      rerenderProject: (id: string) => Promise<{ ok: boolean; error?: string }>
       listProviders: () => Promise<ProviderStatus[]>
       listModels: (provider: ProviderId) => Promise<ModelInfo[]>
       listImageModels: () => Promise<ModelInfo[]>

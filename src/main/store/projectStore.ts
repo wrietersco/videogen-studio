@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync, readdirSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync, readdirSync, rmSync } from 'node:fs'
 import { resolve, join, dirname as pathDirname } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import type { VideoSpec } from '@shared/spec'
@@ -16,7 +16,7 @@ export interface ProjectMeta {
   createdAt: string
   updatedAt: string
   prompt: string
-  status: 'planning' | 'composed' | 'rendering' | 'done' | 'error'
+  status: 'planning' | 'composed' | 'rendering' | 'done' | 'error' | 'cancelled'
   lastError?: string
   renders: Array<{ file: string; platform: string; createdAt: string }>
 }
@@ -46,6 +46,15 @@ export class ProjectStore {
 
   dir(id: string): string {
     return resolve(this.rootDir, id)
+  }
+
+  /** Remove a project folder. Ids are system-generated, but guard anyway. */
+  delete(id: string): boolean {
+    if (!/^[a-z0-9-]+$/i.test(id)) return false
+    const dir = this.dir(id)
+    if (!existsSync(dir)) return false
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 })
+    return !existsSync(dir)
   }
 
   list(): ProjectMeta[] {

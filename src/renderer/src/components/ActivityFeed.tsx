@@ -65,6 +65,9 @@ function toRows(events: PipelineEvent[]): Row[] {
     if (e.stage === 'pipeline' && e.status === 'failed') {
       rows.push({ key, ...meta, detail: e.error, state: 'fail' })
     }
+    if (e.stage === 'pipeline' && e.status === 'cancelled') {
+      rows.push({ key, ...meta, detail: 'stopped by user — project kept', state: 'warn' })
+    }
     if (e.stage === 'done') {
       rows.push({ key, ...meta, detail: e.output.split(/[\\/]/).pop() ?? e.output, state: 'ok' })
     }

@@ -11,6 +11,7 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 
+
 function readComposition(dir: string): string {
   const p = join(dir, 'index.html')
   return existsSync(p) ? readFileSync(p, 'utf8') : ''
@@ -57,6 +58,7 @@ export type PipelineEvent =
   | { stage: 'render'; status: 'done'; output: string; wallSec: number }
   | { stage: 'render'; status: 'failed'; error: string }
   | { stage: 'pipeline'; status: 'failed'; error: string }
+  | { stage: 'pipeline'; status: 'cancelled' }
   | { stage: 'done'; projectId: string; output: string }
 
 export interface GenerateResult {
@@ -66,10 +68,20 @@ export interface GenerateResult {
   qa: CheckReport
 }
 
+/** Thrown when the user stops a generation — the UI shows it as info, not error. */
+export class GenerationCancelled extends Error {
+  constructor() {
+    super('Generation cancelled by user')
+    this.name = 'GenerationCancelled'
+  }
+}
+
 const MAX_QA_ATTEMPTS = 3
 
 export class Orchestrator {
   private readonly renders = new RenderService()
+  private cancelled = false
+  private activeJobId: string | null = null
 
   constructor(
     private readonly store: ProjectStore,
@@ -77,14 +89,73 @@ export class Orchestrator {
     private readonly providerFor: () => LLMProvider
   ) {}
 
+  /** The project currently generating, if any (used to guard deletes). */
+  get activeProjectId(): string | null {
+    return this.activeJobId
+  }
+
+  /** Cooperative cancel: hard-kills the active render; stage checks stop the rest. */
+  cancel(): void {
+    this.cancelled = true
+    if (this.activeJobId) this.renders.cancel(this.activeJobId)
+  }
+
+  /** Re-render an existing project from its stored composition (uses current quality/GPU settings). */
+  async rerender(
+    projectId: string,
+    opts: { quality?: 'draft' | 'standard' | 'delivery'; gpu?: boolean; onEvent?: (e: PipelineEvent) => void }
+  ): Promise<string> {
+    const spec = this.store.readSpec(projectId)
+    if (!spec) throw new Error(`project ${projectId} has no spec`)
+    this.cancelled = false
+    this.activeJobId = projectId
+    const dir = this.store.dir(projectId)
+    // self-heal: if the composition is missing, rebuild it from the spec
+    const composition = join(dir, 'index.html')
+    if (!existsSync(composition)) {
+      const audio = { clips: [], captions: [], hasNarration: false }
+      this.store.saveComposition(projectId, compose(spec, vendorDir, fontsDir, audio))
+    }
+    this.store.setStatus(projectId, 'rendering')
+    const output = join(dir, 'renders', `${slugish(spec.title)}-${spec.platform}-r${Date.now().toString(36)}.mp4`)
+    opts.onEvent?.({ stage: 'render', status: 'started' })
+    const result = await this.renders.render(
+      dir,
+      output,
+      {
+        fps: spec.fps,
+        quality: opts.quality ?? 'standard',
+        gpu: opts.gpu,
+        onProgress: (p) => opts.onEvent?.({ stage: 'render', status: 'progress', pct: p.pct })
+      },
+      projectId
+    )
+    if (this.cancelled) {
+      this.store.setStatus(projectId, 'cancelled')
+      opts.onEvent?.({ stage: 'pipeline', status: 'cancelled' })
+      throw new GenerationCancelled()
+    }
+    if (!result.ok || !result.output) {
+      this.store.setStatus(projectId, 'error', result.error)
+      opts.onEvent?.({ stage: 'render', status: 'failed', error: result.error ?? 'unknown' })
+      throw new Error(`Render failed: ${result.error}`)
+    }
+    this.store.addRender(projectId, result.output, spec.platform)
+    this.store.setStatus(projectId, 'done')
+    opts.onEvent?.({ stage: 'render', status: 'done', output: result.output, wallSec: result.durationSec ?? 0 })
+    return result.output
+  }
+
   async generate(opts: GenerateOptions): Promise<GenerateResult> {
     const emit = (e: PipelineEvent) => opts.onEvent?.(e)
+    this.cancelled = false
     const planner = new Planner(this.providerFor())
 
     // ---------- plan ----------
     emit({ stage: 'plan', status: 'started' })
     const provisional = this.store.create(opts.prompt, opts.prompt.slice(0, 48))
     const projectId = provisional.id
+    this.activeJobId = projectId
     this.store.setStatus(projectId, 'planning')
     let spec: VideoSpec
     try {
@@ -165,6 +236,7 @@ export class Orchestrator {
     }
 
     // ---------- render ----------
+    if (this.cancelled) return this.abort(projectId, emit)
     emit({ stage: 'render', status: 'started' })
     this.store.setStatus(projectId, 'rendering')
     const output = join(this.store.dir(projectId), 'renders', `${slugish(spec.title)}-${opts.platform}.mp4`)
@@ -172,8 +244,10 @@ export class Orchestrator {
     const result = await this.renders.render(
       this.store.dir(projectId),
       output,
-      { fps: spec.fps, quality: opts.quality ?? 'standard', gpu: opts.gpu, onProgress }
+      { fps: spec.fps, quality: opts.quality ?? 'standard', gpu: opts.gpu, onProgress },
+      projectId
     )
+    if (this.cancelled) return this.abort(projectId, emit)
     if (result.ok && result.output) {
       this.store.addRender(projectId, result.output, opts.platform)
       this.store.setStatus(projectId, 'done')
@@ -184,6 +258,13 @@ export class Orchestrator {
     this.store.setStatus(projectId, 'error', result.error)
     emit({ stage: 'render', status: 'failed', error: result.error ?? 'unknown' })
     throw new Error(`Render failed: ${result.error}`)
+  }
+
+  /** Shared cancellation path: mark the project, tell the UI, stop the pipeline. */
+  private abort(projectId: string, emit: (e: PipelineEvent) => void): never {
+    this.store.setStatus(projectId, 'cancelled')
+    emit({ stage: 'pipeline', status: 'cancelled' })
+    throw new GenerationCancelled()
   }
 }
 

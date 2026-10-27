@@ -1,11 +1,11 @@
-import { app, BrowserWindow, ipcMain, safeStorage } from 'electron'
+import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
 import { join, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 
 // ESM output: derive the directory from import.meta.url
 const moduleDir = dirname(fileURLToPath(import.meta.url))
-import { Orchestrator, type GenerateOptions } from './pipeline/orchestrator'
+import { Orchestrator, GenerationCancelled, type GenerateOptions } from './pipeline/orchestrator'
 import { ProjectStore } from './store/projectStore'
 import { providerRegistry } from './providers/registry'
 import type { ProviderId } from './providers/types'
@@ -148,17 +148,57 @@ function registerIpc(): void {
     // run async; UI streams events
     orchestrator
       .generate({ ...opts, quality: settings.quality, gpu: settings.allowGpu, onEvent })
-      .catch((err) => emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) }))
+      .catch((err) => {
+        if (!(err instanceof GenerationCancelled)) {
+          emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) })
+        }
+      })
       .finally(() => {
         busy = false
       })
     return { ok: true }
   })
   ipcMain.handle('gen:cancel', () => {
-
+    orchestrator.cancel()
     return true
   })
   ipcMain.handle('gen:busy', () => busy)
+
+  ipcMain.handle('gen:rerender', async (_e, projectId: string) => {
+    if (busy) return { ok: false, error: 'Another job is running' }
+    busy = true
+    orchestrator
+      .rerender(projectId, { quality: settings.quality, gpu: settings.allowGpu, onEvent: (ev) => emit('gen:event', ev) })
+      .catch((err) => {
+        if (!(err instanceof GenerationCancelled)) {
+          emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) })
+        }
+      })
+      .finally(() => {
+        busy = false
+      })
+    return { ok: true }
+  })
+
+  ipcMain.handle('project:delete', (_e, id: string) => {
+    if (orchestrator.activeProjectId === id) {
+      return { ok: false, error: 'This project is currently generating — stop it first' }
+    }
+    return { ok: store.delete(id) }
+  })
+
+  ipcMain.handle('project:reveal', (_e, id: string, filePath?: string) => {
+    // absolute path (stored render) or project-relative; default: the project folder
+    const target =
+      filePath && existsSync(filePath)
+        ? filePath
+        : filePath && existsSync(join(store.dir(id), filePath))
+          ? join(store.dir(id), filePath)
+          : store.dir(id)
+    if (!existsSync(target)) return false
+    shell.showItemInFolder(target)
+    return true
+  })
 }
 
 app.whenReady().then(() => {
