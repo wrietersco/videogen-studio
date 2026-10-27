@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, safeStorage, shell, Tray, Menu, nativeImage } from 'electron'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
@@ -10,7 +10,7 @@ import { ProjectStore } from './store/projectStore'
 import { providerRegistry } from './providers/registry'
 import type { ProviderId } from './providers/types'
 import { DEFAULT_SETTINGS, type Settings } from './settings'
-import { projectsDir } from './paths'
+import { projectsDir, appRoot } from './paths'
 
 /**
  * Electron main process — owns the pipeline, project store, provider keys
@@ -58,6 +58,36 @@ function decryptKey(stored: string | undefined): string {
 // ---------------- window ----------------
 
 let win: BrowserWindow | null = null
+let tray: Tray | null = null
+let quitting = false
+let balloonShown = false
+
+function showMainWindow(): void {
+  if (!win) return
+  win.show()
+  win.focus()
+}
+
+/** tray icon: the app lives on while the window is hidden, so renders survive a "close" */
+function createTray(): void {
+  const icon = nativeImage.createFromPath(join(appRoot, 'resources', 'tray.png'))
+  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon)
+  tray.setToolTip('VideoGen Studio — running in the background')
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Open VideoGen Studio', click: showMainWindow },
+      { type: 'separator' },
+      {
+        label: 'Quit',
+        click: () => {
+          quitting = true
+          app.quit()
+        }
+      }
+    ])
+  )
+  tray.on('double-click', showMainWindow)
+}
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -79,6 +109,20 @@ function createWindow(): void {
   } else {
     win.loadFile(join(moduleDir, '../renderer/index.html'))
   }
+  // closing the window hides to tray — the pipeline (renders, generation) keeps going
+  win.on('close', (e) => {
+    if (quitting) return
+    e.preventDefault()
+    win?.hide()
+    if (tray && !balloonShown) {
+      balloonShown = true
+      tray.displayBalloon({
+        iconType: 'info',
+        title: 'VideoGen Studio is still running',
+        content: 'Videos keep rendering in the background. Click the tray icon to reopen.'
+      })
+    }
+  })
 }
 
 // ---------------- job management ----------------
@@ -249,9 +293,15 @@ app.whenReady().then(() => {
   })
   registerIpc()
   createWindow()
+  createTray()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else showMainWindow()
   })
+})
+
+app.on('before-quit', () => {
+  quitting = true
 })
 
 app.on('window-all-closed', () => {

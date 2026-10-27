@@ -89,6 +89,12 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
             <div className="min-h-0 flex-1 overflow-y-auto p-6">
               {view === 'spec' && (
                 <div className="space-y-3">
+                  {project?.meta?.prompt && (
+                    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+                      <div className="text-[11px] font-bold uppercase tracking-widest text-white/35">Original prompt</div>
+                      <p className="mt-1.5 text-sm leading-relaxed text-white/70">{project.meta.prompt}</p>
+                    </div>
+                  )}
                   <div className="flex gap-2 text-[11px]">
                     <span className="rounded bg-[#7C5CFF]/20 px-2 py-1 font-bold uppercase text-[#b9a5ff]">{spec.platform}</span>
                     <span className="rounded bg-[#00E5FF]/15 px-2 py-1 font-bold uppercase text-[#7fdff5]">{spec.style}</span>
