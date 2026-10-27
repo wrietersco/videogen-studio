@@ -39,6 +39,11 @@ export interface ProjectView {
 declare global {
   interface Window {
     api: {
+      windowControls: {
+        minimize: () => void
+        toggleMaximize: () => void
+        close: () => void
+      }
       generate: (opts: GenerateOptionsView) => Promise<{ ok: boolean; error?: string }>
       cancel: () => Promise<boolean>
       busy: () => Promise<boolean>

@@ -93,6 +93,16 @@ function emit(channel: string, payload: unknown): void {
 // ---------------- ipc ----------------
 
 function registerIpc(): void {
+  // custom titlebar window controls (frame is hidden)
+  ipcMain.on('win:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize())
+  ipcMain.on('win:maximize', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    if (!win) return
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+  })
+  ipcMain.on('win:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
+
   ipcMain.handle('settings:get', () => ({
     ...settings,
     keys: {} // never send raw keys back to the UI; presence flags only

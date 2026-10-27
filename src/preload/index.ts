@@ -6,6 +6,11 @@ import { contextBridge, ipcRenderer } from 'electron'
  */
 
 const api = {
+  windowControls: {
+    minimize: () => ipcRenderer.send('win:minimize'),
+    toggleMaximize: () => ipcRenderer.send('win:maximize'),
+    close: () => ipcRenderer.send('win:close')
+  },
   generate: (opts: unknown) => ipcRenderer.invoke('gen:generate', opts),
   cancel: () => ipcRenderer.invoke('gen:cancel'),
   busy: () => ipcRenderer.invoke('gen:busy'),
