@@ -15,6 +15,9 @@ export default function Settings() {
     setProviders(await api.listProviders())
     setSettings(await api.getSettings())
     setImageModels(await api.listImageModels().catch(() => []))
+    // curated OpenAI chat catalog — always loaded for the fixed dropdown
+    const chat = await api.listModels('openai').catch(() => [])
+    setModelLists((m) => ({ ...m, openai: chat }))
   }
   useEffect(() => {
     refresh()
