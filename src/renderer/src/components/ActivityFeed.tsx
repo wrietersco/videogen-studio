@@ -4,6 +4,7 @@ const STAGE_META: Record<PipelineEvent['stage'], { label: string; icon: string }
   plan: { label: 'Planner', icon: '🧠' },
   compose: { label: 'Composer', icon: '🎼' },
   qa: { label: 'QA Agents', icon: '🛡' },
+  thumbs: { label: 'Storyboard', icon: '📸' },
   render: { label: 'Renderer', icon: '🎬' },
   pipeline: { label: 'Pipeline', icon: '⚠️' },
   done: { label: 'Pipeline', icon: '✅' }
@@ -49,6 +50,17 @@ function toRows(events: PipelineEvent[]): Row[] {
         rows.push({ key, ...meta, detail: `clean · ${e.warnings} warning(s)`, state: 'ok' })
       if (e.status === 'failed')
         rows.push({ key, ...meta, detail: e.issues.slice(0, 2).join(' · '), state: 'fail' })
+    }
+    if (e.stage === 'thumbs') {
+      if (e.status === 'started')
+        rows.push({ key, ...meta, detail: `photographing ${e.total} scenes…`, state: 'run' })
+      if (e.status === 'progress') {
+        const last = rows[rows.length - 1]
+        if (last && last.label === meta.label && last.state === 'run')
+          last.detail = `scene ${e.index + 1} captured`
+        else rows.push({ key, ...meta, detail: `scene ${e.index + 1} captured`, state: 'run' })
+      }
+      if (e.status === 'done') rows.push({ key, ...meta, detail: `${e.captured} frame(s) captured`, state: 'ok' })
     }
     if (e.stage === 'render') {
       if (e.status === 'started') rows.push({ key, ...meta, detail: 'encoding frames…', state: 'run' })

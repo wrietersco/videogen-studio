@@ -5,6 +5,7 @@ import { Planner } from './planner'
 import { CompositionFixer } from './fixer'
 import { buildAudio } from './audio'
 import { compose, COMPOSER_VERSION, type AudioLayer } from '../composer'
+import { captureSceneThumbs } from '../livePreview'
 import { ProjectStore, type StageName, type StageState } from '../store/projectStore'
 import { RenderService, type CheckReport, type RenderProgress } from '../rendererService/hyperframes'
 import { vendorDir, fontsDir, musicDir } from '../paths'
@@ -62,13 +63,23 @@ export interface GenerateOptions {
 
 export type PipelineEvent =
   | { stage: 'plan'; status: 'started' }
-  | { stage: 'plan'; status: 'done'; title: string; scenes: number; durationSec: number }
+  | {
+      stage: 'plan'
+      status: 'done'
+      title: string
+      scenes: number
+      durationSec: number
+      sceneCards: Array<{ kind: string; label: string; durationSec: number }>
+    }
   | { stage: 'compose'; status: 'started' }
   | { stage: 'compose'; status: 'done' }
   | { stage: 'qa'; status: 'started' }
   | { stage: 'qa'; status: 'fixing'; attempt: number; issues: string[] }
   | { stage: 'qa'; status: 'done'; clean: boolean; warnings: number }
   | { stage: 'qa'; status: 'failed'; issues: string[] }
+  | { stage: 'thumbs'; status: 'started'; total: number }
+  | { stage: 'thumbs'; status: 'progress'; index: number; sceneId: string; dataUrl: string }
+  | { stage: 'thumbs'; status: 'done'; captured: number }
   | { stage: 'render'; status: 'started' }
   | { stage: 'render'; status: 'progress'; pct: number }
   | { stage: 'render'; status: 'done'; output: string; wallSec: number }
@@ -93,6 +104,22 @@ export class GenerationCancelled extends Error {
 }
 
 const MAX_QA_ATTEMPTS = 3
+
+/** one-line summary of a scene for the live storyboard card */
+function sceneLabel(s: VideoSpec['scenes'][number]): string {
+  if ('headline' in s && s.headline) return s.headline
+  if (s.kind === 'stat') return `${s.value} ${s.label}`
+  if (s.kind === 'quote') return s.text
+  return s.kind
+}
+
+/** parse the composition's declared canvas size (data-width/data-height on #root) */
+function compositionSize(projectDir: string): { width: number; height: number } {
+  const html = readComposition(projectDir)
+  const w = /data-width="(\d+)"/.exec(html)
+  const h = /data-height="(\d+)"/.exec(html)
+  return { width: w ? parseInt(w[1], 10) : 1080, height: h ? parseInt(h[1], 10) : 1920 }
+}
 
 export class Orchestrator {
   private readonly renders = new RenderService()
@@ -125,6 +152,38 @@ export class Orchestrator {
     if (this.activeJobId) this.renders.cancel(this.activeJobId)
   }
 
+  /**
+   * Live storyboard: seek the composed film to each scene midpoint in a hidden
+   * window and stream the real frames to the UI. A luxury — never fails the
+   * pipeline, and cancellation checks keep it snappy when the user stops.
+   */
+  private async captureThumbs(projectId: string, spec: VideoSpec, emit: (e: PipelineEvent) => void): Promise<void> {
+    try {
+      this.track(projectId, 'thumbs', 'running')
+      emit({ stage: 'thumbs', status: 'started', total: spec.scenes.length })
+      const dir = this.store.dir(projectId)
+      let acc = 0
+      const windows = spec.scenes.map((s) => {
+        const w = { id: s.id, t: Math.round((acc + s.durationSec / 2) * 100) / 100 }
+        acc += s.durationSec
+        return w
+      })
+      const { width, height } = compositionSize(dir)
+      let captured = 0
+      captured = await captureSceneThumbs(dir, windows, {
+        width,
+        height,
+        isCancelled: () => this.cancelled,
+        onThumb: (r) => emit({ stage: 'thumbs', status: 'progress', index: r.index, sceneId: r.sceneId, dataUrl: r.dataUrl })
+      })
+      this.track(projectId, 'thumbs', 'done', `${captured}/${spec.scenes.length} frames`)
+      emit({ stage: 'thumbs', status: 'done', captured })
+    } catch (err) {
+      this.store.appendEvent(projectId, `thumbs skipped: ${String((err as Error)?.message ?? err).slice(0, 90)}`)
+      emit({ stage: 'thumbs', status: 'done', captured: 0 })
+    }
+  }
+
   /** Re-render an existing project from its stored composition (uses current quality/GPU settings). */
   async rerender(
     projectId: string,
@@ -146,6 +205,8 @@ export class Orchestrator {
       this.store.appendEvent(projectId, existing ? `composition upgraded to v${COMPOSER_VERSION}` : 'composition rebuilt')
     }
     this.store.appendEvent(projectId, 'manual re-render')
+    // refresh the live storyboard captures with the upgraded composition
+    if (!this.cancelled) await this.captureThumbs(projectId, spec, (e) => opts.onEvent?.(e))
     this.track(projectId, 'render', 'running')
     opts.onEvent?.({ stage: 'render', status: 'started' })
     const output = join(dir, 'renders', `${slugish(spec.title)}-${spec.platform}-r${Date.now().toString(36)}.mp4`)
@@ -194,7 +255,13 @@ export class Orchestrator {
       this.store.writeMeta(projectId, createdMeta)
     }
     this.store.writeState(projectId, (s) => {
-      s.stages = { plan: { status: 'running', startedAt: new Date().toISOString() }, compose: { status: 'pending' }, qa: { status: 'pending' }, render: { status: 'pending' } }
+      s.stages = {
+        plan: { status: 'running', startedAt: new Date().toISOString() },
+        compose: { status: 'pending' },
+        qa: { status: 'pending' },
+        thumbs: { status: 'pending' },
+        render: { status: 'pending' }
+      }
       s.events = [{ at: new Date().toISOString(), text: `started: "${opts.prompt.slice(0, 60)}"` }]
     })
     let spec: VideoSpec
@@ -222,7 +289,8 @@ export class Orchestrator {
       status: 'done',
       title: spec.title,
       scenes: spec.scenes.length,
-      durationSec: spec.durationSec
+      durationSec: spec.durationSec,
+      sceneCards: spec.scenes.map((s) => ({ kind: s.kind, label: sceneLabel(s), durationSec: s.durationSec }))
     })
 
     // ---------- compose ----------
@@ -232,6 +300,10 @@ export class Orchestrator {
     // ---------- QA fix-loop ----------
     if (this.cancelled) return this.abort(projectId, emit)
     const qa = await this.runQaLoop(projectId, spec, audio, emit)
+
+    // ---------- live storyboard captures ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    await this.captureThumbs(projectId, spec, emit)
 
     // ---------- render ----------
     if (this.cancelled) return this.abort(projectId, emit)
@@ -371,10 +443,24 @@ export class Orchestrator {
       }
       this.store.saveSpec(projectId, spec)
       this.track(projectId, 'plan', 'done', `${spec.scenes.length} scenes · ${spec.durationSec}s`)
-      emit({ stage: 'plan', status: 'done', title: spec.title, scenes: spec.scenes.length, durationSec: spec.durationSec })
+      emit({
+        stage: 'plan',
+        status: 'done',
+        title: spec.title,
+        scenes: spec.scenes.length,
+        durationSec: spec.durationSec,
+        sceneCards: spec.scenes.map((s) => ({ kind: s.kind, label: sceneLabel(s), durationSec: s.durationSec }))
+      })
     } else {
       // spec survived — skip the LLM entirely
-      emit({ stage: 'plan', status: 'done', title: spec.title, scenes: spec.scenes.length, durationSec: spec.durationSec })
+      emit({
+        stage: 'plan',
+        status: 'done',
+        title: spec.title,
+        scenes: spec.scenes.length,
+        durationSec: spec.durationSec,
+        sceneCards: spec.scenes.map((s) => ({ kind: s.kind, label: sceneLabel(s), durationSec: s.durationSec }))
+      })
       this.store.appendEvent(projectId, 'plan: resumed from saved spec (no LLM call)')
     }
 
@@ -400,6 +486,10 @@ export class Orchestrator {
     } else {
       qa = await this.runQaLoop(projectId, spec, audio, emit)
     }
+
+    // ---------- live storyboard captures ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    await this.captureThumbs(projectId, spec, emit)
 
     // ---------- render ----------
     if (this.cancelled) return this.abort(projectId, emit)

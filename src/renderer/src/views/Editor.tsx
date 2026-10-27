@@ -110,6 +110,13 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
                         </span>
                         <span className="ml-auto text-[11px] text-white/40">{s.durationSec}s · in: {s.transitionIn}</span>
                       </div>
+                      {project?.thumbs[i] && (
+                        <img
+                          src={project.thumbs[i]}
+                          alt={`scene ${i + 1}`}
+                          className="mt-3 max-h-64 w-full rounded-lg border border-white/10 object-cover"
+                        />
+                      )}
                       <div className="mt-2 text-sm font-bold text-white/85">
                         {'headline' in s ? s.headline : ''}
                         {'value' in s ? `${s.value} — ${s.label}` : ''}

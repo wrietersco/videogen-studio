@@ -34,6 +34,8 @@ export interface ProjectView {
   spec: VideoSpec | null
   html: string | null
   dir: string | null
+  /** live-storyboard captures (data URLs), one per scene when available */
+  thumbs: string[]
 }
 
 declare global {

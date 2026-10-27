@@ -24,7 +24,7 @@ export interface ProjectMeta {
 
 // ---------------- pipeline state (crash-safe resume) ----------------
 
-export type StageName = 'plan' | 'compose' | 'qa' | 'render'
+export type StageName = 'plan' | 'compose' | 'qa' | 'thumbs' | 'render'
 
 export interface StageState {
   status: 'pending' | 'running' | 'done' | 'failed'
@@ -47,6 +47,7 @@ const EMPTY_STATE: ProjectState = {
     plan: { status: 'pending' },
     compose: { status: 'pending' },
     qa: { status: 'pending' },
+    thumbs: { status: 'pending' },
     render: { status: 'pending' }
   },
   events: [],

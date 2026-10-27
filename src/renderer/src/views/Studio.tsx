@@ -27,6 +27,8 @@ const EXAMPLES: Array<{ prompt: string; platform: PlatformId; style?: StyleFamil
   { prompt: 'Product intro for a habit tracker app — 30 seconds', platform: 'instagram-reels', style: 'explainer', result: '9:16 problem→solution arc' }
 ]
 
+type SceneCard = { kind: string; label: string; durationSec: number; thumb?: string }
+
 export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
   const [prompt, setPrompt] = useState('')
   const [platform, setPlatform] = useState<PlatformId>('tiktok')
@@ -38,11 +40,26 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
   const [done, setDone] = useState<{ projectId: string; output: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [board, setBoard] = useState<{ title: string | null; scenes: SceneCard[]; captured: number } | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     unsubRef.current = api.onEvent((e) => {
       setEvents((prev) => [...prev.slice(-120), e])
+      if (e.stage === 'plan' && e.status === 'done') {
+        setBoard({ title: e.title, scenes: e.sceneCards.map((c) => ({ ...c })), captured: 0 })
+      }
+      if (e.stage === 'thumbs' && e.status === 'progress') {
+        setBoard((b) =>
+          b
+            ? {
+                ...b,
+                captured: b.captured + 1,
+                scenes: b.scenes.map((s, i) => (i === e.index ? { ...s, thumb: e.dataUrl } : s))
+              }
+            : b
+        )
+      }
       if (e.stage === 'render') {
         if (e.status === 'progress') setProgress(e.pct)
         if (e.status === 'done') {
@@ -77,6 +94,7 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
     setDone(null)
     setError(null)
     setNotice(null)
+    setBoard(null)
     setRunning(true)
     const res = await api.generate({
       prompt: prompt.trim(),
@@ -199,8 +217,71 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
               />
             </div>
             <div className="mt-1.5 text-xs text-white/40">
-              {progress > 0 ? `rendering — ${progress}%` : 'planning & composing…'}
+              {progress > 0
+                ? `rendering — ${progress}%`
+                : board
+                  ? 'composing & checking…'
+                  : 'planning…'}
             </div>
+          </div>
+        )}
+
+        {/* live storyboard — the film being crafted, scene by scene */}
+        {board && board.scenes.length > 0 && (
+          <div className="mt-8">
+            <div className="mb-3 flex items-baseline justify-between gap-3">
+              <div className="text-xs font-bold uppercase tracking-wider text-white/40">
+                {running ? 'Live storyboard — crafting…' : 'Storyboard'}
+              </div>
+              {board.title && <div className="truncate text-sm font-black text-white/85">{board.title}</div>}
+            </div>
+            <div
+              className="grid gap-3"
+              style={{ gridTemplateColumns: `repeat(${Math.min(board.scenes.length, 7)}, minmax(0, 1fr))` }}
+            >
+              {board.scenes.map((s, i) => {
+                const active = running && progress > 0 && i === Math.min(board.scenes.length - 1, Math.floor((progress / 100) * board.scenes.length))
+                return (
+                  <div
+                    key={i}
+                    className={`pop-in relative overflow-hidden rounded-xl border transition-colors ${
+                      active ? 'border-[#00E5FF] shadow-[0_0_18px_rgba(0,229,255,0.35)]' : 'border-white/10'
+                    }`}
+                    style={{ aspectRatio: platform === 'youtube' ? '16/9' : '9/16', animationDelay: `${i * 110}ms` }}
+                  >
+                    {s.thumb ? (
+                      <img src={s.thumb} alt={`scene ${i + 1}`} className="thumb-in h-full w-full object-cover" />
+                    ) : (
+                      <div className={`flex h-full flex-col justify-between p-2 ${running ? 'board-sweep' : ''}`}>
+                        <span className="w-fit rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white/60">
+                          {s.kind}
+                        </span>
+                        <div className="text-center text-[10px] font-semibold leading-tight text-white/55 line-clamp-3">
+                          {s.label}
+                        </div>
+                        <div className="flex items-center justify-center gap-1">
+                          {running ? (
+                            <span className="pulse-dot h-1.5 w-1.5 rounded-full bg-[#00E5FF]" />
+                          ) : (
+                            <span className="text-[9px] text-white/30">{s.durationSec}s</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    <span className="absolute left-1.5 top-1.5 rounded bg-black/60 px-1 text-[9px] font-black text-white/70">
+                      {i + 1}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+            {running && progress === 0 && (
+              <div className="mt-1.5 text-xs text-white/35">
+                {board.captured > 0
+                  ? `capturing scene frames — ${board.captured}/${board.scenes.length}`
+                  : 'the planner is writing your storyboard…'}
+              </div>
+            )}
           </div>
         )}
 

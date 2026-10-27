@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, safeStorage, shell, Tray, Menu, nativeImage } from 'electron'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
 
 // ESM output: derive the directory from import.meta.url
 const moduleDir = dirname(fileURLToPath(import.meta.url))
@@ -191,7 +191,15 @@ function registerIpc(): void {
     const html = existsSync(join(store.dir(id), 'index.html'))
       ? readFileSync(join(store.dir(id), 'index.html'), 'utf8')
       : null
-    return { meta, spec, html, dir: store.dir(id) }
+    // live-storyboard captures (JPEG) as data URLs for the scene cards
+    const thumbsDir = join(store.dir(id), 'thumbs')
+    const thumbs = existsSync(thumbsDir)
+      ? readdirSync(thumbsDir)
+          .filter((f) => f.endsWith('.jpg'))
+          .sort()
+          .map((f) => `data:image/jpeg;base64,${readFileSync(join(thumbsDir, f)).toString('base64')}`)
+      : []
+    return { meta, spec, html, dir: store.dir(id), thumbs }
   })
 
   ipcMain.handle('gen:generate', async (_e, opts: GenerateOptions) => {

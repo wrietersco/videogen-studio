@@ -33,6 +33,35 @@ html, body, #app {
 }
 .slide-up { animation: slide-up 0.25s ease-out; }
 
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(0.82) translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+.pop-in { animation: pop-in 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.35) backwards; }
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.thumb-in { animation: fade-in 0.6s ease-out; }
+
+@keyframes board-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(220%); }
+}
+.board-sweep {
+  position: relative;
+  overflow: hidden;
+}
+.board-sweep::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 45%;
+  background: linear-gradient(100deg, transparent, rgba(124, 92, 255, 0.16), transparent);
+  animation: board-sweep 1.6s ease-in-out infinite;
+}
+
 ::-webkit-scrollbar { width: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #2a2a3d; border-radius: 6px; }
