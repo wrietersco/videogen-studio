@@ -23,6 +23,7 @@ const api = {
   getProject: (id: string) => ipcRenderer.invoke('project:get', id),
   deleteProject: (id: string) => ipcRenderer.invoke('project:delete', id),
   revealProject: (id: string, filePath?: string) => ipcRenderer.invoke('project:reveal', id, filePath),
+  playProject: (id: string, filePath?: string) => ipcRenderer.invoke('project:play', id, filePath),
   rerenderProject: (id: string) => ipcRenderer.invoke('gen:rerender', id),
   resumeProject: (id: string) => ipcRenderer.invoke('gen:resume', id),
   getProjectState: (id: string) => ipcRenderer.invoke('project:state', id),

@@ -4,7 +4,7 @@ import type { LLMProvider } from '../providers/types'
 import { Planner } from './planner'
 import { CompositionFixer } from './fixer'
 import { buildAudio } from './audio'
-import { compose } from '../composer'
+import { compose, COMPOSER_VERSION, type AudioLayer } from '../composer'
 import { ProjectStore, type StageName, type StageState } from '../store/projectStore'
 import { RenderService, type CheckReport, type RenderProgress } from '../rendererService/hyperframes'
 import { vendorDir, fontsDir, musicDir } from '../paths'
@@ -18,6 +18,28 @@ function readComposition(dir: string): string {
 
 function writeComposition(dir: string, html: string): void {
   writeFileSync(join(dir, 'index.html'), html)
+}
+
+/** salvage the audio layer (clips + caption cues) embedded in an old composition */
+export function extractAudioLayer(html: string): AudioLayer {
+  if (!html) return { clips: [], captions: [] }
+  const clips: AudioLayer['clips'] = []
+  for (const m of html.matchAll(
+    /<audio class="clip" src="([^"]+)" data-start="([\d.]+)" data-duration="([\d.]+)" data-track-index="(\d+)" data-volume="([\d.]+)"><\/audio>/g
+  )) {
+    clips.push({ file: m[1], startSec: parseFloat(m[2]), durationSec: parseFloat(m[3]), trackIndex: parseInt(m[4], 10), volume: parseFloat(m[5]) })
+  }
+  let captions: AudioLayer['captions'] = []
+  const capMatch = html.match(/const CAPTIONS = (\[.*?\]);/s)
+  if (capMatch) {
+    try {
+      const parsed = JSON.parse(capMatch[1]) as AudioLayer['captions']
+      if (Array.isArray(parsed)) captions = parsed
+    } catch {
+      /* captions lost — silent captions, not a failure */
+    }
+  }
+  return { clips, captions }
 }
 
 /**
@@ -113,10 +135,15 @@ export class Orchestrator {
     this.cancelled = false
     this.activeJobId = projectId
     const dir = this.store.dir(projectId)
-    // self-heal: if the composition is missing, rebuild it from the spec
+    // self-heal: rebuild the composition when it's missing OR predates the
+    // current composer — re-renders always get the latest presentation,
+    // keeping the audio layer (clips + captions) already embedded in the page
     const composition = join(dir, 'index.html')
-    if (!existsSync(composition)) {
-      this.store.saveComposition(projectId, compose(spec, vendorDir, fontsDir, { clips: [], captions: [] }))
+    const existing = existsSync(composition) ? readFileSync(composition, 'utf8') : ''
+    if (!existing || !existing.includes(`vg-compose:v${COMPOSER_VERSION}`)) {
+      const audio = extractAudioLayer(existing)
+      this.store.saveComposition(projectId, compose(spec, vendorDir, fontsDir, audio))
+      this.store.appendEvent(projectId, existing ? `composition upgraded to v${COMPOSER_VERSION}` : 'composition rebuilt')
     }
     this.store.appendEvent(projectId, 'manual re-render')
     this.track(projectId, 'render', 'running')

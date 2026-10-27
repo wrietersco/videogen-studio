@@ -38,17 +38,17 @@ const GEOMETRY_SNIPPETS: Record<ShowcaseSpec['objectStyle'], string> = {
 function materialSnippet(material: ShowcaseSpec['material'], accentHex: string, accent2Hex: string): string {
   switch (material) {
     case 'chrome':
-      return `new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 1.0, roughness: 0.12 })`
+      return `new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 1.0, roughness: 0.1, envMapIntensity: 1.5 })`
     case 'glass':
       // no `transmission`: it forces a second scene render pass — brutally slow
       // under software WebGL. Clearcoat + opacity reads as glass at a fraction of the cost.
-      return `new THREE.MeshPhysicalMaterial({ color: 0xf8fbff, metalness: 0.1, roughness: 0.06, clearcoat: 1.0, clearcoatRoughness: 0.06, transparent: true, opacity: 0.55, envMapIntensity: 1.6 })`
+      return `new THREE.MeshPhysicalMaterial({ color: 0xf8fbff, metalness: 0.1, roughness: 0.06, clearcoat: 1.0, clearcoatRoughness: 0.06, transparent: true, opacity: 0.55, envMapIntensity: 1.8 })`
     case 'matte':
-      return `new THREE.MeshStandardMaterial({ color: ${accentHex}, metalness: 0.05, roughness: 0.85 })`
+      return `new THREE.MeshStandardMaterial({ color: ${accentHex}, metalness: 0.05, roughness: 0.7, envMapIntensity: 0.6 })`
     case 'neon':
-      return `new THREE.MeshStandardMaterial({ color: ${accentHex}, emissive: ${accentHex}, emissiveIntensity: 1.35, metalness: 0.3, roughness: 0.35 })`
+      return `new THREE.MeshStandardMaterial({ color: ${accentHex}, emissive: ${accentHex}, emissiveIntensity: 1.35, metalness: 0.3, roughness: 0.35, envMapIntensity: 1.0 })`
     case 'iridescent':
-      return `new THREE.MeshPhysicalMaterial({ color: ${accent2Hex}, metalness: 0.55, roughness: 0.18, iridescence: 1.0, iridescenceIOR: 1.6 })`
+      return `new THREE.MeshPhysicalMaterial({ color: ${accent2Hex}, metalness: 0.55, roughness: 0.18, iridescence: 1.0, iridescenceIOR: 1.6, envMapIntensity: 1.3 })`
     default:
       throw new Error(`unknown material: ${material as string}`)
   }
@@ -60,18 +60,17 @@ function motionSnippet(motion: ShowcaseSpec['motion']): string {
       return `
       mesh.rotation.y = t * 0.9
       mesh.rotation.x = Math.sin(t * 0.4) * 0.12
-      camera.position.set(0, 0.15, 4.4)`
+      camera.position.set(0, 0.05, 4.4)`
     case 'float':
       return `
       mesh.rotation.y = t * 0.45
       mesh.position.y = Math.sin(t * 1.05) * 0.22
-      camera.position.set(0, 0.1, 4.4)`
+      camera.position.set(0, 0.0, 4.4)`
     case 'dollyOrbit': {
       return `
       const a = -0.6 + t * 0.42
       const r = 4.9 - Math.sin(t * 0.35) * 0.55
-      camera.position.set(Math.sin(a) * r, 0.55 + Math.sin(t * 0.22) * 0.35, Math.cos(a) * r)
-      camera.lookAt(0, 0, 0)
+      camera.position.set(Math.sin(a) * r, -0.5 + Math.sin(t * 0.22) * 0.35, Math.cos(a) * r)
       mesh.rotation.y = t * 0.28`
     }
     case 'explodeAssemble': {
@@ -79,15 +78,15 @@ function motionSnippet(motion: ShowcaseSpec['motion']): string {
       const k = 0.5 + 0.5 * Math.sin(t * 0.85 - Math.PI / 2)   // 0 → assembled, 1 → exploded
       mesh.rotation.y = t * 0.3
       mesh.position.y = 0
-      shell.scale.setScalar(1 + k * 0.55)
-      shell.material.opacity = 0.16 + k * 0.3
+      shell.scale.setScalar(1 + k * 0.32)
+      shell.material.opacity = 0.06 + k * 0.14
       shards.forEach((s, i) => {
         const dir = shardDirs[i]
-        s.position.copy(dir).multiplyScalar(k * 1.5)
+        s.position.copy(dir).multiplyScalar(k * 1.3)
         s.rotation.x = t * (0.7 + i * 0.2)
         s.rotation.y = t * (0.5 + i * 0.3)
       })
-      camera.position.set(0, 0.2, 5.0)`
+      camera.position.set(0, 0.0, 5.0)`
     }
     default:
       throw new Error(`unknown motion: ${motion as string}`)
@@ -108,7 +107,7 @@ export function buildThreeShowcase(
   const accentHex = hexToLiteral(accent)
   const accent2Hex = hexToLiteral(accent2)
   const needsShards = motion === 'explodeAssemble'
-  const needsShell = motion === 'explodeAssemble' || objectStyle === 'sphereGrid'
+  const needsShell = objectStyle === 'sphereGrid'
   return `<script type="module">
   import * as THREE from './assets/vendor/three.module.js'
   const SCENE_ID = '${sceneId}'
@@ -122,56 +121,86 @@ export function buildThreeShowcase(
     renderer.setSize(W, H)
     renderer.setPixelRatio(1)
     renderer.toneMapping = THREE.ACESFilmicToneMapping
+    renderer.toneMappingExposure = 1.15
     host.appendChild(renderer.domElement)
     const scene = new THREE.Scene()
     const camera = new THREE.PerspectiveCamera(40, W / H, 0.1, 100)
-    camera.position.set(0, 0.2, 4.6)
+    camera.position.set(0, 0.3, 4.6)
 
-    // procedural environment (deterministic): painted equirect → PMREM
+    // procedural studio environment (deterministic): soft key + tinted rims
+    // painted on a canvas → PMREM. This is what metal reflects — a flat dark
+    // env is why chrome used to read as mud.
     const envCanvas = document.createElement('canvas')
     envCanvas.width = 512; envCanvas.height = 256
     const g = envCanvas.getContext('2d')
-    const grad = g.createLinearGradient(0, 0, 0, 256)
-    grad.addColorStop(0, '#3a3a55')
-    grad.addColorStop(0.5, '#15151f')
-    grad.addColorStop(1, '#05050a')
-    g.fillStyle = grad; g.fillRect(0, 0, 512, 256)
-    g.fillStyle = 'rgba(255,255,255,0.9)'
-    g.fillRect(40, 40, 130, 26)
-    g.fillRect(330, 90, 120, 20)
-    g.fillStyle = '${accent}'
-    g.fillRect(180, 30, 90, 22)
+    const base = g.createLinearGradient(0, 0, 0, 256)
+    base.addColorStop(0, '#34394f'); base.addColorStop(0.55, '#171824'); base.addColorStop(1, '#07070c')
+    g.fillStyle = base; g.fillRect(0, 0, 512, 256)
+    const blob = (x, y, r, color, a) => {
+      const rg = g.createRadialGradient(x, y, r * 0.05, x, y, r)
+      rg.addColorStop(0, color.replace('A', String(a))); rg.addColorStop(1, color.replace('A', '0'))
+      g.fillStyle = rg; g.fillRect(x - r, y - r, r * 2, r * 2)
+    }
+    blob(120, 62, 130, 'rgba(255,255,255,A)', 0.95)   // softbox key
+    blob(396, 96, 110, '${accent}', 0.85)             // accent kicker
+    blob(58, 190, 100, 'rgba(150,200,255,A)', 0.55)   // cool rim
+    blob(300, 210, 120, '${accent}', 0.30)            // ground bounce tint
     const envTex = new THREE.CanvasTexture(envCanvas)
     envTex.mapping = THREE.EquirectangularReflectionMapping
     const pmrem = new THREE.PMREMGenerator(renderer)
     scene.environment = pmrem.fromEquirectangular(envTex).texture
 
-    const key = new THREE.DirectionalLight(0xffffff, 1.6)
+    const key = new THREE.DirectionalLight(0xffffff, 1.9)
     key.position.set(3, 5, 4)
     scene.add(key)
     const rim = new THREE.DirectionalLight(${accent2Hex}, 2.2)
-    rim.position.set(-4, -2, -3)
+    rim.position.set(-4, -1, -3)
     scene.add(rim)
+    scene.add(new THREE.HemisphereLight(0x8a93b8, 0x0a0a12, 0.5))
+
+    // seeded starfield behind the hero — depth instead of empty black
+    const starRand = mulberry32(${seed} * 31337 + 5)
+    const SN = 650
+    const starPos = new Float32Array(SN * 3)
+    for (let i = 0; i < SN; i++) {
+      const r = 7 + starRand() * 7
+      const theta = starRand() * Math.PI * 2
+      const phi = Math.acos(2 * starRand() - 1)
+      starPos[i * 3] = r * Math.sin(phi) * Math.cos(theta)
+      starPos[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta)
+      starPos[i * 3 + 2] = r * Math.cos(phi)
+    }
+    const starGeo = new THREE.BufferGeometry()
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3))
+    const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({
+      color: 0xdfe6ff, size: 0.045, transparent: true, opacity: 0.7, depthWrite: false
+    }))
+    scene.add(stars)
+
+    // the hero object sits in the lower half of the frame — text owns the top
+    const rig = new THREE.Group()
+    rig.position.y = -0.5
+    scene.add(rig)
 
     const geometry = ${GEOMETRY_SNIPPETS[objectStyle]}
     const mat = ${materialSnippet(material, accentHex, accent2Hex)}
     const mesh = new THREE.Mesh(geometry, mat)
-    scene.add(mesh)
+    rig.add(mesh)
     ${needsShell ? `
     const shell = new THREE.Mesh(
-      ${objectStyle === 'sphereGrid' ? 'new THREE.IcosahedronGeometry(1.46, 1)' : `${GEOMETRY_SNIPPETS[objectStyle]}.clone()`},
-      new THREE.MeshBasicMaterial({ color: ${accent2Hex}, wireframe: true, transparent: true, opacity: 0.2 })
+      new THREE.IcosahedronGeometry(1.56, 1),
+      new THREE.MeshBasicMaterial({ color: ${accent2Hex}, wireframe: true, transparent: true, opacity: 0.1 })
     )
-    scene.add(shell)` : 'const shell = mesh'}
+    rig.add(shell)` : 'const shell = mesh'}
     ${needsShards ? `
     const rand = mulberry32(${seed} * 7919 + 13)
-    const shardDirs = [0, 1, 2, 3, 4].map(() => {
+    const shardDirs = [0, 1, 2, 3].map(() => {
       const v = new THREE.Vector3(rand() * 2 - 1, rand() * 2 - 1, rand() * 2 - 1)
       return v.normalize()
     })
     const shards = shardDirs.map(() => {
-      const s = new THREE.Mesh(new THREE.TetrahedronGeometry(0.22), mat)
-      scene.add(s)
+      const s = new THREE.Mesh(new THREE.TetrahedronGeometry(0.17), mat)
+      rig.add(s)
       return s
     })` : 'const shards = []; const shardDirs = []'}
 
@@ -179,8 +208,9 @@ export function buildThreeShowcase(
     const DUR = ${durSec.toFixed(2)}
     function update(globalT) {
       const t = Math.min(Math.max(globalT - START, 0), DUR)
+      stars.rotation.y = t * 0.02
       ${motionSnippet(motion)}
-      camera.lookAt(0, 0, 0)
+      camera.lookAt(0, -0.5, 0)
       renderer.render(scene, camera)
     }
     window.addEventListener('hf-seek', (e) => update(e.detail.time))
@@ -211,6 +241,8 @@ export function buildThreeParticles(
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true })
     renderer.setSize(W, H)
     renderer.setPixelRatio(1)
+    renderer.toneMapping = THREE.ACESFilmicToneMapping
+    renderer.toneMappingExposure = 1.15
     host.appendChild(renderer.domElement)
     const scene = new THREE.Scene()
     const camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 100)

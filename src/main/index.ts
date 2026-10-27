@@ -225,6 +225,19 @@ function registerIpc(): void {
     shell.showItemInFolder(target)
     return true
   })
+
+  // open a rendered video in the system player (full playback: scrub, sound, fullscreen)
+  ipcMain.handle('project:play', (_e, id: string, filePath?: string) => {
+    const target =
+      filePath && existsSync(filePath)
+        ? filePath
+        : filePath && existsSync(join(store.dir(id), filePath))
+          ? join(store.dir(id), filePath)
+          : null
+    if (!target) return false
+    void shell.openPath(target)
+    return true
+  })
 }
 
 app.whenReady().then(() => {

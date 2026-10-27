@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, type PipelineEvent, type ProjectMeta } from '../api'
 
-export default function Library({ onOpenEditor }: { onOpenEditor: () => void }) {
+export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) => void }) {
   const [projects, setProjects] = useState<ProjectMeta[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
@@ -122,7 +122,7 @@ export default function Library({ onOpenEditor }: { onOpenEditor: () => void }) 
               <button
                 onClick={() => {
                   setSelected(p.id)
-                  onOpenEditor()
+                  onOpenEditor(p.id)
                 }}
                 className="block w-full text-left"
               >
@@ -155,6 +155,15 @@ export default function Library({ onOpenEditor }: { onOpenEditor: () => void }) 
 
               {/* actions */}
               <div className="mt-4 flex flex-wrap gap-1.5">
+                {p.renders[0] && (
+                  <button
+                    onClick={() => api.playProject(p.id, p.renders[0].file)}
+                    title="Play the rendered video"
+                    className="rounded-lg bg-emerald-500/20 px-2.5 py-1.5 text-[11px] font-bold text-emerald-300 hover:bg-emerald-500/35"
+                  >
+                    ▶ Play
+                  </button>
+                )}
                 {isInterrupted(p) && (
                   <button
                     onClick={() => resume(p.id)}

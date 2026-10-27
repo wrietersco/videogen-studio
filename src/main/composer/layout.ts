@@ -13,6 +13,8 @@ export interface DesignContext {
   width: number
   height: number
   safe: { x: number; y: number; w: number; h: number }
+  /** caption band sits ABOVE the platform UI zone (TikTok buttons etc.) */
+  captionBand: { bottomPx: number; maxWidthPx: number }
   scale: number // 1.0 at 1080p short-edge
   palette: Palette
   typography: Typography
@@ -24,6 +26,7 @@ export interface DesignContext {
 export function designContext(spec: VideoSpec, preset: PlatformPreset): DesignContext {
   const scale = Math.min(preset.width, preset.height) / 1080
   const s = preset.safeZone
+  const isVertical = preset.height >= preset.width
   return {
     width: preset.width,
     height: preset.height,
@@ -33,12 +36,18 @@ export function designContext(spec: VideoSpec, preset: PlatformPreset): DesignCo
       w: preset.width - s.left - s.right,
       h: preset.height - s.top - s.bottom
     },
+    // clear of the platform chrome (like/comment/share rail on verticals,
+    // end-screen reserve on YouTube) and never glued to the frame edge
+    captionBand: {
+      bottomPx: Math.round(preset.height * (isVertical ? 0.17 : preset.width > preset.height ? 0.1 : 0.14)),
+      maxWidthPx: Math.round((preset.width - s.left - s.right) * 0.88)
+    },
     scale,
     palette: spec.palette,
     typography: spec.typography,
     pacing: spec.pacing,
     motion: PACING_TUNING[spec.pacing].motion,
-    isVertical: preset.height >= preset.width
+    isVertical
   }
 }
 
@@ -69,11 +78,13 @@ export function bodyFamily(t: Typography): string {
 }
 
 /**
- * Wrap a headline into lines that fit the safe width (greedy).
- * Rough char-width estimate; the QA layout check catches any overflow this misses.
+ * Wrap a headline into lines that fit the safe width (greedy, spaces only).
+ * Lines are rendered nowrap in the browser; the in-page autofit pass then
+ * scales the font until every line fits — so this estimate only sets the
+ * starting size, never the final layout.
  */
 export function fitLines(text: string, maxLines: number, maxWidthPx: number, fontSizePx: number): string[] {
-  const charW = fontSizePx * 0.52 // generous average for caps display faces
+  const charW = fontSizePx * 0.56 // average for caps display faces
   const perLine = Math.max(6, Math.floor(maxWidthPx / charW))
   const words = text.split(/\s+/)
   const lines: string[] = []
@@ -89,8 +100,56 @@ export function fitLines(text: string, maxLines: number, maxWidthPx: number, fon
   }
   if (cur) lines.push(cur)
   if (lines.length <= maxLines) return lines
-  // too many lines: fold the tail into the last allowed line; QA flags true overflow
+  // too many lines: fold the tail into the last allowed line; autofit re-scales
   const head = lines.slice(0, maxLines - 1)
   head.push(lines.slice(maxLines - 1).join(' '))
   return head
+}
+
+/** browser autofit contract baked into markup: exact px budgets per element */
+export function fitAttrs(maxW: number, maxH: number, mode: 'lines' | 'box'): string {
+  return `data-fit="${mode}" data-maxw="${Math.round(maxW)}" data-maxh="${Math.round(maxH)}"`
+}
+
+function normWords(s: string): Set<string> {
+  return new Set(
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length > 2)
+  )
+}
+
+/** 0..1 — how much of `b`'s meaningful words already appear in `a` */
+export function textOverlap(a: string, b: string): number {
+  const wa = normWords(a)
+  const wb = [...normWords(b)]
+  if (wa.size === 0 || wb.length === 0) return 0
+  let hit = 0
+  for (const w of wb) if (wa.has(w)) hit += 1
+  return hit / wb.length
+}
+
+/**
+ * Presentation hygiene: the planner (any model, any quality) may emit a
+ * kicker/subline that repeats the headline — showing both reads as a glitch.
+ * Later fields duplicating earlier ones are dropped deterministically.
+ */
+export function dedupeFields<T extends { headline?: string }>(parts: T): T {
+  const seen: string[] = []
+  const headline = ('headline' in parts && parts.headline) || ''
+  if (headline) seen.push(headline)
+  const out = { ...parts }
+  for (const key of ['kicker', 'subline'] as const) {
+    if (!(key in out)) continue
+    const v = (out as Record<string, unknown>)[key]
+    if (typeof v !== 'string' || !v) continue
+    if (seen.some((s) => textOverlap(s, v) >= 0.6)) {
+      ;(out as Record<string, unknown>)[key] = ''
+    } else {
+      seen.push(v)
+    }
+  }
+  return out
 }

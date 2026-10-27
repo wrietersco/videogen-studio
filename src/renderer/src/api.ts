@@ -52,6 +52,7 @@ declare global {
       getProject: (id: string) => Promise<ProjectView>
       deleteProject: (id: string) => Promise<{ ok: boolean; error?: string }>
       revealProject: (id: string, filePath?: string) => Promise<boolean>
+      playProject: (id: string, filePath?: string) => Promise<boolean>
       rerenderProject: (id: string) => Promise<{ ok: boolean; error?: string }>
       resumeProject: (id: string) => Promise<{ ok: boolean; error?: string }>
       getProjectState: (id: string) => Promise<{

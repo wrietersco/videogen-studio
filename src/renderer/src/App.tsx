@@ -16,6 +16,12 @@ const TABS: Array<{ id: Tab; label: string; icon: string }> = [
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('studio')
+  const [editorProjectId, setEditorProjectId] = useState<string | null>(null)
+
+  const openEditor = (id?: string) => {
+    setEditorProjectId(id ?? null)
+    setTab('editor')
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -71,9 +77,15 @@ export default function App() {
 
       {/* content */}
       <div className="min-h-0 flex-1">
-        {tab === 'studio' && <Studio onOpenEditor={() => setTab('editor')} />}
-        {tab === 'library' && <Library onOpenEditor={() => setTab('editor')} />}
-        {tab === 'editor' && <Editor />}
+        {tab === 'studio' && <Studio onOpenEditor={() => openEditor()} />}
+        {tab === 'library' && <Library onOpenEditor={openEditor} />}
+        {tab === 'editor' && (
+          <Editor
+            key={editorProjectId ?? 'default'}
+            initialProjectId={editorProjectId}
+            onBack={() => setTab('library')}
+          />
+        )}
         {tab === 'settings' && <Settings />}
       </div>
     </div>

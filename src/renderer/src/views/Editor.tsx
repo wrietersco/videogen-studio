@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react'
 import { api, type ProjectView, type VideoSpec } from '../api'
 
 /**
- * Editor — P2 shows the generated VideoSpec structure and composition source
+ * Editor — project details: generated VideoSpec structure and composition source
  * (full structured/conversational editing lands in P5 on this surface).
  */
-export default function Editor() {
+export default function Editor({ initialProjectId, onBack }: { initialProjectId?: string | null; onBack: () => void }) {
   const [projects, setProjects] = useState<Array<{ id: string; title: string }>>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [activeId, setActiveId] = useState<string | null>(initialProjectId ?? null)
   const [project, setProject] = useState<ProjectView | null>(null)
   const [view, setView] = useState<'spec' | 'code'>('spec')
 
@@ -27,20 +27,28 @@ export default function Editor() {
   return (
     <div className="grid h-full grid-cols-[260px_1fr]">
       {/* project list */}
-      <div className="min-h-0 overflow-y-auto border-r border-white/5 bg-[#0d0d17] p-3">
-        <div className="px-2 py-2 text-[11px] font-bold uppercase tracking-widest text-white/40">Projects</div>
-        {projects.length === 0 && <div className="px-2 text-xs text-white/30">Nothing yet.</div>}
-        {projects.map((p) => (
-          <button
-            key={p.id}
-            onClick={() => setActiveId(p.id)}
-            className={`mb-1 w-full truncate rounded-lg px-3 py-2 text-left text-xs font-semibold ${
-              activeId === p.id ? 'bg-[#7C5CFF]/20 text-[#b9a5ff]' : 'text-white/60 hover:bg-white/5'
-            }`}
-          >
-            {p.title}
-          </button>
-        ))}
+      <div className="flex min-h-0 flex-col border-r border-white/5 bg-[#0d0d17]">
+        <button
+          onClick={onBack}
+          className="mx-3 mt-3 rounded-lg border border-white/10 px-3 py-1.5 text-left text-xs font-bold text-white/70 hover:bg-white/5"
+        >
+          ← Back to Library
+        </button>
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          <div className="px-2 py-2 text-[11px] font-bold uppercase tracking-widest text-white/40">Projects</div>
+          {projects.length === 0 && <div className="px-2 text-xs text-white/30">Nothing yet.</div>}
+          {projects.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => setActiveId(p.id)}
+              className={`mb-1 w-full truncate rounded-lg px-3 py-2 text-left text-xs font-semibold ${
+                activeId === p.id ? 'bg-[#7C5CFF]/20 text-[#b9a5ff]' : 'text-white/60 hover:bg-white/5'
+              }`}
+            >
+              {p.title}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* detail */}
@@ -54,7 +62,16 @@ export default function Editor() {
           <>
             <div className="flex items-center justify-between border-b border-white/5 px-6 py-3.5">
               <div className="text-sm font-black">{spec.title}</div>
-              <div className="flex gap-1">
+              <div className="flex items-center gap-1">
+                {project?.meta?.renders[0] && (
+                  <button
+                    onClick={() => api.playProject(project.meta!.id, project.meta!.renders[0].file)}
+                    title="Play the rendered video"
+                    className="mr-2 rounded-md bg-emerald-500/20 px-3 py-1 text-xs font-bold text-emerald-300 hover:bg-emerald-500/35"
+                  >
+                    ▶ Play
+                  </button>
+                )}
                 <button
                   onClick={() => setView('spec')}
                   className={`rounded-md px-3 py-1 text-xs font-bold ${view === 'spec' ? 'bg-white/10' : 'text-white/50 hover:bg-white/5'}`}
