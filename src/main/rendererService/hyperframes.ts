@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { resolve, join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { resolve, join } from 'node:path'
+import { appRoot } from '../paths'
 
 /**
  * Render service — wraps the local HyperFrames CLI.
@@ -11,8 +11,6 @@ import { fileURLToPath } from 'node:url'
  * PATH is extended with ffmpeg-static/ffprobe-static binaries so the app
  * is self-contained even without a system FFmpeg install.
  */
-
-const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 
 export interface RenderProgress {
   pct: number

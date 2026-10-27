@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron'
-import { join, resolve, dirname } from 'node:path'
+import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 
@@ -10,14 +10,13 @@ import { ProjectStore } from './store/projectStore'
 import { providerRegistry } from './providers/registry'
 import type { ProviderId } from './providers/types'
 import { DEFAULT_SETTINGS, type Settings } from './settings'
+import { projectsDir } from './paths'
 
 /**
  * Electron main process — owns the pipeline, project store, provider keys
  * (safeStorage-encrypted on disk), and the render job queue.
  */
 
-const appRoot = app.isPackaged ? dirname(app.getAppPath()) : resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const projectsDir = join(appRoot, 'projects')
 const store = new ProjectStore(projectsDir)
 const orchestrator = new Orchestrator(store, () => providerRegistry.active())
 

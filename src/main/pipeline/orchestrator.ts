@@ -7,8 +7,7 @@ import { buildAudio } from './audio'
 import { compose } from '../composer'
 import { ProjectStore, type StageName, type StageState } from '../store/projectStore'
 import { RenderService, type CheckReport, type RenderProgress } from '../rendererService/hyperframes'
-import { resolve, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { vendorDir, fontsDir, musicDir } from '../paths'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 
 
@@ -27,11 +26,6 @@ function writeComposition(dir: string, html: string): void {
  * The QA loop is the "resilient agent": check → classify → fix → re-check,
  * bounded retries, deterministic fixes first.
  */
-
-const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
-const vendorDir = resolve(appRoot, 'vendor')
-const fontsDir = resolve(appRoot, 'vendor', 'fonts')
-const musicDir = resolve(appRoot, 'music')
 
 export interface GenerateOptions {
   prompt: string
