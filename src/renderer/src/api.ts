@@ -16,7 +16,8 @@ export interface ProviderStatus {
 
 export interface SettingsView {
   provider: ProviderId
-  models: Partial<Record<ProviderId, string>>
+  /** per-provider model ids; keys are provider ids plus sub-keys like 'openai-image' */
+  models: Record<string, string>
   quality: 'draft' | 'standard' | 'delivery'
   allowGpu: boolean
 }
@@ -46,6 +47,7 @@ declare global {
       getProject: (id: string) => Promise<ProjectView>
       listProviders: () => Promise<ProviderStatus[]>
       listModels: (provider: ProviderId) => Promise<ModelInfo[]>
+      listImageModels: () => Promise<ModelInfo[]>
       getSettings: () => Promise<SettingsView>
       setSettings: (patch: Partial<SettingsView>) => Promise<boolean>
       hasKey: (provider: ProviderId) => Promise<boolean>

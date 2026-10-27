@@ -17,6 +17,10 @@ export interface ModelInfo {
   provider: ProviderId
   supportsJSON: boolean
   supportsVision: boolean
+  /** 'chat' (default) or 'image' generation */
+  kind?: 'chat' | 'image'
+  /** human-readable rate, e.g. "$0.10 in / $0.50 out per 1M tok" */
+  priceNote?: string
 }
 
 export interface GenerateJSONRequest {
@@ -64,6 +68,8 @@ export interface LLMProvider {
   readonly label: string
   isConfigured(): Promise<boolean>
   listModels(): Promise<ModelInfo[]>
+  /** curated image-generation catalog when the provider offers one */
+  listImageModels?(): Promise<ModelInfo[]>
   generateJSON<T>(req: GenerateJSONRequest): Promise<T>
   generateText(req: GenerateTextRequest): Promise<string>
   generateImage?(req: ImageGenRequest): Promise<Buffer>

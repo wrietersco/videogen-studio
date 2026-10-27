@@ -18,6 +18,7 @@ const api = {
   getProject: (id: string) => ipcRenderer.invoke('project:get', id),
   listProviders: () => ipcRenderer.invoke('providers:list'),
   listModels: (provider: string) => ipcRenderer.invoke('providers:models', provider),
+  listImageModels: () => ipcRenderer.invoke('providers:image-models'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setSettings: (patch: unknown) => ipcRenderer.invoke('settings:set', patch),
   hasKey: (provider: string) => ipcRenderer.invoke('settings:hasKey', provider),

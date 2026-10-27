@@ -126,6 +126,10 @@ function registerIpc(): void {
   ipcMain.handle('providers:models', async (_e, provider: ProviderId) => {
     return providerRegistry.get(provider).listModels()
   })
+  ipcMain.handle('providers:image-models', async () => {
+    const p = providerRegistry.get('openai')
+    return p.listImageModels ? p.listImageModels() : []
+  })
 
   ipcMain.handle('projects:list', () => store.list())
   ipcMain.handle('project:get', (_e, id: string) => {

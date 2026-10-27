@@ -22,11 +22,18 @@ class ProviderRegistry {
   private readonly providers = new Map<ProviderId, LLMProvider>()
   private activeId: ProviderId = 'mock'
   private readonly keys = new Map<ProviderId, string>()
-  private readonly models = new Map<ProviderId, string | undefined>()
+  private readonly models = new Map<string, string | undefined>()
 
   constructor() {
     this.providers.set('mock', new MockProvider())
-    this.providers.set('openai', new OpenAIProvider(() => this.keys.get('openai') ?? '', () => this.models.get('openai')))
+    this.providers.set(
+      'openai',
+      new OpenAIProvider(
+        () => this.keys.get('openai') ?? '',
+        () => this.models.get('openai'),
+        () => this.models.get('openai-image')
+      )
+    )
     this.providers.set('anthropic', new AnthropicProvider(() => this.keys.get('anthropic') ?? '', () => this.models.get('anthropic')))
     this.providers.set('gemini', new GeminiProvider(() => this.keys.get('gemini') ?? '', () => this.models.get('gemini')))
   }

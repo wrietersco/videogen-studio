@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { api, type ProviderId, type ProviderStatus, type SettingsView } from '../api'
+import { api, type ModelInfo, type ProviderId, type ProviderStatus, type SettingsView } from '../api'
 
-type ModelList = Array<{ id: string; label: string }>
+type ModelList = Array<{ id: string; label: string; priceNote?: string }>
 type ModelLists = Partial<Record<ProviderId, ModelList>>
 
 export default function Settings() {
@@ -9,10 +9,12 @@ export default function Settings() {
   const [settings, setSettings] = useState<SettingsView | null>(null)
   const [keyDrafts, setKeyDrafts] = useState<Partial<Record<ProviderId, string>>>({})
   const [modelLists, setModelLists] = useState<ModelLists>({})
+  const [imageModels, setImageModels] = useState<ModelInfo[]>([])
 
   const refresh = async () => {
     setProviders(await api.listProviders())
     setSettings(await api.getSettings())
+    setImageModels(await api.listImageModels().catch(() => []))
   }
   useEffect(() => {
     refresh()
@@ -33,7 +35,7 @@ export default function Settings() {
     }
   }
 
-  const setModel = async (id: ProviderId, model: string) => {
+  const setModel = async (id: string, model: string) => {
     await api.setSettings({ models: { [id]: model } })
     await refresh()
   }
@@ -96,22 +98,57 @@ export default function Settings() {
                     Save
                   </button>
                 </div>
-                <button onClick={() => openModelList(p.id)} className="mt-3 text-[11px] text-[#00E5FF]/80 hover:underline">
-                  {modelLists[p.id] ? `models (${modelLists[p.id]!.length})` : 'show available models'}
-                </button>
-                {modelLists[p.id] && (
-                  <select
-                    value={settings?.models[p.id] ?? ''}
-                    onChange={(e) => setModel(p.id, e.target.value)}
-                    className="mt-2 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs"
-                  >
-                    <option value="">default (latest flagship)</option>
-                    {modelLists[p.id]!.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.label}
-                      </option>
-                    ))}
-                  </select>
+                {p.id === 'openai' ? (
+                  <>
+                    <div className="mt-3 text-[10px] font-bold uppercase tracking-wider text-white/40">
+                      Text model · cheapest → priciest
+                    </div>
+                    <select
+                      value={settings?.models[p.id] ?? 'gpt-6-luna'}
+                      onChange={(e) => setModel(p.id, e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs"
+                    >
+                      {(modelLists[p.id] ?? []).map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label} — {m.priceNote}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="mt-3 text-[10px] font-bold uppercase tracking-wider text-white/40">
+                      Image model · cheapest → priciest
+                    </div>
+                    <select
+                      value={settings?.models['openai-image'] ?? 'gpt-image-2.5-sunburst'}
+                      onChange={(e) => setModel('openai-image', e.target.value)}
+                      className="mt-1 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs"
+                    >
+                      {imageModels.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label} — {m.priceNote}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={() => openModelList(p.id)} className="mt-3 text-[11px] text-[#00E5FF]/80 hover:underline">
+                      {modelLists[p.id] ? `models (${modelLists[p.id]!.length})` : 'show available models'}
+                    </button>
+                    {modelLists[p.id] && (
+                      <select
+                        value={settings?.models[p.id] ?? ''}
+                        onChange={(e) => setModel(p.id, e.target.value)}
+                        className="mt-2 w-full rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-xs"
+                      >
+                        <option value="">default (latest flagship)</option>
+                        {modelLists[p.id]!.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.label}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </>
                 )}
               </>
             )}

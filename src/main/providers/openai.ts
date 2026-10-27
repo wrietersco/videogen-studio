@@ -12,7 +12,7 @@ import { ProviderError } from './types'
 
 /**
  * OpenAI adapter — Chat Completions with structured outputs (json_schema),
- * vision via data URLs, gpt-image-1 for asset escalation, TTS + Whisper
+ * vision via data URLs, GPT-Image-2.x for asset escalation, TTS + Whisper
  * word timestamps for narration.
  *
  * The model id is injectable (registry), defaulting to a current flagship;
@@ -23,40 +23,122 @@ const API = 'https://api.openai.com/v1'
 
 type KeyFn = () => string
 
-/** Reasoning-family models (gpt-5, o-series) reject custom temperature and count reasoning tokens toward output budget. */
+/**
+ * Curated catalogs — the latest OpenAI models (launches within ~6 months),
+ * sorted least → most expensive, with rates shown in the UI dropdown.
+ * Rates researched Oct 2026; sources: OpenAI launch coverage + price trackers.
+ */
+const CHAT_MODELS: ModelInfo[] = [
+  {
+    id: 'gpt-6-luna',
+    label: 'GPT-6 Luna',
+    provider: 'openai',
+    supportsJSON: true,
+    supportsVision: true,
+    kind: 'chat',
+    priceNote: '$0.10 in / $0.50 out per 1M tok'
+  },
+  {
+    id: 'gpt-5.6-luna',
+    label: 'GPT-5.6 Luna',
+    provider: 'openai',
+    supportsJSON: true,
+    supportsVision: true,
+    kind: 'chat',
+    priceNote: '$0.20 in / $1.20 out per 1M tok'
+  },
+  {
+    id: 'gpt-6-sol',
+    label: 'GPT-6 Sol',
+    provider: 'openai',
+    supportsJSON: true,
+    supportsVision: true,
+    kind: 'chat',
+    priceNote: '$2 in / $10 out per 1M tok'
+  },
+  {
+    id: 'gpt-5.6-terra',
+    label: 'GPT-5.6 Terra',
+    provider: 'openai',
+    supportsJSON: true,
+    supportsVision: true,
+    kind: 'chat',
+    priceNote: '$2 in / $12 out per 1M tok'
+  },
+  {
+    id: 'gpt-5.6-sol',
+    label: 'GPT-5.6 Sol',
+    provider: 'openai',
+    supportsJSON: true,
+    supportsVision: true,
+    kind: 'chat',
+    priceNote: '$4 in / $20 out per 1M tok'
+  }
+]
+
+const IMAGE_MODELS: ModelInfo[] = [
+  {
+    id: 'gpt-image-2',
+    label: 'GPT Image 2',
+    provider: 'openai',
+    supportsJSON: false,
+    supportsVision: false,
+    kind: 'image',
+    priceNote: 'from ~$0.006/img (1024², low quality; $0.05 med / $0.21 high)'
+  },
+  {
+    id: 'gpt-image-2.5-flare',
+    label: 'GPT Image 2.5 Flare',
+    provider: 'openai',
+    supportsJSON: false,
+    supportsVision: false,
+    kind: 'image',
+    priceNote: '≈$0.013/img (1024²) · fast variant'
+  },
+  {
+    id: 'gpt-image-2.5-sunburst',
+    label: 'GPT Image 2.5 Sunburst',
+    provider: 'openai',
+    supportsJSON: false,
+    supportsVision: false,
+    kind: 'image',
+    priceNote: '≈$0.013/img (1024²) · highest fidelity'
+  }
+]
+
+const DEFAULT_CHAT_MODEL = 'gpt-6-luna'
+const DEFAULT_IMAGE_MODEL = 'gpt-image-2.5-sunburst'
+
+/** GPT-5/6 families are reasoning models: no custom temperature, bigger output budget. */
 function isReasoningModel(model: string): boolean {
-  return /^(o\d|gpt-5)/.test(model)
+  return /^(o\d|gpt-5|gpt-6)/.test(model)
 }
 
 export class OpenAIProvider implements LLMProvider {
   readonly id: ProviderId = 'openai'
   readonly label = 'OpenAI'
 
-  constructor(private readonly key: KeyFn, private readonly modelOverride?: () => string | undefined) {}
+  constructor(
+    private readonly key: KeyFn,
+    private readonly modelOverride?: () => string | undefined,
+    private readonly imageModelOverride?: () => string | undefined
+  ) {}
 
   async isConfigured(): Promise<boolean> {
     return this.key().length > 0
   }
 
+  /** Curated catalog — hardcoded, no /v1/models round-trip. */
   async listModels(): Promise<ModelInfo[]> {
-    const json = await this.request<{ data: Array<{ id: string }> }>('GET', '/models')
-    const ids = json.data
-      .map((m) => m.id)
-      .filter((id) => /^(gpt-|o\d|chatgpt-)/.test(id) && !/audio|realtime|tts|whisper|embed|moderation|image|search|codex/.test(id))
-      .sort()
-      .reverse()
-    const visionCapable = (id: string) => !/^o1-mini|^gpt-4o-mini$|^gpt-3/.test(id)
-    return ids.map((id) => ({
-      id,
-      label: id,
-      provider: this.id,
-      supportsJSON: true,
-      supportsVision: visionCapable(id)
-    }))
+    return CHAT_MODELS
+  }
+
+  async listImageModels(): Promise<ModelInfo[]> {
+    return IMAGE_MODELS
   }
 
   async generateJSON<T>(req: GenerateJSONRequest): Promise<T> {
-    const model = this.modelOverride?.() ?? 'gpt-5'
+    const model = this.modelOverride?.() ?? DEFAULT_CHAT_MODEL
     const reasoning = isReasoningModel(model)
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: req.prompt }]
     for (const img of req.images ?? []) {
@@ -93,7 +175,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async generateText(req: GenerateTextRequest): Promise<string> {
-    const model = this.modelOverride?.() ?? 'gpt-5'
+    const model = this.modelOverride?.() ?? DEFAULT_CHAT_MODEL
     const reasoning = isReasoningModel(model)
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: req.prompt }]
     for (const img of req.images ?? []) {
@@ -123,7 +205,7 @@ export class OpenAIProvider implements LLMProvider {
 
   async generateImage(req: ImageGenRequest): Promise<Buffer> {
     const json = await this.request<{ data: Array<{ b64_json?: string }> }>('POST', '/images/generations', {
-      model: 'gpt-image-1',
+      model: this.imageModelOverride?.() ?? DEFAULT_IMAGE_MODEL,
       prompt: req.styleHint ? `${req.prompt}. Style: ${req.styleHint}` : req.prompt,
       size: nearestImageSize(req.width, req.height),
       n: 1
@@ -222,6 +304,6 @@ export class OpenAIProvider implements LLMProvider {
 
 function nearestImageSize(w: number, h: number): string {
   const landscape = w >= h
-  if (landscape) return w / h > 1.5 ? '1792x1024' : '1024x1024'
-  return h / w > 1.5 ? '1024x1792' : '1024x1024'
+  if (landscape) return w / h > 1.5 ? '1536x1024' : '1024x1024'
+  return h / w > 1.5 ? '1024x1536' : '1024x1024'
 }
