@@ -26,7 +26,8 @@ type KeyFn = () => string
 /**
  * Curated catalogs — the latest OpenAI models (launches within ~6 months),
  * sorted least → most expensive, with rates shown in the UI dropdown.
- * Rates researched Oct 2026; sources: OpenAI launch coverage + price trackers.
+ * Rates verified against OpenAI's official pricing and model docs
+ * (developers.openai.com/api/docs/pricing) on Oct 26, 2026.
  */
 const CHAT_MODELS: ModelInfo[] = [
   {
@@ -48,13 +49,13 @@ const CHAT_MODELS: ModelInfo[] = [
     priceNote: '$0.20 in / $1.20 out per 1M tok'
   },
   {
-    id: 'gpt-6-terra',
-    label: 'GPT-6 Terra',
+    id: 'gpt-6.1-terra',
+    label: 'GPT-6.1 Terra',
     provider: 'openai',
     supportsJSON: true,
     supportsVision: true,
     kind: 'chat',
-    priceNote: 'recently announced — rates not published yet'
+    priceNote: '$1 in / $5 out per 1M tok'
   },
   {
     id: 'gpt-6-sol',
@@ -111,7 +112,7 @@ const IMAGE_MODELS: ModelInfo[] = [
     supportsJSON: false,
     supportsVision: false,
     kind: 'image',
-    priceNote: 'from ~$0.006/img (1024², low quality; $0.05 med / $0.21 high)'
+    priceNote: '$8 in / $30 out per 1M img tok'
   },
   {
     id: 'gpt-image-2.5-flare',
@@ -120,7 +121,7 @@ const IMAGE_MODELS: ModelInfo[] = [
     supportsJSON: false,
     supportsVision: false,
     kind: 'image',
-    priceNote: '≈$0.013/img (1024²) · fast variant'
+    priceNote: '$8 in / $30 out per 1M img tok · fast variant'
   },
   {
     id: 'gpt-image-2.5-sunburst',
@@ -129,12 +130,22 @@ const IMAGE_MODELS: ModelInfo[] = [
     supportsJSON: false,
     supportsVision: false,
     kind: 'image',
-    priceNote: '≈$0.013/img (1024²) · highest fidelity'
+    priceNote: '$8 in / $30 out per 1M img tok · highest fidelity'
   }
 ]
 
 const DEFAULT_CHAT_MODEL = 'gpt-6-luna'
 const DEFAULT_IMAGE_MODEL = 'gpt-image-2.5-sunburst'
+
+/** Renamed ids keep older saved selections working. */
+const CHAT_MODEL_ALIASES: Record<string, string> = {
+  'gpt-6-terra': 'gpt-6.1-terra'
+}
+
+function resolveChatModel(raw: string | undefined): string {
+  const m = raw || DEFAULT_CHAT_MODEL
+  return CHAT_MODEL_ALIASES[m] ?? m
+}
 
 /** GPT-5/6 families are reasoning models: no custom temperature, bigger output budget. */
 function isReasoningModel(model: string): boolean {
@@ -165,7 +176,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async generateJSON<T>(req: GenerateJSONRequest): Promise<T> {
-    const model = this.modelOverride?.() ?? DEFAULT_CHAT_MODEL
+    const model = resolveChatModel(this.modelOverride?.())
     const reasoning = isReasoningModel(model)
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: req.prompt }]
     for (const img of req.images ?? []) {
@@ -202,7 +213,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async generateText(req: GenerateTextRequest): Promise<string> {
-    const model = this.modelOverride?.() ?? DEFAULT_CHAT_MODEL
+    const model = resolveChatModel(this.modelOverride?.())
     const reasoning = isReasoningModel(model)
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: req.prompt }]
     for (const img of req.images ?? []) {

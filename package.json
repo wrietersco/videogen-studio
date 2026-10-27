@@ -11,7 +11,8 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test": "vitest run",
+    "test": "vitest run tests/unit.test.ts tests/compose.test.ts",
+    "test:e2e": "vitest run tests/pipeline.test.ts",
     "gen": "tsx scripts/gen.ts",
     "verify": "npm run typecheck && npm run test",
     "setup-vendor": "node scripts/setup-vendor.mjs"
@@ -40,9 +41,5 @@
     "tsx": "^4.23.15",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
-  },
-  "test": "vitest run tests/unit.test.ts tests/compose.test.ts",
-  "test:e2e": "vitest run tests/pipeline.test.ts",
-  "verify": "npm run typecheck && npm run test",
-  "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
+  }
 }
