@@ -159,8 +159,8 @@ export const MEDIA_MODELS: MediaModel[] = [
   // sfx
   { kind: 'sfx', provider: 'builtin', id: 'procedural', label: 'Built-in sound design', typical: 'free', cost: 1, speed: 3, quality: 2 },
   // video
-  { kind: 'video', provider: 'stock', id: 'stock', label: 'Free stock clips', typical: 'free', cost: 1, speed: 3, quality: 2, note: 'Pexels / Pixabay clips (free key)' },
-  { kind: 'video', provider: 'gemini', id: 'gemini-omni-1.1-flash', label: 'Gemini Omni Flash', typical: '≈ $0.10 / sec · ~$0.80 / clip', cost: 3, speed: 1, quality: 3, note: 'AI clips with sound, 720p · Gemini paid tier' }
+  { kind: 'video', provider: 'stock', id: 'stock', label: 'Free stock clips', typical: 'free', cost: 1, speed: 3, quality: 2, note: 'Pexels / Pixabay clips for key scenes (free key)' },
+  { kind: 'video', provider: 'gemini', id: 'gemini-omni-1.1-flash', label: 'Gemini Omni Flash', typical: '≈ $0.80 / clip · max 3 per video', cost: 3, speed: 1, quality: 3, note: 'animates the painted picture of key scenes · Gemini paid tier' }
 ]
 
 /** human tags for a model card: 💰 cheap · ⚡ fast · 🏆 best */
@@ -188,7 +188,7 @@ export function fmtUsd(v: number): string {
  * directors + vision critic ≈ 70k input / 25k output tokens; about half the
  * scenes get a painted plate; narration ≈ 15 characters per second.
  */
-export function estimateVideoCost(o: { chatModel?: string; imageModel?: string; voiceModel?: string; durationSec: number; directed: boolean }): number {
+export function estimateVideoCost(o: { chatModel?: string; imageModel?: string; voiceModel?: string; videoModel?: string; durationSec: number; directed: boolean }): number {
   const scenes = Math.max(3, Math.round(o.durationSec / 5))
   let usd = 0
   if (o.chatModel) usd += priceUsage(o.chatModel, { inputTokens: o.directed ? 70_000 : 15_000, outputTokens: o.directed ? 25_000 : 6_000 }).usd
@@ -202,5 +202,7 @@ export function estimateVideoCost(o: { chatModel?: string; imageModel?: string; 
     usd += priceUsage(o.voiceModel, r?.perKChars ? { chars } : { inputTokens: chars / 4, outputTokens: o.durationSec * 21, seconds: o.durationSec }).usd
     if (o.voiceModel === 'gpt-4o-mini-tts') usd += priceUsage('whisper-1', { seconds: o.durationSec }).usd
   }
+  // moving clips: the engine's per-film budget (documentary films only, so this is the ceiling)
+  if (o.videoModel && o.directed) usd += Math.min(3, Math.max(1, Math.round(o.durationSec / 20))) * priceUsage(o.videoModel, { outputTokens: 5792 * 8 }).usd
   return usd
 }

@@ -40,7 +40,7 @@ const MEDIA_KINDS: Array<{ kind: keyof MediaSettings; icon: string; title: strin
   { kind: 'image', icon: '🖼️', title: 'Pictures', hint: 'Painted backgrounds for directed scenes. Reused from your library first.' },
   { kind: 'voice', icon: '🎙️', title: 'Narrator voice', hint: 'Speaks the script. Takes are reused across videos when the line matches.' },
   { kind: 'music', icon: '🎵', title: 'Music', hint: 'The soundtrack under your video.' },
-  { kind: 'video', icon: '🎬', title: 'Video clips', hint: 'B-roll clips for your library — free stock, or made by Gemini Omni Flash (“Make with AI” on the Library tab).' }
+  { kind: 'video', icon: '🎬', title: 'Video clips', hint: 'The engine picks the few scenes where real motion matters (waves, lava, crowds) and turns them into moving clips — up to 3 per video.' }
 ]
 
 type Option = { value: string; label: string; typical: string; cost: number; speed: number; quality: number; tags: string[]; note?: string; needs?: KeyId }
@@ -70,6 +70,8 @@ function optionsFor(kind: keyof MediaSettings): Option[] {
       ...list,
       { value: 'none', label: 'Silent (captions only)', typical: 'free', cost: 1, speed: 3, quality: 1, tags: [] }
     ]
+  if (kind === 'video')
+    return [...list, { value: 'none', label: 'Stills only', typical: 'free', cost: 1, speed: 3, quality: 2, tags: ['💰 cheapest'], note: 'painted pictures with a 3D camera move, never clips' }]
   if (kind === 'music')
     return [
       ...list,

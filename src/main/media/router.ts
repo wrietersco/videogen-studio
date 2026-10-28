@@ -345,6 +345,86 @@ export class MediaRouter {
 
   // ---------------- video clips ----------------
 
+  /** can directed scenes get moving clips? (Gemini Omni with a key, or stock clips with a Pexels/Pixabay key) */
+  clipsAvailable(): boolean {
+    const [p] = split(this.d.settings().media.video || 'stock')
+    if (p === 'gemini') return this.omni.configured()
+    if (p === 'stock') return Boolean(this.d.key('pexels') || this.d.key('pixabay'))
+    return false
+  }
+
+  /**
+   * A moving clip for a motion plate, library first: an identical earlier
+   * clip → a close library clip → Gemini Omni animating the painted still
+   * (keeps the film's art direction) → a free stock clip. Null = keep the still.
+   */
+  async motionClip(req: {
+    prompt: string
+    subjectLabel?: string
+    camera?: string
+    imageStyle?: string
+    still?: Buffer
+    width: number
+    height: number
+    durationSec: number
+    projectId: string
+  }): Promise<{ buffer: Buffer; assetId: string; source: AssetMeta['source'] } | null> {
+    const lib = this.d.library
+    const orientation = orientationOf(req.width, req.height)
+    const aspect = orientation === 'landscape' ? '16:9' : '9:16'
+    const [p] = split(this.d.settings().media.video || 'stock')
+    const model = this.clipModel()
+    const prompt = [
+      req.prompt.trim().replace(/\.*$/, '.'),
+      `Slow cinematic ${req.camera === 'pull' ? 'pull-back' : req.camera === 'drift' ? 'drift' : 'push-in'}; natural, continuous motion of the subject and its surroundings.`,
+      req.imageStyle ? `Look: ${req.imageStyle.trim().replace(/\.*$/, '.')}` : '',
+      'No text, no captions, no dialogue, no music, no cuts.'
+    ]
+      .filter(Boolean)
+      .join(' ')
+    const key = createHash('sha1').update(`${model}|${aspect}|${prompt}`).digest('hex').slice(0, 16)
+    const use = (a: AssetMeta) => {
+      const path = lib.path(a.id)
+      if (!path) return null
+      lib.markUsed(a.id, req.projectId)
+      return { buffer: readFileSync(path), assetId: a.id, source: a.source }
+    }
+    if (this.reuse) {
+      const exact = lib.findByKey('video', key)
+      if (exact) {
+        if (exact.source === 'generated') meter.record({ kind: 'video', provider: 'gemini', model, usage: { outputTokens: (exact.durationSec ?? 8) * 5792 }, saved: true, note: `reused ${exact.id}` })
+        return use(exact)
+      }
+      const close = lib.search(`${req.subjectLabel ?? ''} ${req.prompt}`, { kind: 'video', orientation, minDurationSec: req.durationSec * 0.6, limit: 1 })[0]
+      if (close && close.score >= 0.75) return use(close.asset)
+    }
+    if (p === 'gemini' && this.omni.configured()) {
+      const still = req.still ? { mimeType: 'image/jpeg', base64: req.still.toString('base64') } : undefined
+      const { video, usd } = await this.omni.clip({ prompt, aspect, model, image: still })
+      const a = lib.add(video, '.mp4', {
+        kind: 'video',
+        source: 'generated',
+        title: (req.subjectLabel || req.prompt).slice(0, 80),
+        tags: [...tokenize(req.subjectLabel ?? ''), ...tokenize(req.prompt).slice(0, 8), 'clip', 'omni', 'motion'],
+        prompt,
+        provider: 'gemini',
+        model,
+        key,
+        costUsd: usd,
+        license: { name: 'Generated with your API key (SynthID watermarked)', requiresAttribution: false }
+      })
+      return use(a)
+    }
+    if (p === 'stock' && (this.d.key('pexels') || this.d.key('pixabay'))) {
+      const query = req.subjectLabel?.trim() || tokenize(req.prompt).slice(0, 4).join(' ')
+      const { results } = await searchStock('video', query, { orientation, pexelsKey: this.d.key('pexels'), pixabayKey: this.d.key('pixabay') })
+      const pick = results.find((r) => (r.durationSec ?? 0) >= req.durationSec * 0.8)
+      if (!pick) return null
+      return use(await downloadStock(lib, pick, [...tokenize(query), 'motion']))
+    }
+    return null
+  }
+
   /** the clip model Settings → Media points at (Gemini Omni Flash is the only generator today) */
   private clipModel(): string {
     const [p, model] = split(this.d.settings().media.video || 'stock')

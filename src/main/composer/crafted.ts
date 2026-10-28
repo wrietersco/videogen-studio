@@ -92,6 +92,7 @@ export function craftedCSS(ctx: DesignContext, th: CraftTheme): string {
     .cr-glow { position: absolute; left: 50%; top: 52%; width: ${Math.round(ctx.width * 1.3)}px; height: ${Math.round(ctx.width * 1.3)}px; transform: translate(-50%, -50%); background: radial-gradient(circle, ${th.accent2}2E 0%, ${th.accent}0F 35%, transparent 62%); }
     .cr-vig { position: absolute; inset: 0; background: radial-gradient(ellipse 75% 60% at 50% 50%, transparent 55%, rgba(3,5,10,0.85) 100%); }
     .cr-plate { position: absolute; left: 0; top: 0; width: ${ctx.width}px; height: ${ctx.height}px; }
+    .cr-clip { object-fit: cover; transform-origin: 50% 55%; }
     .cr-scrim-top { position: absolute; left: 0; right: 0; top: 0; height: ${Math.round(ctx.height * (ctx.isVertical ? 0.46 : 0.5))}px; background: linear-gradient(180deg, rgba(4,6,9,0.82) 0%, rgba(4,6,9,0.38) 62%, transparent 100%); }
     .cr-scrim-bot { position: absolute; left: 0; right: 0; bottom: 0; height: ${Math.round(ctx.height * 0.34)}px; background: linear-gradient(0deg, rgba(4,6,9,0.88) 0%, rgba(4,6,9,0.42) 60%, transparent 100%); }
     .cr-scrim-side { position: absolute; left: 0; top: 0; bottom: 0; width: ${Math.round(ctx.width * 0.58)}px; background: linear-gradient(90deg, rgba(4,6,9,0.84) 0%, rgba(4,6,9,0.45) 65%, transparent 100%); }
@@ -267,17 +268,28 @@ export function renderCraftedScene(
   const design = spec.design as FilmDesign
 
   // ---------- background ----------
-  const plate = craft.background === 'plate' && craft.plate?.file && craft.plate.depthFile ? craft.plate : undefined
+  // a moving clip (engine-chosen motion plate) wins over the painted still
+  const clip = craft.background === 'plate' && craft.plate?.clipFile ? craft.plate : undefined
+  const plate = clip ?? (craft.background === 'plate' && craft.plate?.file && craft.plate.depthFile ? craft.plate : undefined)
   let plateJob: PlateJob | undefined
   if (plate) {
     const anchor = plate.anchor ?? { x: plate.subject === 'left' ? 0.3 : plate.subject === 'right' ? 0.7 : 0.5, y: 0.6 }
-    parts.push(`<canvas class="cr-plate" id="${id}-plate" width="${ctx.width}" height="${ctx.height}"></canvas>`)
+    if (clip) {
+      // the framework seeks/plays it from data-start; muted — the soundtrack is ours.
+      // A slow scale keeps a camera feel (transform only: never animate a video's box)
+      parts.push(
+        `<video class="clip cr-plate cr-clip" id="${id}-clip" src="${esc(clip.clipFile as string)}" data-start="${startSec.toFixed(3)}" data-duration="${dur.toFixed(3)}" data-track-index="${20 + index}" muted playsinline preload="auto"></video>`
+      )
+      steps.push({ kind: 'tween', t: startSec, sel: `#${id}-clip`, from: { scale: 1.0 }, to: { scale: clip.camera === 'pull' ? 1.0 : 1.06 }, dur, ease: 'none' })
+    } else {
+      parts.push(`<canvas class="cr-plate" id="${id}-plate" width="${ctx.width}" height="${ctx.height}"></canvas>`)
+    }
     parts.push(R.align === 'left' && ctx.width > ctx.height * 1.15 ? `<div class="cr-scrim-side"></div>` : `<div class="cr-scrim-top"></div>`)
     parts.push(`<div class="cr-scrim-bot"></div>`)
     plateJob = {
       sceneId: id,
-      file: plate.file as string,
-      depthFile: plate.depthFile as string,
+      file: (plate.file ?? '') as string,
+      depthFile: (plate.depthFile ?? '') as string,
       start: startSec,
       dur,
       camera: plate.camera,
@@ -403,7 +415,8 @@ export function renderCraftedScene(
 
   // ---------- annotation on the plate ----------
   const anno = craft.widgets.find((w) => w.type === 'annotation')
-  if (plate && plateJob && anno && anno.type === 'annotation') {
+  // (no ring on a moving clip: the subject won't hold still under it)
+  if (plate && plateJob && !clip && anno && anno.type === 'annotation') {
     const ax = plateJob.cx * ctx.width
     const ay = plateJob.cy * ctx.height
     const r = 74 * s
@@ -490,7 +503,8 @@ export function renderCraftedScene(
   }
 
   const html = `<section class="scene crafted" id="${id}" data-kind="crafted">${parts.join('\n')}</section>`
-  return { html, steps, plate: plateJob }
+  // clips are played by the framework, not the WebGL plate engine
+  return { html, steps, plate: clip ? undefined : plateJob }
 }
 
 /**

@@ -18,7 +18,7 @@ import type { LLMProvider } from '../providers/types'
 
 /** what the scene director fills in (the engine owns ids, plate files and reviews) */
 export const SceneCraftDraft = SceneCraft.omit({ sceneId: true, review: true }).extend({
-  plate: Plate.omit({ file: true, depthFile: true, anchor: true }).optional()
+  plate: Plate.omit({ file: true, depthFile: true, anchor: true, clipFile: true }).optional()
 })
 export type SceneCraftDraft = z.infer<typeof SceneCraftDraft>
 
@@ -58,6 +58,7 @@ Rules:
 - Numbers must come from the script or be well-established facts; if the script has no numbers, choose a non-numeric widget (toggle, timeline, quoteCard, slots) or none.
 - Never use the same widget type as the previous scene.
 - background "plate" (only when plates are available): write plate.prompt as a vivid, concrete image brief (subject, setting, era, light, weather, camera) — no text in the image. Set plate.subject to where the subject sits and plate.subjectLabel to its short name. Plate scenes use widgets: [annotation] plus at most ONE compact widget (counter, distanceBar, waveform, statPair). plate.subjectLabel names exactly the spot the annotation must mark (e.g. "the gash below the waterline", not just "ship").
+- plate.motion (only when clipsAvailable): true ONLY when real movement is the point of the beat — crashing waves, erupting lava, a crowd surging, machinery turning, a storm rolling in. Static subjects (portraits, buildings, documents, maps) stay false. Moving clips are expensive: at most one or two scenes per film.
 - camera: push (default, reveals), pull (aftermath, scale), truckLeft/truckRight (journeys), craneUp (rising stakes), drift (calm).
 ${WIDGET_GUIDE}
 Output ONLY the JSON object.`
@@ -110,8 +111,9 @@ function repair<T>(schema: z.ZodType<T>, raw: unknown): { ok: true; data: T } | 
 const COMPACT = new Set<Widget['type']>(['counter', 'distanceBar', 'waveform', 'statPair'])
 
 /** deterministic guards: what the engine can actually render well */
-export function guardCraft(draft: SceneCraftDraft, sceneId: string, opts: { platesAvailable: boolean; narration: string }): SceneCraft {
+export function guardCraft(draft: SceneCraftDraft, sceneId: string, opts: { platesAvailable: boolean; clipsAvailable?: boolean; narration: string }): SceneCraft {
   const usePlate = draft.background === 'plate' && opts.platesAvailable && !!draft.plate?.prompt
+  if (usePlate && draft.plate) draft = { ...draft, plate: { ...draft.plate, motion: Boolean(opts.clipsAvailable && draft.plate.motion) } }
   let widgets = draft.widgets.filter((w) => w.type !== 'annotation' || usePlate)
   if (usePlate) {
     const anno = widgets.find((w) => w.type === 'annotation')
@@ -141,6 +143,8 @@ export function guardCraft(draft: SceneCraftDraft, sceneId: string, opts: { plat
 export interface DirectorOptions {
   provider: LLMProvider
   platesAvailable: boolean
+  /** moving clips can be made for plate scenes (the engine still caps how many) */
+  clipsAvailable?: boolean
   userPrompt: string
   concurrency?: number
   onScene?: (index: number, craft: SceneCraft) => void
@@ -201,7 +205,7 @@ export class SceneDirector {
   async directScene(spec: VideoSpec, design: FilmDesign, index: number, critique?: string): Promise<SceneCraft> {
     const scene = spec.scenes[index]
     const narration = spec.narration.find((n) => n.sceneId === scene.id)?.text ?? ''
-    const guardOpts = { platesAvailable: this.opts.platesAvailable && design.look === 'documentary', narration }
+    const guardOpts = { platesAvailable: this.opts.platesAvailable && design.look === 'documentary', clipsAvailable: this.opts.clipsAvailable, narration }
     if (this.mock) return guardCraft(heuristicCraft(spec, design, index), scene.id, guardOpts)
     sceneSchema ??= toSchema(SceneCraftDraft)
     const preset = PLATFORM_PRESETS[spec.platform]
@@ -212,6 +216,7 @@ export class SceneDirector {
       thisScene: { position: `${index + 1} of ${spec.scenes.length}`, durationSec: scene.durationSec, plannedContent: sceneText(scene), narration },
       previousSceneWidgets: prev?.widgets.map((w) => w.type) ?? [],
       platesAvailable: guardOpts.platesAvailable,
+      clipsAvailable: Boolean(guardOpts.platesAvailable && guardOpts.clipsAvailable),
       ...(critique ? { criticNotes: critique, instruction: 'A reviewer watched the rendered scene. Fix every note while keeping what works.' } : {})
     }
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -233,6 +238,22 @@ export class SceneDirector {
     }
     return guardCraft(heuristicCraft(spec, design, index), scene.id, guardOpts)
   }
+}
+
+/** how many moving clips one film may carry (≈ $0.80 each with Gemini Omni) */
+export function clipBudget(totalSec: number): number {
+  return Math.min(3, Math.max(1, Math.round(totalSec / 20)))
+}
+
+/**
+ * The engine's call on which motion requests become clips: the opening scene
+ * first (it is the hook), then the scenes the directors flagged, in film order,
+ * up to the budget. Everything else keeps its painted still.
+ */
+export function pickClipScenes(crafts: SceneCraft[], totalSec: number): SceneCraft[] {
+  const want = crafts.filter((c) => c.background === 'plate' && c.plate?.motion)
+  const keep = new Set(want.slice(0, clipBudget(totalSec)).map((c) => c.sceneId))
+  return crafts.map((c) => (c.plate?.motion && !keep.has(c.sceneId) ? { ...c, plate: { ...c.plate, motion: false, clipFile: undefined } } : c))
 }
 
 // ---------------------------------------------------------------- heuristics (mock + fallback)

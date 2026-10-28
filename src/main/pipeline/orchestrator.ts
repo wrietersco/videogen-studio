@@ -11,9 +11,9 @@ import { captureSceneThumbs } from '../livePreview'
 import { ProjectStore, type StageName, type StageState } from '../store/projectStore'
 import { RenderService, type CheckReport, type RenderProgress } from '../rendererService/hyperframes'
 import { vendorDir, fontsDir, musicDir } from '../paths'
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { PLATFORM_PRESETS } from '@shared/presets'
-import { SceneDirector } from '../director/director'
+import { SceneDirector, pickClipScenes } from '../director/director'
 import { makePlate, relocatePlate } from '../director/plates'
 import { reviewScenes } from '../director/critic'
 
@@ -526,7 +526,9 @@ export class Orchestrator {
     emit({ stage: 'direct', status: 'started', total: only ? only.ids.size : spec.scenes.length })
     const director = new SceneDirector({
       provider,
-      platesAvailable: this.media ? this.media.imageAvailable() : imageProvider !== null,
+      // a clip can stand in for a still, so moving clips alone make plate scenes possible
+      platesAvailable: this.media ? this.media.imageAvailable() || this.media.clipsAvailable() : imageProvider !== null,
+      clipsAvailable: this.media?.clipsAvailable() ?? false,
       userPrompt,
       onScene: (i, c) =>
         emit({ stage: 'direct', status: 'scene', sceneIndex: i, headline: c.headline, widgets: c.widgets.map((w) => w.type), background: c.background })
@@ -536,6 +538,8 @@ export class Orchestrator {
     const previous = new Map(spec.crafts.map((c) => [c.sceneId, c]))
     let next: VideoSpec = { ...spec, design }
     next = { ...next, crafts: await director.directScenes(next, design, only?.notes, only?.ids) }
+    // the engine's call: which motion requests become moving clips (budgeted per film)
+    next.crafts = pickClipScenes(next.crafts, next.scenes.reduce((t, s) => t + s.durationSec, 0))
     // an unchanged plate brief keeps its finished files (no second image bill)
     next.crafts = next.crafts.map((c) => {
       const old = previous.get(c.sceneId)?.plate
@@ -543,13 +547,20 @@ export class Orchestrator {
         return {
           ...c,
           // same subject → same anchor; a new subject label is re-located on the same painting
-          plate: { ...c.plate, file: old.file, depthFile: old.depthFile, anchor: old.subjectLabel === c.plate.subjectLabel ? old.anchor : undefined }
+          plate: {
+            ...c.plate,
+            file: old.file,
+            depthFile: old.depthFile,
+            anchor: old.subjectLabel === c.plate.subjectLabel ? old.anchor : undefined,
+            clipFile: c.plate.motion ? old.clipFile : undefined
+          }
         }
       return c
     })
     this.store.saveSpec(projectId, next)
     const plates = next.crafts.filter((c) => c.background === 'plate').length
-    this.track(projectId, 'direct', 'done', `${design.look} · ${next.crafts.length} scenes directed · ${plates} plate(s)`)
+    const clips = next.crafts.filter((c) => c.plate?.motion).length
+    this.track(projectId, 'direct', 'done', `${design.look} · ${next.crafts.length} scenes directed · ${plates} plate(s)${clips ? ` · ${clips} moving` : ''}`)
     emit({ stage: 'direct', status: 'done' })
     if (this.cancelled) return next
     next = await this.runPlates(projectId, next, emit, provider)
@@ -565,8 +576,11 @@ export class Orchestrator {
         c.plate.anchor = await relocatePlate({ vision: vision.id === 'mock' ? null : vision, plate: c.plate, projectDir: this.store.dir(projectId), width: preset0.width, height: preset0.height }).catch(() => undefined)
       }
     }
-    const todo = spec.crafts.filter((c) => c.background === 'plate' && c.plate && !c.plate.file)
-    if (todo.length === 0 || !spec.design) return spec
+    const stillsAvailable = this.media ? this.media.imageAvailable() : Boolean(this.imageProviderFor())
+    const wantsClip = (c: VideoSpec['crafts'][number]) => Boolean(c.background === 'plate' && c.plate?.motion && !c.plate.clipFile && this.media?.clipsAvailable())
+    // a motion plate without a still can still become a clip (text-to-video) when no image model is set
+    const todo = spec.crafts.filter((c) => c.background === 'plate' && c.plate && !c.plate.file && (stillsAvailable || !wantsClip(c)))
+    if ((todo.length === 0 && !spec.crafts.some(wantsClip)) || !spec.design) return spec
     const design = spec.design
     const imageProvider = this.imageProviderFor()
     const crafts = new Map(spec.crafts.map((c) => [c.sceneId, structuredClone(c)]))
@@ -577,9 +591,10 @@ export class Orchestrator {
       c.plate = undefined
       c.widgets = c.widgets.filter((w) => w.type !== 'annotation')
     }
-    if (this.media ? !this.media.imageAvailable() : !imageProvider) {
+    if (!stillsAvailable) {
       todo.forEach((c) => toGrid(c.sceneId))
-      return { ...spec, crafts: spec.crafts.map((c) => crafts.get(c.sceneId) ?? c) }
+      if (!spec.crafts.some(wantsClip)) return { ...spec, crafts: spec.crafts.map((c) => crafts.get(c.sceneId) ?? c) }
+      todo.length = 0
     }
     this.track(projectId, 'plates', 'running')
     emit({ stage: 'plates', status: 'started', total: todo.length })
@@ -632,9 +647,59 @@ export class Orchestrator {
       }
     }
     await Promise.all([worker(), worker()])
-    this.track(projectId, 'plates', 'done', `${made}/${todo.length} painted`)
+    const moving = await this.runClips(projectId, spec, crafts, toGrid)
+    this.track(projectId, 'plates', 'done', `${made}/${todo.length} painted${moving ? ` · ${moving} moving` : ''}`)
     emit({ stage: 'plates', status: 'done', made })
     return { ...spec, crafts: spec.crafts.map((c) => crafts.get(c.sceneId) ?? c) }
+  }
+
+  /**
+   * Motion plates → moving clips (one at a time: each is a minute-long, paid
+   * generation). The painted still seeds the clip so the art direction holds;
+   * any failure keeps the still, and a clip-only scene with no still falls
+   * back to the grid look.
+   */
+  private async runClips(
+    projectId: string,
+    spec: VideoSpec,
+    crafts: Map<string, VideoSpec['crafts'][number]>,
+    toGrid: (sceneId: string) => void
+  ): Promise<number> {
+    const media = this.media
+    if (!media || !spec.design || !media.clipsAvailable()) return 0
+    const preset = PLATFORM_PRESETS[spec.platform]
+    const dir = this.store.dir(projectId)
+    let made = 0
+    for (const scene of spec.scenes) {
+      if (this.cancelled) break
+      const c = crafts.get(scene.id)
+      const plate = c?.plate
+      if (!c || c.background !== 'plate' || !plate?.motion || plate.clipFile) continue
+      try {
+        const still = plate.file && existsSync(join(dir, plate.file)) ? readFileSync(join(dir, plate.file)) : undefined
+        const r = await media.motionClip({
+          prompt: plate.prompt,
+          subjectLabel: plate.subjectLabel,
+          camera: plate.camera,
+          imageStyle: spec.design.imageStyle,
+          still,
+          width: preset.width,
+          height: preset.height,
+          durationSec: scene.durationSec,
+          projectId
+        })
+        if (!r) throw new Error('no clip source')
+        mkdirSync(join(dir, 'assets', 'plates'), { recursive: true })
+        writeFileSync(join(dir, 'assets', 'plates', `${scene.id}.mp4`), r.buffer)
+        c.plate = { ...plate, clipFile: `assets/plates/${scene.id}.mp4` }
+        made += 1
+      } catch (err) {
+        this.store.appendEvent(projectId, `clip for ${scene.id} skipped: ${String((err as Error)?.message ?? err).slice(0, 160)}`)
+        if (plate.file) c.plate = { ...plate, motion: false }
+        else toGrid(scene.id)
+      }
+    }
+    return made
   }
 
   /**

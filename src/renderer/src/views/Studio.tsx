@@ -463,6 +463,7 @@ function estimateFor(s: SettingsView, durationSec: number): { usd: number; label
   }
   const imageModel = pick(s.media?.image ?? 'auto', DEFAULT_IMAGE)
   const voiceModel = pick(s.media?.voice ?? 'auto', DEFAULT_VOICE)
-  const usd = estimateVideoCost({ chatModel, imageModel, voiceModel, durationSec, directed: s.craft !== 'classic' })
-  return { usd, label: [chatModel, imageModel, voiceModel].filter(Boolean).join(' + ') }
+  const videoModel = (s.media?.video ?? '').startsWith('gemini:') ? s.media.video.split(':')[1] : undefined
+  const usd = estimateVideoCost({ chatModel, imageModel, voiceModel, videoModel, durationSec, directed: s.craft !== 'classic' })
+  return { usd, label: [chatModel, imageModel, voiceModel, videoModel].filter(Boolean).join(' + ') }
 }

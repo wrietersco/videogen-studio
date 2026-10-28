@@ -160,6 +160,10 @@ export const Plate = z.object({
   subject: z.enum(['left', 'center', 'right']).default('center'),
   /** short name of the subject, used to locate it in the finished image */
   subjectLabel: z.string().max(40).default(''),
+  /** the beat needs real movement (waves, lava, crowds, machines) — the engine may animate it into a video clip */
+  motion: z.boolean().default(false),
+  /** filled by the engine when the still became a moving clip (project-relative mp4) */
+  clipFile: z.string().optional(),
   /** filled by the plate engine (project-relative paths + located anchor in 0..1 image space) */
   file: z.string().optional(),
   depthFile: z.string().optional(),
