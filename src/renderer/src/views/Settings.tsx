@@ -39,7 +39,7 @@ const MEDIA_KINDS: Array<{ kind: keyof MediaSettings; icon: string; title: strin
   { kind: 'image', icon: '🖼️', title: 'Pictures', hint: 'Painted backgrounds for directed scenes. Reused from your library first.' },
   { kind: 'voice', icon: '🎙️', title: 'Narrator voice', hint: 'Speaks the script. Takes are reused across videos when the line matches.' },
   { kind: 'music', icon: '🎵', title: 'Music', hint: 'The soundtrack under your video.' },
-  { kind: 'video', icon: '🎬', title: 'Video clips', hint: 'B-roll clips for your library — free stock, or made by Gemini Omni Flash (“Make with AI” on the Assets tab).' }
+  { kind: 'video', icon: '🎬', title: 'Video clips', hint: 'B-roll clips for your library — free stock, or made by Gemini Omni Flash (“Make with AI” on the Library tab).' }
 ]
 
 type Option = { value: string; label: string; typical: string; cost: number; speed: number; quality: number; tags: string[]; note?: string; needs?: KeyId }
@@ -122,87 +122,49 @@ export default function Settings() {
   const defaultModel: Record<string, string> = { openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash' }
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl space-y-6 p-8">
+    <div className="page-bg h-full overflow-y-auto">
+      <div className="mx-auto max-w-5xl space-y-5 p-8">
         <div className="flex items-end justify-between">
           <div>
-            <h1 className="text-2xl font-black tracking-tight">⚙️ Settings</h1>
-            <p className="text-sm text-white/45">Pick your engines once. Everything is billed to your own keys, and you see the real cost of every video.</p>
+            <h1 className="text-3xl font-black tracking-tight">⚙️ Settings</h1>
+            <p className="mt-1 text-[15px] text-ink/60">Connect your AI accounts and choose who makes what. You pay the providers directly, and every video shows you what it cost.</p>
           </div>
-          {saved && <span className="pop-in rounded-full bg-emerald-400/15 px-3 py-1 text-xs font-bold text-emerald-200">{saved}</span>}
+          {saved && <span className="pop-in rounded-full bg-mint-soft px-3 py-1 text-xs font-bold text-mint">{saved}</span>}
         </div>
 
-        {/* brain */}
-        <Section icon="🧠" title="The brain" hint="Writes the script, designs every scene and reviews the frames." tone="violet">
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            {providers.map((p) => {
-              const active = settings.provider === p.id
-              const usable = p.id === 'mock' || p.configured
-              return (
-                <button
-                  key={p.id}
-                  disabled={!usable}
-                  onClick={() => patch({ provider: p.id }, `🧠 ${p.label} is now in charge`)}
-                  className={`rounded-2xl border p-4 text-left transition-all hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40 ${
-                    active ? 'border-[#7C5CFF] bg-[#7C5CFF]/15 shadow-[0_0_24px_rgba(124,92,255,0.25)]' : 'border-white/10 bg-black/20'
-                  }`}
-                >
-                  <div className="flex items-center justify-between text-sm font-black">
-                    {p.id === 'mock' ? 'Free engine' : p.label}
-                    {active && <span>✅</span>}
-                  </div>
-                  <div className="mt-1 text-[11px] leading-snug text-white/45">{usable ? BRAIN_HINT[p.id] : 'Add a key below to unlock'}</div>
-                </button>
-              )
-            })}
-          </div>
-          {settings.provider !== 'mock' && (
-            <div className="mt-4">
-              <div className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-white/40">Model · cheapest → priciest</div>
-              <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
-                {(models[settings.provider] ?? []).map((m) => {
-                  const sel = (settings.models[settings.provider] || defaultModel[settings.provider]) === m.id
-                  return (
-                    <button
-                      key={m.id}
-                      onClick={() => patch({ models: { [settings.provider]: m.id } }, `✓ ${m.label}`)}
-                      className={`rounded-xl border px-3 py-2 text-left transition-all ${sel ? 'border-[#00E5FF] bg-[#00E5FF]/10' : 'border-white/10 hover:bg-white/5'}`}
-                    >
-                      <div className="flex items-center justify-between gap-2 text-xs font-bold">
-                        {m.label}
-                        <span className="text-[10px] font-semibold text-white/50">{chatTags(m.id).join(' ')}</span>
-                      </div>
-                      <div className="mt-0.5 text-[10px] text-white/40">{m.priceNote}</div>
-                    </button>
-                  )
-                })}
-              </div>
+        {keys && !keys.openai && !keys.anthropic && !keys.gemini && (
+          <div className="pop-in flex items-start gap-3 rounded-2xl border-2 border-sunny/60 bg-sunny-soft p-4">
+            <span className="text-2xl">👋</span>
+            <div className="text-sm text-ink/80">
+              <div className="font-black text-ink">New here? Start with one key.</div>
+              The free engine works without any keys, so you can try the app right away. For premium videos, paste an <b>OpenAI</b> or <b>Google Gemini</b> key below. Either one covers writing, pictures and voices.
             </div>
-          )}
-        </Section>
+          </div>
+        )}
 
         {/* keys */}
-        <Section icon="🔑" title="Your keys" hint="Encrypted with Windows' credential store. They never leave this PC except to call that provider.">
+        <Section icon="🔑" title="Your AI accounts" hint="Paste a key to connect an account. Keys are encrypted on this PC and only ever sent to that company." tone="amber">
           <div className="space-y-2">
             {KEYS.map((k) => (
-              <div key={k.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+              <div key={k.id} className={`flex flex-wrap items-center gap-3 rounded-2xl border-2 px-4 py-3 transition-colors ${keys?.[k.id] ? 'border-mint/40 bg-mint-soft/50' : 'border-ink/10 bg-white'}`}>
                 <span className="text-lg">{k.icon}</span>
-                <div className="w-48">
-                  <div className="text-xs font-black">{k.label}</div>
-                  <div className="text-[10px] text-white/40">{k.what}</div>
+                <div className="w-56">
+                  <div className="text-sm font-black">{k.label}</div>
+                  <div className="text-[11px] text-ink/60">For {k.what}</div>
+                  {!keys?.[k.id] && <div className="text-[10px] text-ink/45">Get one: {k.where}</div>}
                 </div>
-                <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${keys?.[k.id] ? 'bg-emerald-400/15 text-emerald-300' : 'bg-white/5 text-white/35'}`}>
-                  {keys?.[k.id] ? '● connected' : '○ not set'}
+                <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${keys?.[k.id] ? 'bg-mint text-white' : 'bg-ink/5 text-ink/50'}`}>
+                  {keys?.[k.id] ? '✓ Connected' : 'Not connected'}
                 </span>
                 <input
                   type="password"
                   value={keyDrafts[k.id] ?? ''}
                   onChange={(e) => setKeyDrafts((d) => ({ ...d, [k.id]: e.target.value }))}
                   onKeyDown={(e) => e.key === 'Enter' && saveKey(k.id)}
-                  placeholder={keys?.[k.id] ? 'paste a new key to replace' : `paste key — ${k.where}`}
-                  className="min-w-0 flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-xs outline-none focus:border-[#7C5CFF]/60"
+                  placeholder={keys?.[k.id] ? 'Paste a new key to replace it' : 'Paste your key here'}
+                  className="field min-w-0 flex-1 px-3 py-2 text-sm"
                 />
-                <button onClick={() => saveKey(k.id)} className="btn-ghost !py-1.5">
+                <button onClick={() => saveKey(k.id)} disabled={!keyDrafts[k.id]?.trim()} className="btn-primary">
                   Save
                 </button>
                 {keys?.[k.id] && (
@@ -212,8 +174,8 @@ export default function Settings() {
                       refresh()
                       flash('key removed')
                     }}
-                    title="Forget this key"
-                    className="text-xs text-white/30 hover:text-red-300"
+                    title="Disconnect — forget this key"
+                    className="rounded-lg px-1.5 text-xs text-ink/45 hover:bg-coral-soft hover:text-coral"
                   >
                     ✕
                   </button>
@@ -223,14 +185,67 @@ export default function Settings() {
           </div>
         </Section>
 
+        {/* brain */}
+        <Section icon="🧠" title="Who writes & directs your videos" hint="This AI writes the script, plans each scene and checks the result." tone="violet">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {providers.map((p) => {
+              const active = settings.provider === p.id
+              const usable = p.id === 'mock' || p.configured
+              return (
+                <button
+                  key={p.id}
+                  disabled={!usable}
+                  onClick={() => patch({ provider: p.id }, `🧠 ${p.label} is now in charge`)}
+                  className={`tile flex flex-col justify-start p-4 text-left disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:translate-y-0 ${active ? 'tile-on' : ''}`}
+                >
+                  <div className="flex items-center justify-between text-sm font-black">
+                    {p.id === 'mock' ? '🆓 Free engine' : p.label}
+                    {active && <span>✅</span>}
+                  </div>
+                  <div className="mt-1 text-[11px] leading-snug text-ink/60">{usable ? BRAIN_HINT[p.id] : '🔒 Connect this account above first'}</div>
+                </button>
+              )
+            })}
+          </div>
+          {settings.provider !== 'mock' && (
+            <details className="group mt-4">
+              <summary className="cursor-pointer select-none text-sm font-bold text-grape">
+                <span className="text-ink/70">Model: </span>
+                {(models[settings.provider] ?? []).find((m) => m.id === (settings.models[settings.provider] || defaultModel[settings.provider]))?.label ??
+                  settings.models[settings.provider] ??
+                  defaultModel[settings.provider]}
+                <span className="ml-2 text-xs font-semibold group-open:hidden">▾ change (the default is a great pick)</span>
+              </summary>
+              <div className="mb-1.5 mt-3 text-[11px] font-bold text-ink/55">Cheapest first → most expensive last</div>
+              <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
+                {(models[settings.provider] ?? []).map((m) => {
+                  const sel = (settings.models[settings.provider] || defaultModel[settings.provider]) === m.id
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => patch({ models: { [settings.provider]: m.id } }, `✓ ${m.label}`)}
+                      className={`tile px-3 py-2 text-left ${sel ? 'tile-on' : ''}`}
+                    >
+                      <div className="flex items-center justify-between gap-2 text-xs font-bold">
+                        {m.label}
+                        <span className="text-[10px] font-semibold text-ink/60">{chatTags(m.id).join(' ')}</span>
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-ink/60">{m.priceNote}</div>
+                    </button>
+                  )
+                })}
+              </div>
+            </details>
+          )}
+        </Section>
+
         {/* media models */}
         <Section
           icon="🎨"
-          title="Media models"
+          title="Pictures, voices, music & clips"
           hint={
             <>
-              Choose who makes each kind of media. <Meter value={1} max={1} icon="💰" label="cost" /> cost · <Meter value={1} max={1} icon="⚡" label="speed" /> speed ·{' '}
-              <Meter value={1} max={1} icon="🏆" label="quality" /> quality. Prices as of {PRICES_AS_OF}.
+              Choose who makes each part. Not sure? Keep <b>Auto</b>. Each card shows the price, the speed and the quality. Prices as of {PRICES_AS_OF}.
             </>
           }
           tone="cyan"
@@ -241,9 +256,9 @@ export default function Settings() {
               return (
                 <div key={mk.kind}>
                   <div className="flex items-baseline gap-2">
-                    <span className="text-base">{mk.icon}</span>
-                    <span className="text-sm font-black">{mk.title}</span>
-                    <span className="text-[11px] text-white/40">{mk.hint}</span>
+                    <span className="text-lg">{mk.icon}</span>
+                    <span className="text-base font-black">{mk.title}</span>
+                    <span className="text-xs text-ink/55">{mk.hint}</span>
                   </div>
                   <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
                     {optionsFor(mk.kind).map((o) => {
@@ -253,25 +268,36 @@ export default function Settings() {
                         <button
                           key={o.value}
                           onClick={() => patch({ media: { ...settings.media, [mk.kind]: o.value } }, `${mk.icon} ${o.label}`)}
-                          className={`relative rounded-xl border p-3 text-left transition-all hover:-translate-y-0.5 ${
-                            sel ? 'border-[#00E5FF] bg-[#00E5FF]/10 shadow-[0_0_18px_rgba(0,229,255,0.18)]' : 'border-white/10 bg-black/20 hover:bg-white/5'
-                          } ${missing ? 'opacity-55' : ''}`}
+                          className={`tile relative flex flex-col justify-start p-3 text-left ${sel ? 'tile-on' : ''} ${missing ? 'opacity-55' : ''}`}
                         >
                           <div className="flex items-start justify-between gap-1">
                             <div className="text-xs font-black leading-tight">{o.label}</div>
                             {sel && <span className="text-xs">✅</span>}
                           </div>
-                          <div className="mt-1 text-[11px] font-bold text-amber-200/80">{o.typical}</div>
-                          <div className="mt-1.5 flex gap-2">
-                            <Meter value={5 - o.cost} max={4} icon="💰" label="cheapness" />
+                          <div className="mt-1.5 flex items-center gap-1.5">
+                            <span className="rounded-full bg-sunny-soft px-2 py-0.5 text-[11px] font-black text-ink" title="Price">
+                              {o.typical}
+                            </span>
+                            <span className="text-sm font-black tracking-tight text-mint" title="Cost: more $ = pricier">
+                              {'$'.repeat(Math.max(1, o.cost))}
+                              <span className="text-ink/15">{'$'.repeat(Math.max(0, 4 - Math.max(1, o.cost)))}</span>
+                            </span>
                           </div>
-                          <div className="mt-0.5 flex gap-2">
-                            <Meter value={o.speed} icon="⚡" label="speed" />
-                            <Meter value={o.quality} icon="🏆" label="quality" />
+                          <div className="mt-2 flex flex-col gap-1">
+                            <Meter value={o.speed} icon="⚡" label="Speed" color="bg-sky" />
+                            <Meter value={o.quality} icon="🏆" label="Quality" color="bg-berry" />
                           </div>
-                          {o.tags.length > 0 && <div className="mt-1.5 text-[10px] text-white/50">{o.tags.join(' · ')}</div>}
-                          {o.note && <div className="mt-1 text-[10px] leading-snug text-white/35">{o.note}</div>}
-                          {missing && <div className="mt-1 text-[10px] font-bold text-amber-300">needs a {o.needs} key</div>}
+                          {o.tags.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {o.tags.map((t) => (
+                                <span key={t} className="rounded-full bg-ink/5 px-2 py-0.5 text-[11px] font-bold text-ink/75">
+                                  {t}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {o.note && <div className="mt-1.5 text-[11px] leading-snug text-ink/55">{o.note}</div>}
+                          {missing && <div className="mt-1.5 rounded-lg bg-coral-soft px-1.5 py-0.5 text-[10px] font-bold text-coral">🔒 Connect your {KEYS.find((k) => k.id === o.needs)?.label ?? o.needs} account first</div>}
                         </button>
                       )
                     })}
@@ -282,8 +308,19 @@ export default function Settings() {
           </div>
         </Section>
 
+        {/* advanced — tucked away, the defaults are good */}
+        <details className="card group p-6">
+          <summary className="flex cursor-pointer select-none items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-2xl bg-ink/5 text-xl">🛠️</span>
+            <div>
+              <div className="text-lg font-black leading-tight">Advanced options</div>
+              <div className="text-[13px] text-ink/60">Reuse, privacy, scene style and render quality. The defaults work well, so you can skip this.</div>
+            </div>
+            <span className="ml-auto text-sm font-bold text-grape group-open:hidden">▾ Show</span>
+          </summary>
+          <div className="mt-5 space-y-6">
         {/* reuse & privacy */}
-        <Section icon="♻️" title="Reuse & privacy" hint="Your library makes every next video faster and cheaper." tone="amber">
+        <Section flat icon="♻️" title="Reuse & privacy" hint="Your library makes every next video faster and cheaper." tone="amber">
           <div className="grid grid-cols-2 gap-4">
             <div>
               <div className="text-xs font-bold">When a matching asset already exists…</div>
@@ -306,7 +343,7 @@ export default function Settings() {
                   🌍 Marked shareable
                 </Chip>
               </div>
-              <div className="mt-1.5 text-[10px] leading-snug text-white/35">
+              <div className="mt-1.5 text-[10px] leading-snug text-ink/45">
                 Nothing uploads by itself. Shareable assets go into share packs you export (and the community library, when it opens). Your uploads always start private.
               </div>
             </div>
@@ -334,7 +371,7 @@ export default function Settings() {
         </Section>
 
         {/* craft & render */}
-        <Section icon="🎬" title="Craft & render">
+        <Section flat icon="🎬" title="Scene style & quality">
           <div className="text-xs font-bold">Scene style</div>
           <div className="mt-2 flex flex-wrap gap-2">
             <Chip active={(settings.craft ?? 'directed') === 'directed'} onClick={() => patch({ craft: 'directed' })}>
@@ -344,7 +381,7 @@ export default function Settings() {
               🧩 Classic templates
             </Chip>
           </div>
-          <div className="mt-1 text-[11px] text-white/40">
+          <div className="mt-1 text-[11px] text-ink/60">
             Directed: a film director picks the look, a scene director designs every scene, pictures move in 2.5D, and a critic reviews the frames.
           </div>
           <div className="mt-4 text-xs font-bold">Render quality</div>
@@ -361,13 +398,15 @@ export default function Settings() {
               </Chip>
             ))}
           </div>
-          <label className="mt-4 flex cursor-pointer items-center gap-3 text-xs text-white/70">
-            <input type="checkbox" checked={settings.allowGpu} onChange={(e) => patch({ allowGpu: e.target.checked })} className="h-4 w-4 accent-[#7C5CFF]" />
+          <label className="mt-4 flex cursor-pointer items-center gap-3 text-xs text-ink/80">
+            <input type="checkbox" checked={settings.allowGpu} onChange={(e) => patch({ allowGpu: e.target.checked })} className="h-4 w-4 accent-grape" />
             <span>
-              ⚡ GPU fast mode <span className="text-white/40">(faster, but re-renders may differ by a few pixels)</span>
+              ⚡ GPU fast mode <span className="text-ink/60">(faster, but re-renders may differ by a few pixels)</span>
             </span>
           </label>
         </Section>
+          </div>
+        </details>
       </div>
     </div>
   )

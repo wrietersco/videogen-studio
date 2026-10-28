@@ -1,16 +1,53 @@
 @import 'tailwindcss';
 
+/*
+ * Colour tokens — one bright, friendly palette for every screen.
+ * Use them as Tailwind classes: bg-paper, text-ink, border-ink/10, bg-grape, text-berry …
+ *   paper   warm cream page background      card   white surfaces
+ *   ink     deep plum text (use /60 for helper text, /10 for borders)
+ *   grape   primary action + selection      berry  pink accent / gradient partner
+ *   sunny   highlights, cost                mint   success      sky  info / progress
+ *   coral   errors & stop (friendly red)
+ */
+@theme {
+  --color-paper: #fff8ef;
+  --color-card: #ffffff;
+  --color-ink: #2b1d4e;
+  --color-grape: #7c3aed;
+  --color-grape-soft: #efe7ff;
+  --color-berry: #ff4f9a;
+  --color-berry-soft: #ffe6f1;
+  --color-sunny: #ffc531;
+  --color-sunny-soft: #fff3cf;
+  --color-mint: #12b886;
+  --color-mint-soft: #dcf8ee;
+  --color-sky: #1fa6f0;
+  --color-sky-soft: #e0f3ff;
+  --color-coral: #f0543c;
+  --color-coral-soft: #ffe8e3;
+  --font-sans: 'Inter Variable', 'Segoe UI', system-ui, sans-serif;
+}
+
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 html, body, #app {
   height: 100%;
   margin: 0;
-  background: #0b0b12;
-  color: #f4f4ff;
-  font-family: 'Segoe UI', Inter, system-ui, sans-serif;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
   overflow: hidden;
+}
+
+/* soft confetti glow behind every page */
+.page-bg {
+  background:
+    radial-gradient(600px 300px at 0% 0%, rgba(255, 197, 49, 0.18), transparent 70%),
+    radial-gradient(700px 360px at 100% 0%, rgba(255, 79, 154, 0.12), transparent 70%),
+    radial-gradient(800px 400px at 50% 110%, rgba(124, 58, 237, 0.10), transparent 70%),
+    var(--color-paper);
 }
 
 /* draggable titlebar region */
@@ -58,39 +95,104 @@ html, body, #app {
   position: absolute;
   inset: 0;
   width: 45%;
-  background: linear-gradient(100deg, transparent, rgba(124, 92, 255, 0.16), transparent);
+  background: linear-gradient(100deg, transparent, rgba(124, 58, 237, 0.14), transparent);
   animation: board-sweep 1.6s ease-in-out infinite;
+}
+
+/* striped "working on it" progress fill */
+@keyframes stripes {
+  to { background-position: 28px 0; }
+}
+.progress-stripes {
+  background-image:
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.28) 0 7px, transparent 7px 14px),
+    linear-gradient(90deg, var(--color-grape), var(--color-berry), var(--color-sunny));
+  background-size: 28px 28px, 100% 100%;
+  animation: stripes 0.8s linear infinite;
 }
 
 ::-webkit-scrollbar { width: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #2a2a3d; border-radius: 6px; }
-::-webkit-scrollbar-thumb:hover { background: #3a3a55; }
+::-webkit-scrollbar-thumb { background: rgba(43, 29, 78, 0.15); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: rgba(43, 29, 78, 0.3); background-clip: padding-box; }
 
 /* ---------- shared playful controls ---------- */
+
+/* chunky candy button with a pressable bottom edge */
 .btn-primary {
   border-radius: 0.9rem;
-  padding: 0.5rem 1rem;
-  font-size: 0.75rem;
-  font-weight: 900;
-  color: #0b0b12;
-  background: linear-gradient(90deg, #7c5cff, #00e5ff);
-  transition: transform 0.15s, filter 0.15s, opacity 0.15s;
+  padding: 0.55rem 1.05rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: #fff;
+  background: linear-gradient(90deg, var(--color-grape), var(--color-berry));
+  box-shadow: 0 3px 0 #5b21b6, 0 8px 18px -8px rgba(124, 58, 237, 0.6);
+  transition: transform 0.15s, filter 0.15s, opacity 0.15s, box-shadow 0.15s;
 }
-.btn-primary:hover { filter: brightness(1.12); transform: translateY(-1px); }
-.btn-primary:active { transform: scale(0.96); }
-.btn-primary:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+.btn-primary:hover { filter: brightness(1.07); transform: translateY(-1px); }
+.btn-primary:active { transform: translateY(2px); box-shadow: 0 1px 0 #5b21b6; }
+.btn-primary:disabled { cursor: not-allowed; transform: none; filter: none; color: rgba(43, 29, 78, 0.45); background: #e4dbf7; box-shadow: 0 3px 0 #cbbcef; }
+
 .btn-ghost {
   border-radius: 0.9rem;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  padding: 0.5rem 0.9rem;
-  font-size: 0.75rem;
-  font-weight: 800;
-  color: rgba(255, 255, 255, 0.8);
+  border: 2px solid rgba(43, 29, 78, 0.12);
+  background: #fff;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--color-ink);
   transition: background 0.15s, transform 0.15s, border-color 0.15s;
 }
-.btn-ghost:hover { background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.25); transform: translateY(-1px); }
+.btn-ghost:hover { border-color: var(--color-grape); background: var(--color-grape-soft); transform: translateY(-1px); }
 .btn-ghost:active { transform: scale(0.96); }
+
+/* white rounded surface used for every card / panel */
+.card {
+  border-radius: 1.25rem;
+  background: #fff;
+  border: 2px solid rgba(43, 29, 78, 0.08);
+  box-shadow: 0 2px 0 rgba(43, 29, 78, 0.05), 0 10px 30px -18px rgba(43, 29, 78, 0.35);
+}
+
+/* selectable tile (platform, vibe, model…) */
+.tile {
+  border-radius: 1rem;
+  background: #fff;
+  border: 2px solid rgba(43, 29, 78, 0.1);
+  transition: transform 0.15s, border-color 0.15s, background 0.15s, box-shadow 0.15s;
+}
+.tile:hover { border-color: rgba(124, 58, 237, 0.45); transform: translateY(-2px); }
+.tile:active { transform: scale(0.97); }
+.tile-on {
+  border-color: var(--color-grape);
+  background: var(--color-grape-soft);
+  box-shadow: 0 3px 0 var(--color-grape);
+}
+
+/* text inputs */
+.field {
+  border-radius: 0.8rem;
+  border: 2px solid rgba(43, 29, 78, 0.12);
+  background: #fff;
+  color: var(--color-ink);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.field::placeholder { color: rgba(43, 29, 78, 0.38); }
+.field:focus { border-color: var(--color-grape); box-shadow: 0 0 0 4px rgba(124, 58, 237, 0.15); }
+
+/* little numbered step bubble */
+.step-dot {
+  display: inline-flex;
+  height: 1.6rem;
+  width: 1.6rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 900;
+  color: #fff;
+}
 
 @keyframes wiggle {
   0%, 100% { transform: rotate(0); }
@@ -110,3 +212,7 @@ html, body, #app {
   50% { transform: translateY(-4px); }
 }
 .float { animation: float 3s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

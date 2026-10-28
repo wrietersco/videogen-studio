@@ -82,7 +82,7 @@ export function CostReceipt({ projectId, live, compact }: { projectId?: string |
   if (all.length === 0) {
     if (compact) return null
     return (
-      <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4 text-xs text-white/40">
+      <div className="rounded-2xl border-2 border-ink/10 bg-white p-4 text-xs text-ink/60">
         🧾 No paid API calls recorded for this video {live ? 'yet' : '— made with the free engine or before cost tracking existed'}.
       </div>
     )
@@ -90,40 +90,43 @@ export function CostReceipt({ projectId, live, compact }: { projectId?: string |
 
   if (compact) {
     return (
-      <span className="rounded-full bg-amber-300/15 px-2.5 py-1 text-[11px] font-bold text-amber-200" title="spent so far on this job">
+      <span className="rounded-full bg-sunny-soft px-2.5 py-1 text-[11px] font-bold text-ink" title="spent so far on this job">
         🧾 {fmtUsd(total)}
-        {saved > 0 && <span className="ml-1.5 text-emerald-300">· saved {fmtUsd(saved)}</span>}
+        {saved > 0 && <span className="ml-1.5 text-mint">· saved {fmtUsd(saved)}</span>}
       </span>
     )
   }
 
   return (
-    <div className="rounded-xl border border-amber-300/20 bg-amber-300/[0.04] p-4">
+    <div className="rounded-2xl border-2 border-sunny/50 bg-sunny-soft p-4">
       <div className="flex items-baseline justify-between">
-        <div className="text-[11px] font-bold uppercase tracking-widest text-amber-200/70">🧾 Real cost of this video</div>
-        <div className="text-lg font-black text-amber-100">{fmtUsd(total)}</div>
+        <div className="text-sm font-bold text-ink">🧾 What this video cost</div>
+        <div className="text-2xl font-black text-ink">{fmtUsd(total)}</div>
       </div>
       {saved > 0 && (
-        <div className="mt-1 text-xs font-semibold text-emerald-300">
+        <div className="mt-1 text-xs font-semibold text-mint">
           ♻️ Reused library assets saved you {fmtUsd(saved)}
         </div>
       )}
-      <div className="mt-3 space-y-1">
+      <details className="mt-2">
+        <summary className="cursor-pointer select-none text-xs font-bold text-grape">See the breakdown</summary>
+      <div className="mt-2 space-y-1">
         {lines.map((l) => (
           <div key={l.key} className="flex items-center gap-2 text-[11px]">
             <span className="w-5 text-center">{KIND_ICON[l.kind] ?? '•'}</span>
-            <span className="w-28 shrink-0 truncate font-semibold capitalize text-white/70">{l.stage}</span>
-            <span className="min-w-0 flex-1 truncate text-white/45">
+            <span className="w-28 shrink-0 truncate font-semibold capitalize text-ink/80">{l.stage}</span>
+            <span className="min-w-0 flex-1 truncate text-ink/60">
               {l.model} · {l.calls}× · {l.units}
             </span>
-            <span className={`shrink-0 font-bold ${l.saved ? 'text-emerald-300' : 'text-white/80'}`}>
+            <span className={`shrink-0 font-bold ${l.saved ? 'text-mint' : 'text-ink/80'}`}>
               {l.saved ? `−${fmtUsd(l.saved)}` : l.unpriced ? 'unpriced' : fmtUsd(l.usd)}
             </span>
           </div>
         ))}
       </div>
-      <div className="mt-3 text-[10px] text-white/30">
-        Billed to your own API keys · prices as of {PRICES_AS_OF}
+      </details>
+      <div className="mt-2 text-[10px] text-ink/50">
+        Paid to the AI companies through your own keys · prices as of {PRICES_AS_OF}
         {runs > 1 ? ` · ${runs} jobs (generate + reworks)` : ''}
       </div>
     </div>

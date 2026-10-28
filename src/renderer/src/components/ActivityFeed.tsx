@@ -1,17 +1,17 @@
 import type { PipelineEvent } from '../api'
 
 const STAGE_META: Record<PipelineEvent['stage'], { label: string; icon: string }> = {
-  plan: { label: 'Planner', icon: '🧠' },
-  direct: { label: 'Scene Director', icon: '🎬' },
-  plates: { label: 'Plate Painter', icon: '🖼' },
-  critic: { label: 'Vision Critic', icon: '👁' },
-  compose: { label: 'Composer', icon: '🎼' },
-  qa: { label: 'QA Agents', icon: '🛡' },
+  plan: { label: 'Story writer', icon: '🧠' },
+  direct: { label: 'Scene designer', icon: '🎬' },
+  plates: { label: 'Background painter', icon: '🖼' },
+  critic: { label: 'Quality checker', icon: '👁' },
+  compose: { label: 'Assembler', icon: '🎼' },
+  qa: { label: 'Fixer', icon: '🛡' },
   thumbs: { label: 'Storyboard', icon: '📸' },
-  revise: { label: 'Scene Revision', icon: '🔁' },
+  revise: { label: 'Scene redo', icon: '🔁' },
   render: { label: 'Renderer', icon: '🎬' },
-  pipeline: { label: 'Pipeline', icon: '⚠️' },
-  done: { label: 'Pipeline', icon: '✅' }
+  pipeline: { label: 'Heads up', icon: '⚠️' },
+  done: { label: 'All done', icon: '✅' }
 }
 
 interface Row {
@@ -128,44 +128,40 @@ function toRows(events: PipelineEvent[]): Row[] {
   return rows
 }
 
-export function ActivityFeed({ events, running }: { events: PipelineEvent[]; running: boolean }) {
+export function ActivityFeed({ events, running, onClose }: { events: PipelineEvent[]; running: boolean; onClose?: () => void }) {
   const rows = toRows(events)
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-white/5 px-5 py-3.5">
-        <span className={`h-2 w-2 rounded-full ${running ? 'pulse-dot bg-[#00E5FF]' : 'bg-white/25'}`} />
-        <span className="text-xs font-bold uppercase tracking-widest text-white/60">Agent Activity</span>
-        {running && <span className="ml-auto text-[11px] text-white/35">working…</span>}
+      <div className="flex items-center gap-2 border-b-2 border-ink/5 px-5 py-3.5">
+        <span className={`h-2.5 w-2.5 rounded-full ${running ? 'pulse-dot bg-berry' : 'bg-ink/20'}`} />
+        <span className="text-sm font-black">🎬 Behind the scenes</span>
+        {running && <span className="text-[11px] text-ink/45">working…</span>}
+        {onClose && (
+          <button onClick={onClose} className="ml-auto rounded-full px-2 text-ink/40 hover:bg-ink/5 hover:text-ink" title="Hide">
+            ✕
+          </button>
+        )}
       </div>
       <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
         {rows.length === 0 && (
-          <div className="px-3 py-6 text-center text-xs leading-relaxed text-white/30">
-            The planner, composer, QA fixers and renderer
+          <div className="px-3 py-6 text-center text-xs leading-relaxed text-ink/45">
+            Each AI helper — writer, designer, checker, renderer —
             <br />
-            report their progress here in real time.
+            reports what it's doing here.
           </div>
         )}
         {rows.map((r, i) => (
-          <div
-            key={r.key}
-            className={`slide-up flex items-start gap-3 rounded-lg px-3 py-2 ${
-              i === rows.length - 1 ? 'bg-white/[0.05]' : ''
-            }`}
-          >
+          <div key={r.key} className={`slide-up flex items-start gap-3 rounded-xl px-3 py-2 ${i === rows.length - 1 ? 'bg-grape-soft' : ''}`}>
             <span className="mt-0.5 text-sm">{r.icon}</span>
             <div className="min-w-0 flex-1">
-              <div className="text-xs font-bold text-white/75">{r.label}</div>
-              <div className="truncate text-xs text-white/45">{r.detail}</div>
+              <div className="text-xs font-bold text-ink/85">{r.label}</div>
+              <div className="truncate text-xs text-ink/55" title={r.detail}>
+                {r.detail}
+              </div>
             </div>
             <span
-              className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${
-                r.state === 'ok'
-                  ? 'bg-emerald-400'
-                  : r.state === 'warn'
-                    ? 'bg-amber-400'
-                    : r.state === 'fail'
-                      ? 'bg-red-400'
-                      : 'pulse-dot bg-[#00E5FF]'
+              className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                r.state === 'ok' ? 'bg-mint' : r.state === 'warn' ? 'bg-sunny' : r.state === 'fail' ? 'bg-coral' : 'pulse-dot bg-berry'
               }`}
             />
           </div>

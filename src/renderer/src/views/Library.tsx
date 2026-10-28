@@ -75,159 +75,182 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
   const isInterrupted = (p: ProjectMeta) =>
     p.status === 'planning' || p.status === 'composed' || p.status === 'rendering' || p.status === 'cancelled'
 
-  const statusColor: Record<ProjectMeta['status'], string> = {
-    planning: 'bg-amber-400',
-    composed: 'bg-sky-400',
-    rendering: 'pulse-dot bg-[#00E5FF]',
-    done: 'bg-emerald-400',
-    error: 'bg-red-400',
-    cancelled: 'bg-white/30'
+  /** status in plain words, with a colour people can read at a glance */
+  const statusInfo = (p: ProjectMeta): { text: string; cls: string } => {
+    if (rerendering?.id === p.id) return { text: '⏳ Working…', cls: 'bg-sky-soft text-sky' }
+    if (p.status === 'done') return { text: '✅ Ready', cls: 'bg-mint-soft text-mint' }
+    if (p.status === 'error') return { text: '😕 Didn’t finish', cls: 'bg-coral-soft text-coral' }
+    return { text: '⏸️ Not finished', cls: 'bg-sunny-soft text-ink/80' }
   }
 
   return (
-    <div className="relative h-full overflow-y-auto p-8">
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-black tracking-tight">🎞️ My videos</h1>
-          <p className="text-sm text-white/45">
-            Everything you've made. Play it, re-render it, open it in the Editor to rework a scene, or see what it cost.
-          </p>
+    <div className="page-bg relative h-full overflow-y-auto">
+      <div className="mx-auto max-w-6xl p-8">
+        <div className="mb-6 flex items-end justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-black tracking-tight">🎞️ My videos</h1>
+            <p className="mt-1 text-[15px] text-ink/60">Everything you've made. Press ▶ to watch, or ✏️ to change a scene.</p>
+          </div>
+          <button onClick={refresh} className="btn-ghost" title="Check for new videos">
+            🔄 Refresh
+          </button>
         </div>
-        <button onClick={refresh} className="btn-ghost">
-          🔄 Refresh
-        </button>
-      </div>
 
-      {toast && (
-        <div className="slide-up fixed right-6 top-14 z-50 rounded-xl border border-white/15 bg-[#171725] px-4 py-3 text-xs font-semibold text-white/85 shadow-2xl">
-          {toast}
-        </div>
-      )}
+        {toast && (
+          <div className="pop-in fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-2xl border-2 border-ink/10 bg-white px-4 py-3 text-sm font-semibold text-ink shadow-2xl">
+            {toast}
+          </div>
+        )}
 
-      {projects.length === 0 && (
-        <EmptyState emoji="🎬" title="No videos yet">
-          Head to ✨ Create, type an idea, and your first video lands here.
-        </EmptyState>
-      )}
+        {projects.length === 0 && (
+          <EmptyState emoji="🎬" title="No videos yet">
+            Go to ✨ Create, type an idea, and your first video will show up here.
+          </EmptyState>
+        )}
 
-      <div className="grid grid-cols-3 gap-4">
-        {projects.map((p) => {
-          const busyHere = rerendering?.id === p.id
-          return (
-            <div
-              key={p.id}
-              className={`rounded-2xl border p-5 transition-all ${
-                selected === p.id ? 'border-[#7C5CFF]/60 bg-[#7C5CFF]/10' : 'border-white/10 bg-white/[0.03]'
-              }`}
-            >
-              <button
-                onClick={() => {
-                  setSelected(p.id)
-                  onOpenEditor(p.id)
-                }}
-                className="block w-full text-left"
+        <div className="grid grid-cols-3 gap-5">
+          {projects.map((p, idx) => {
+            const busyHere = rerendering?.id === p.id
+            const st = statusInfo(p)
+            const play = p.renders[0] ? () => api.playProject(p.id, p.renders[0].file) : undefined
+            return (
+              <div
+                key={p.id}
+                className={`card pop-in overflow-hidden transition-transform hover:-translate-y-0.5 ${selected === p.id ? '!border-grape' : ''}`}
+                style={{ animationDelay: `${Math.min(idx, 8) * 50}ms` }}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-bold">{p.title}</div>
-                    <div className="mt-0.5 truncate text-[11px] text-white/40">{p.prompt}</div>
+                <Poster id={p.id} title={p.title} onPlay={play} />
+                <div className="p-4">
+                  <div className="truncate text-[15px] font-black" title={p.title}>
+                    {p.title}
                   </div>
-                  <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${statusColor[p.status]}`} />
-                </div>
-                <div className="mt-3 flex items-center gap-2 text-[11px] text-white/40">
-                  <span className="rounded bg-white/10 px-1.5 py-0.5 font-bold uppercase">{p.status}</span>
-                  <span>{p.renders.length} render(s)</span>
-                  <span className="ml-auto">{new Date(p.createdAt).toLocaleDateString()}</span>
-                </div>
-                {p.lastError && <div className="mt-2 truncate text-[11px] text-red-300/70">{p.lastError}</div>}
-              </button>
-
-              {busyHere && (
-                <div className="mt-3">
-                  <div className="h-1 w-full overflow-hidden rounded-full bg-white/10">
-                    <div
-                      className="h-full bg-gradient-to-r from-[#7C5CFF] to-[#00E5FF] transition-all"
-                      style={{ width: `${Math.max(4, rerendering.pct)}%` }}
-                    />
+                  <div className="mt-0.5 truncate text-xs text-ink/55" title={p.prompt}>
+                    {p.prompt}
                   </div>
-                  <div className="mt-1 text-[10px] text-white/40">re-rendering — {rerendering.pct}%</div>
-                </div>
-              )}
+                  <div className="mt-2.5 flex items-center gap-2 text-[11px] text-ink/55">
+                    <span className={`rounded-full px-2 py-0.5 font-bold ${st.cls}`}>{st.text}</span>
+                    <span className="ml-auto">{new Date(p.createdAt).toLocaleDateString()}</span>
+                  </div>
+                  {p.lastError && (
+                    <div className="mt-2 truncate text-[11px] text-coral" title={p.lastError}>
+                      {p.lastError}
+                    </div>
+                  )}
 
-              {/* actions */}
-              <div className="mt-4 flex flex-wrap gap-1.5">
-                {p.renders[0] && (
-                  <button
-                    onClick={() => api.playProject(p.id, p.renders[0].file)}
-                    title="Play the rendered video"
-                    className="rounded-lg bg-emerald-500/20 px-2.5 py-1.5 text-[11px] font-bold text-emerald-300 hover:bg-emerald-500/35"
-                  >
-                    ▶ Play
-                  </button>
-                )}
-                {isInterrupted(p) && (
-                  <button
-                    onClick={() => resume(p.id)}
-                    disabled={Boolean(rerendering)}
-                    title="Continue from the last saved stage (spec, composition and QA results are reused — no repeat LLM cost)"
-                    className="rounded-lg bg-emerald-500/20 px-2.5 py-1.5 text-[11px] font-bold text-emerald-300 hover:bg-emerald-500/35 disabled:opacity-40"
-                  >
-                    ▶ Resume
-                  </button>
-                )}
-                <button
-                  onClick={() => rerender(p.id)}
-                  disabled={Boolean(rerendering)}
-                  title="Re-render this project with current quality settings"
-                  className="rounded-lg bg-[#7C5CFF]/20 px-2.5 py-1.5 text-[11px] font-bold text-[#b9a5ff] hover:bg-[#7C5CFF]/35 disabled:opacity-40"
-                >
-                  ⟳ Re-render
-                </button>
-                <button
-                  onClick={() => api.revealProject(p.id)}
-                  title="Show the project folder in Explorer"
-                  className="rounded-lg bg-white/5 px-2.5 py-1.5 text-[11px] font-bold text-white/70 hover:bg-white/15"
-                >
-                  📂 Folder
-                </button>
-                {p.renders[0] && (
-                  <button
-                    onClick={() => api.revealProject(p.id, p.renders[0].file)}
-                    title="Show the rendered MP4 in Explorer"
-                    className="rounded-lg bg-white/5 px-2.5 py-1.5 text-[11px] font-bold text-white/70 hover:bg-white/15"
-                  >
-                    🎬 MP4
-                  </button>
-                )}
-                {confirmDelete === p.id ? (
-                  <span className="ml-auto flex gap-1">
+                  {busyHere && (
+                    <div className="mt-3">
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-ink/5">
+                        <div className="progress-stripes h-full rounded-full transition-all" style={{ width: `${Math.max(6, rerendering.pct)}%` }} />
+                      </div>
+                      <div className="mt-1 text-[11px] text-ink/60">Working on it — {rerendering.pct}%</div>
+                    </div>
+                  )}
+
+                  {/* actions: one obvious main button, the rest small */}
+                  <div className="mt-4 flex flex-wrap items-center gap-1.5">
+                    {play ? (
+                      <button onClick={play} title="Play the finished video" className="btn-primary">
+                        ▶ Watch
+                      </button>
+                    ) : isInterrupted(p) || p.status === 'error' ? (
+                      <button
+                        onClick={() => resume(p.id)}
+                        disabled={Boolean(rerendering)}
+                        title="Pick up where it stopped — finished parts are reused, so it costs nothing extra"
+                        className="btn-primary"
+                      >
+                        ▶ Finish it
+                      </button>
+                    ) : null}
                     <button
-                      onClick={() => remove(p.id)}
-                      className="rounded-lg bg-red-500/80 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-red-500"
+                      onClick={() => {
+                        setSelected(p.id)
+                        onOpenEditor(p.id)
+                      }}
+                      title="Change a scene, or see what this video cost"
+                      className="btn-ghost !px-2.5"
                     >
-                      Confirm
+                      ✏️ Edit
                     </button>
                     <button
-                      onClick={() => setConfirmDelete(null)}
-                      className="rounded-lg bg-white/10 px-2.5 py-1.5 text-[11px] font-bold text-white/70 hover:bg-white/20"
+                      onClick={() => api.revealProject(p.id, p.renders[0]?.file)}
+                      title={p.renders[0] ? 'Show the video file in Explorer' : 'Show the project folder in Explorer'}
+                      className="btn-ghost !px-2.5"
                     >
-                      ✕
+                      📁
                     </button>
-                  </span>
-                ) : (
-                  <button
-                    onClick={() => setConfirmDelete(p.id)}
-                    title="Delete this project permanently"
-                    className="ml-auto rounded-lg bg-red-500/10 px-2.5 py-1.5 text-[11px] font-bold text-red-300/80 hover:bg-red-500/25"
-                  >
-                    🗑
-                  </button>
-                )}
+                    <button
+                      onClick={() => rerender(p.id)}
+                      disabled={Boolean(rerendering)}
+                      title="Make the video file again with your current quality settings"
+                      className="btn-ghost !px-2.5 disabled:opacity-40"
+                    >
+                      🔁
+                    </button>
+                    {confirmDelete === p.id ? (
+                      <span className="ml-auto flex items-center gap-1">
+                        <button onClick={() => remove(p.id)} className="rounded-xl bg-coral px-2.5 py-1.5 text-xs font-bold text-white">
+                          Delete forever
+                        </button>
+                        <button onClick={() => setConfirmDelete(null)} className="rounded-xl px-2 py-1.5 text-xs font-bold text-ink/60 hover:bg-ink/5">
+                          Keep
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDelete(p.id)}
+                        title="Delete this video"
+                        className="ml-auto rounded-xl px-2 py-1.5 text-sm text-ink/40 transition-colors hover:bg-coral-soft hover:text-coral"
+                      >
+                        🗑
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
-            </div>
-          )
-        })}
+            )
+          })}
+        </div>
       </div>
     </div>
+  )
+}
+
+const POSTER_GRADIENTS = ['from-grape to-berry', 'from-sky to-grape', 'from-berry to-sunny', 'from-mint to-sky', 'from-sunny to-coral']
+
+/** cover: the first storyboard frame when the project has one, else a cheerful gradient with the title */
+function Poster({ id, title, onPlay }: { id: string; title: string; onPlay?: () => void }) {
+  const [thumb, setThumb] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    api
+      .getProject(id)
+      .then((v) => live && setThumb(v.thumbs?.[0] ?? null))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [id])
+  const grad = POSTER_GRADIENTS[[...id].reduce((a, c) => a + c.charCodeAt(0), 0) % POSTER_GRADIENTS.length]
+  return (
+    <button
+      onClick={onPlay}
+      disabled={!onPlay}
+      className={`group relative block aspect-video w-full overflow-hidden bg-gradient-to-br ${grad}`}
+      title={onPlay ? 'Watch' : title}
+    >
+      {thumb ? (
+        <img src={thumb} alt="" className="thumb-in h-full w-full object-cover" />
+      ) : (
+        <div className="flex h-full items-center justify-center p-4 text-center text-lg font-black leading-tight text-white drop-shadow">{title}</div>
+      )}
+      {onPlay && (
+        <span className="absolute inset-0 flex items-center justify-center transition-colors group-hover:bg-ink/25">
+          <span className="flex h-12 w-12 scale-90 items-center justify-center rounded-full bg-white text-lg text-grape opacity-0 shadow-lg transition-all group-hover:scale-100 group-hover:opacity-100">
+            ▶
+          </span>
+        </span>
+      )}
+    </button>
   )
 }

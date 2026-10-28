@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, type ProjectView, type VideoSpec } from '../api'
 import { CostReceipt } from '../components/CostReceipt'
+import { ErrorCard } from '../components/friendly'
 
 /**
  * Editor — project details: generated VideoSpec structure and composition source
@@ -68,24 +69,24 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
   const spec: VideoSpec | null = project?.spec ?? null
 
   return (
-    <div className="grid h-full grid-cols-[260px_1fr]">
+    <div className="page-bg grid h-full grid-cols-[260px_1fr]">
       {/* project list */}
-      <div className="flex min-h-0 flex-col border-r border-white/5 bg-[#0d0d17]">
+      <div className="flex min-h-0 flex-col border-r-2 border-ink/5 bg-white/70">
         <button
           onClick={onBack}
-          className="mx-3 mt-3 rounded-lg border border-white/10 px-3 py-1.5 text-left text-xs font-bold text-white/70 hover:bg-white/5"
+          className="btn-ghost mx-3 mt-3 text-left"
         >
-          ← Back to Library
+          ← Back to My videos
         </button>
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <div className="px-2 py-2 text-[11px] font-bold uppercase tracking-widest text-white/40">Projects</div>
-          {projects.length === 0 && <div className="px-2 text-xs text-white/30">Nothing yet.</div>}
+          <div className="px-2 py-2 text-sm font-black">🎞️ Your videos</div>
+          {projects.length === 0 && <div className="px-2 text-xs text-ink/45">Nothing yet.</div>}
           {projects.map((p) => (
             <button
               key={p.id}
               onClick={() => setActiveId(p.id)}
-              className={`mb-1 w-full truncate rounded-lg px-3 py-2 text-left text-xs font-semibold ${
-                activeId === p.id ? 'bg-[#7C5CFF]/20 text-[#b9a5ff]' : 'text-white/60 hover:bg-white/5'
+              className={`mb-1 w-full truncate rounded-xl px-3 py-2 text-left text-sm font-semibold transition-colors ${
+                activeId === p.id ? 'bg-grape text-white shadow-[0_2px_0_#5b21b6]' : 'text-ink/80 hover:bg-grape-soft'
               }`}
             >
               {p.title}
@@ -97,35 +98,36 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
       {/* detail */}
       <div className="flex min-h-0 flex-col">
         {!spec && (
-          <div className="flex h-full items-center justify-center text-sm text-white/30">
-            Select a project — full timeline editing arrives with the editor milestone.
+          <div className="flex h-full items-center justify-center text-sm text-ink/45">
+            👈 Pick a video on the left to see and change its scenes.
           </div>
         )}
         {spec && (
           <>
-            <div className="flex items-center justify-between border-b border-white/5 px-6 py-3.5">
-              <div className="text-sm font-black">{spec.title}</div>
+            <div className="flex items-center justify-between border-b-2 border-ink/5 bg-white/60 px-6 py-3.5">
+              <div className="text-xl font-black">{spec.title}</div>
               <div className="flex items-center gap-1">
                 {project?.meta?.renders[0] && (
                   <button
                     onClick={() => api.playProject(project.meta!.id, project.meta!.renders[0].file)}
                     title="Play the rendered video"
-                    className="mr-2 rounded-md bg-emerald-500/20 px-3 py-1 text-xs font-bold text-emerald-300 hover:bg-emerald-500/35"
+                    className="btn-primary mr-2"
                   >
-                    ▶ Play
+                    ▶ Watch
                   </button>
                 )}
                 <button
                   onClick={() => setView('spec')}
-                  className={`rounded-md px-3 py-1 text-xs font-bold ${view === 'spec' ? 'bg-white/10' : 'text-white/50 hover:bg-white/5'}`}
+                  className={`rounded-xl px-3 py-1.5 text-sm font-bold ${view === 'spec' ? 'bg-grape-soft text-grape' : 'text-ink/60 hover:bg-grape-soft'}`}
                 >
-                  Storyboard
+                  🎞️ Scenes
                 </button>
                 <button
                   onClick={() => setView('code')}
-                  className={`rounded-md px-3 py-1 text-xs font-bold ${view === 'code' ? 'bg-white/10' : 'text-white/50 hover:bg-white/5'}`}
+                  className={`rounded-xl px-3 py-1.5 text-xs font-bold ${view === 'code' ? 'bg-ink/10 text-ink' : 'text-ink/40 hover:bg-ink/5'}`}
+                  title="The raw HTML the video is rendered from (for tinkerers)"
                 >
-                  Composition source
+                  &lt;/&gt; Code
                 </button>
               </div>
             </div>
@@ -133,22 +135,20 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
               {view === 'spec' && (
                 <div className="space-y-3">
                   {project?.meta?.prompt && (
-                    <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
-                      <div className="text-[11px] font-bold uppercase tracking-widest text-white/35">Original prompt</div>
-                      <p className="mt-1.5 text-sm leading-relaxed text-white/70">{project.meta.prompt}</p>
+                    <div className="card p-4">
+                      <div className="text-xs font-bold text-ink/50">💡 Your idea</div>
+                      <p className="mt-1.5 text-sm leading-relaxed text-ink/80">{project.meta.prompt}</p>
                     </div>
                   )}
                   <div className="flex gap-2 text-[11px]">
-                    <span className="rounded bg-[#7C5CFF]/20 px-2 py-1 font-bold uppercase text-[#b9a5ff]">{spec.platform}</span>
-                    <span className="rounded bg-[#00E5FF]/15 px-2 py-1 font-bold uppercase text-[#7fdff5]">{spec.style}</span>
-                    <span className="rounded bg-white/10 px-2 py-1 font-bold uppercase text-white/60">{spec.pacing}</span>
-                    <span className="rounded bg-white/10 px-2 py-1 font-bold uppercase text-white/60">{spec.durationSec}s @ {spec.fps}fps</span>
+                    <span className="rounded-full bg-grape-soft px-2.5 py-1 font-bold text-grape">📱 {spec.platform}</span>
+                    <span className="rounded-full bg-sky-soft px-2.5 py-1 font-bold text-sky">🎨 {spec.style}</span>
+                    <span className="rounded-full bg-berry-soft px-2.5 py-1 font-bold text-berry">🏃 {spec.pacing}</span>
+                    <span className="rounded-full bg-sunny-soft px-2.5 py-1 font-bold text-ink/80">⏱️ {Math.round(spec.durationSec)}s</span>
                   </div>
                   {activeId && <CostReceipt projectId={activeId} key={`${activeId}-${revising ? 'r' : 'i'}`} />}
                   {reviseError && (
-                    <div className="slide-up rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
-                      {reviseError}
-                    </div>
+                    <ErrorCard error={reviseError} />
                   )}
                   {spec.scenes.map((s, i) => {
                     const isRevising = revising?.sceneId === s.id
@@ -156,16 +156,12 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
                     return (
                       <div
                         key={s.id}
-                        className={`rounded-xl border p-4 transition-colors ${
-                          isRevising ? 'border-[#00E5FF]/60 bg-[#00E5FF]/[0.05]' : 'border-white/10 bg-white/[0.03]'
-                        }`}
+                        className={`card p-4 transition-colors ${isRevising ? '!border-sky/60 !bg-sky-soft' : ''}`}
                       >
                         <div className="flex items-center gap-3">
-                          <span className="text-[11px] font-black text-white/35">#{i + 1}</span>
-                          <span className="rounded bg-white/10 px-2 py-0.5 text-[11px] font-bold uppercase text-white/70">
-                            {s.kind}
-                          </span>
-                          <span className="ml-auto text-[11px] text-white/40">{s.durationSec}s · in: {s.transitionIn}</span>
+                          <span className="step-dot bg-grape">{i + 1}</span>
+                          <span className="text-sm font-black">Scene {i + 1}</span>
+                          <span className="ml-auto text-xs text-ink/50">{Math.round(s.durationSec * 10) / 10}s</span>
                           <button
                             onClick={() => {
                               setEditScene(isEditing ? null : s.id)
@@ -173,29 +169,29 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
                             }}
                             disabled={Boolean(revising)}
                             title="Tell the AI what to change in this scene — it rewrites, recomposes and re-renders"
-                            className="rounded-md bg-[#7C5CFF]/15 px-2 py-0.5 text-[11px] font-bold text-[#b9a5ff] hover:bg-[#7C5CFF]/30 disabled:opacity-30"
+                            className="btn-ghost !py-1 disabled:opacity-40"
                           >
-                            ✏️ Rework
+                            ✏️ Change this scene
                           </button>
                         </div>
                         {project?.thumbs[i] && (
                           <img
                             src={project.thumbs[i]}
                             alt={`scene ${i + 1}`}
-                            className={`mt-3 max-h-64 w-full rounded-lg border border-white/10 object-cover ${
+                            className={`mt-3 max-h-64 w-full rounded-xl border-2 border-ink/10 object-cover ${
                               isRevising ? 'opacity-60' : ''
                             }`}
                           />
                         )}
-                        <div className="mt-2 text-sm font-bold text-white/85">
+                        <div className="mt-2 text-sm font-bold text-ink/80">
                           {'headline' in s ? s.headline : ''}
                           {'value' in s ? `${s.value} — ${s.label}` : ''}
                           {'text' in s ? s.text : ''}
                           {s.kind === 'bullets' ? s.headline : ''}
                         </div>
-                        {'subline' in s && s.subline && <div className="mt-1 text-xs text-white/45">{s.subline}</div>}
+                        {'subline' in s && s.subline && <div className="mt-1 text-xs text-ink/60">{s.subline}</div>}
                         {'bullets' in s && (
-                          <ul className="mt-1 list-disc pl-5 text-xs text-white/55">
+                          <ul className="mt-1 list-disc pl-5 text-xs text-ink/60">
                             {s.bullets.map((b, j) => (
                               <li key={j}>{b}</li>
                             ))}
@@ -203,49 +199,49 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
                         )}
                         {isRevising && (
                           <div className="mt-3">
-                            <div className="h-1 w-full overflow-hidden rounded-full bg-white/10">
+                            <div className="h-2 w-full overflow-hidden rounded-full bg-white">
                               <div
-                                className="h-full bg-gradient-to-r from-[#7C5CFF] to-[#00E5FF] transition-all"
+                                className="progress-stripes h-full rounded-full transition-all"
                                 style={{ width: `${Math.max(4, revising.pct)}%` }}
                               />
                             </div>
-                            <div className="mt-1 text-[11px] text-[#7fdff5]">
+                            <div className="mt-1 text-[11px] text-sky">
                               {revising.pct > 0
-                                ? `re-rendering film — ${revising.pct}%`
-                                : 'rewriting the scene…'}
+                                ? `Updating your video — ${revising.pct}%`
+                                : 'Rewriting this scene…'}
                             </div>
                           </div>
                         )}
                         {isEditing && (
-                          <div className="mt-3 rounded-lg border border-white/10 bg-black/30 p-3">
-                            <div className="mb-2 text-[11px] font-bold uppercase tracking-wider text-white/40">
+                          <div className="mt-3 rounded-2xl bg-grape-soft p-3">
+                            <div className="mb-2 text-sm font-bold">
                               What should change in this scene?
                             </div>
                             <textarea
                               value={feedbackText}
                               onChange={(e) => setFeedbackText(e.target.value)}
                               placeholder={'e.g. "make the headline punchier and show the planet cracking open"\ne.g. "too much text — one short line only"\ne.g. "use a golden color instead of blue"'}
-                              className="h-20 w-full resize-none rounded-lg border border-white/10 bg-white/[0.04] p-2.5 text-xs outline-none placeholder:text-white/25 focus:border-[#7C5CFF]/60"
+                              className="field h-20 w-full resize-none p-2.5 text-sm"
                             />
                             <div className="mt-2 flex items-center gap-2">
                               <button
                                 onClick={() => submitRevision(s.id)}
                                 disabled={!feedbackText.trim()}
-                                className="rounded-lg bg-gradient-to-r from-[#7C5CFF] to-[#00E5FF] px-3 py-1.5 text-[11px] font-black uppercase tracking-wide text-[#0b0b12] disabled:opacity-30"
+                                className="btn-primary"
                               >
-                                ↻ Regenerate scene
+                                ✨ Redo this scene
                               </button>
                               <button
                                 onClick={() => {
                                   setEditScene(null)
                                   setFeedbackText('')
                                 }}
-                                className="rounded-lg bg-white/5 px-3 py-1.5 text-[11px] font-bold text-white/60 hover:bg-white/15"
+                                className="btn-ghost"
                               >
                                 Cancel
                               </button>
-                              <span className="text-[10px] text-white/30">
-                                rewrites this scene · recomposes · re-renders the film
+                              <span className="text-[10px] text-ink/45">
+                                Only this scene changes; the rest of your video stays the same.
                               </span>
                             </div>
                           </div>
@@ -256,7 +252,7 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
                 </div>
               )}
               {view === 'code' && (
-                <pre className="max-h-full overflow-auto rounded-xl border border-white/10 bg-black/40 p-4 text-[11px] leading-relaxed text-white/70">
+                <pre className="max-h-full overflow-auto rounded-xl border border-ink/10 bg-paper p-4 text-[11px] leading-relaxed text-ink/80">
                   {project?.html ?? '// composition not generated yet'}
                 </pre>
               )}

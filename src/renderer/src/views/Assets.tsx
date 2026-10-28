@@ -3,6 +3,7 @@ import { KIND_LABEL, SOURCE_BADGE, type AssetKind, type AssetMeta, type AssetSou
 import { fmtUsd } from '@shared/pricing'
 import { api, type Orientation, type StockResult } from '../api'
 import { Chip, EmptyState, SourceBadge, Toast, fmtBytes, fmtDur } from '../components/ui'
+import { friendlyError } from '../components/friendly'
 
 /**
  * Asset library — everything the app can reuse: built-in pack, AI-made
@@ -60,7 +61,7 @@ export default function Assets() {
 
   return (
     <div
-      className="relative flex h-full flex-col"
+      className="page-bg relative flex h-full flex-col"
       onDragOver={(e) => {
         e.preventDefault()
         setDragging(true)
@@ -71,12 +72,12 @@ export default function Assets() {
       onDrop={onDrop}
     >
       {/* header */}
-      <div className="border-b border-white/5 px-8 pb-4 pt-6">
+      <div className="border-b-2 border-ink/5 bg-white/60 px-8 pb-4 pt-6">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-black tracking-tight">🧺 Asset library</h1>
-            <p className="mt-1 text-sm text-white/45">
-              Everything here gets reused by new videos first, so the more you collect, the faster and cheaper each video gets.
+            <h1 className="text-3xl font-black tracking-tight">🧺 Library</h1>
+            <p className="mt-1 text-[15px] text-ink/60">
+              Pictures, clips, voices and music your videos reuse. The more you collect, the faster and cheaper new videos get.
             </p>
           </div>
           <div className="flex gap-2">
@@ -98,17 +99,16 @@ export default function Assets() {
             <button
               key={s}
               onClick={() => setSource(source === s ? null : s)}
-              className={`rounded-2xl border px-3 py-2 text-left transition-all hover:-translate-y-0.5 ${
-                source === s ? 'border-white/40 bg-white/10' : 'border-white/10 bg-white/[0.03]'
-              }`}
+              className={`tile px-3 py-2 text-left ${source === s ? 'tile-on' : ''}`}
+              title={`Show only ${SOURCE_BADGE[s].label.toLowerCase()} items`}
             >
-              <div className="text-lg font-black" style={{ color: SOURCE_BADGE[s].color }}>
+              <div className="text-lg font-black">
                 {SOURCE_BADGE[s].icon} {stats?.[s] ?? 0}
               </div>
-              <div className="text-[10px] font-bold uppercase tracking-wider text-white/40">{SOURCE_BADGE[s].label}</div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-ink/60">{SOURCE_BADGE[s].label}</div>
             </button>
           ))}
-          <div className="ml-auto text-[11px] text-white/35">{stats ? `${stats.total} assets · ${fmtBytes(stats.bytes)}` : ''}</div>
+          <div className="ml-auto text-[11px] text-ink/45">{stats ? `${stats.total} assets · ${fmtBytes(stats.bytes)}` : ''}</div>
         </div>
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -121,7 +121,7 @@ export default function Assets() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="🔎 search tags, titles, prompts…"
-            className="ml-auto w-72 rounded-full border border-white/10 bg-black/30 px-4 py-1.5 text-xs outline-none focus:border-[#7C5CFF]/60"
+            className="field ml-auto w-72 !rounded-full px-4 py-1.5 text-sm"
           />
         </div>
       </div>
@@ -142,11 +142,11 @@ export default function Assets() {
       </div>
 
       {dragging && (
-        <div className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-3xl border-2 border-dashed border-[#00E5FF] bg-[#00E5FF]/10">
+        <div className="pointer-events-none absolute inset-3 z-40 flex items-center justify-center rounded-3xl border-2 border-dashed border-sky bg-sky/10">
           <div className="pop-in text-center">
             <div className="text-5xl">📥</div>
             <div className="mt-2 text-lg font-black">Drop to add to your library</div>
-            <div className="text-sm text-white/60">images · video clips · music & audio</div>
+            <div className="text-sm text-ink/80">images · video clips · music & audio</div>
           </div>
         </div>
       )}
@@ -183,7 +183,10 @@ export default function Assets() {
             say(`✨ Made “${a.title.slice(0, 40)}”${a.costUsd ? ` for ${fmtUsd(a.costUsd)}` : ''}`)
             refresh()
           }}
-          onError={(m) => say(m, 'err')}
+          onError={(m) => {
+            const f = friendlyError(m)
+            say(`${f.title} — ${f.fix}`, 'err')
+          }}
         />
       )}
       {toast && <Toast text={toast.text} tone={toast.tone} onClose={() => setToast(null)} />}
@@ -196,27 +199,27 @@ function AssetCard({ a, onOpen, delay }: { a: AssetMeta; onOpen: () => void; del
   return (
     <button
       onClick={onOpen}
-      className="pop-in group overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] text-left transition-all hover:-translate-y-1 hover:border-[#7C5CFF]/50 hover:shadow-[0_10px_30px_rgba(124,92,255,0.18)]"
+      className="pop-in group overflow-hidden rounded-2xl border-2 border-ink/10 bg-white text-left transition-all hover:-translate-y-1 hover:border-grape/50 hover:shadow-[0_10px_30px_rgba(124,58,237,0.18)]"
       style={{ animationDelay: `${delay}ms` }}
     >
-      <div className="relative aspect-[4/3] overflow-hidden bg-black/40">
+      <div className="relative aspect-[4/3] overflow-hidden bg-ink/5">
         {visual ? (
           <img src={thumbUrl(a.id)} alt="" loading="lazy" className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105" />
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-1 bg-gradient-to-br from-[#7C5CFF]/15 to-[#00E5FF]/10">
+          <div className="flex h-full flex-col items-center justify-center gap-1 bg-gradient-to-br from-grape-soft to-berry-soft">
             <div className="text-4xl transition-transform group-hover:scale-110">{KIND_LABEL[a.kind].icon}</div>
-            <div className="text-[10px] font-bold text-white/40">{fmtDur(a.durationSec)}</div>
+            <div className="text-[10px] font-bold text-ink/60">{fmtDur(a.durationSec)}</div>
           </div>
         )}
-        {a.kind === 'video' && <span className="absolute bottom-1.5 right-1.5 rounded bg-black/70 px-1 text-[9px] font-bold">▶ {fmtDur(a.durationSec)}</span>}
+        {a.kind === 'video' && <span className="absolute bottom-1.5 right-1.5 rounded bg-black/70 px-1 text-[9px] font-bold text-white">▶ {fmtDur(a.durationSec)}</span>}
         <span className="absolute left-1.5 top-1.5">
           <SourceBadge source={a.source} small />
         </span>
         {a.favorite && <span className="absolute right-1.5 top-1.5 text-sm">⭐</span>}
       </div>
       <div className="p-2.5">
-        <div className="truncate text-xs font-bold text-white/85">{a.title}</div>
-        <div className="mt-1 flex items-center justify-between text-[10px] text-white/35">
+        <div className="truncate text-xs font-bold text-ink/80">{a.title}</div>
+        <div className="mt-1 flex items-center justify-between text-[10px] text-ink/45">
           <span className="truncate">{a.tags.slice(0, 3).join(' · ')}</span>
           {a.usedIn.length > 0 && <span title="videos that used it">♻️ {a.usedIn.length}</span>}
         </div>
@@ -240,15 +243,15 @@ function AssetDrawer({ a, onClose, onChanged, onDeleted }: { a: AssetMeta; onClo
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/50" onClick={onClose}>
-      <div className="slide-in-right h-full w-[420px] overflow-y-auto border-l border-white/10 bg-[#11111c] p-6" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-40 flex justify-end bg-ink/30 backdrop-blur-sm" onClick={onClose}>
+      <div className="slide-in-right h-full w-[420px] overflow-y-auto rounded-l-3xl border-l-2 border-ink/10 bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <SourceBadge source={a.source} />
-          <button onClick={onClose} className="text-white/40 hover:text-white">
+          <button onClick={onClose} className="text-ink/60 hover:text-ink">
             ✕
           </button>
         </div>
-        <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-black/40">
+        <div className="mt-4 overflow-hidden rounded-2xl border border-ink/10 bg-ink/5">
           {a.kind === 'image' && <img src={fileUrl(a.id)} alt="" className="w-full" />}
           {a.kind === 'video' && <video src={fileUrl(a.id)} controls className="w-full" />}
           {(a.kind === 'music' || a.kind === 'voice' || a.kind === 'sfx') && (
@@ -264,37 +267,37 @@ function AssetDrawer({ a, onClose, onChanged, onDeleted }: { a: AssetMeta; onClo
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onBlur={() => title !== a.title && save({ title })}
-            className="mt-4 w-full rounded-lg border border-transparent bg-transparent px-1 text-lg font-black outline-none hover:border-white/10 focus:border-[#7C5CFF]/60"
+            className="mt-4 w-full rounded-lg border border-transparent bg-transparent px-1 text-lg font-black outline-none hover:border-grape/50 focus:border-grape/60"
           />
         ) : (
           <div className="mt-4 text-lg font-black">{a.title}</div>
         )}
 
-        <div className="mt-3 text-[10px] font-bold uppercase tracking-wider text-white/35">Tags (help new videos find it)</div>
+        <div className="mt-3 text-[10px] font-bold uppercase tracking-wider text-ink/45">Tags (help new videos find it)</div>
         {editable ? (
           <input
             value={tags}
             onChange={(e) => setTags(e.target.value)}
             onBlur={() => save({ tags: tags.split(',') })}
             placeholder="product, bottle, blue…"
-            className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-xs outline-none focus:border-[#7C5CFF]/60"
+            className="field mt-1 w-full px-3 py-1.5 text-sm"
           />
         ) : (
-          <div className="mt-1 text-xs text-white/60">{a.tags.join(', ')}</div>
+          <div className="mt-1 text-xs text-ink/80">{a.tags.join(', ')}</div>
         )}
 
         <dl className="mt-4 grid grid-cols-[110px_1fr] gap-y-1.5 text-xs">
-          <dt className="text-white/40">Type</dt>
+          <dt className="text-ink/60">Type</dt>
           <dd>
             {KIND_LABEL[a.kind].icon} {a.kind}
             {a.width ? ` · ${a.width}×${a.height}` : ''}
             {a.durationSec ? ` · ${fmtDur(a.durationSec)}` : ''}
           </dd>
-          <dt className="text-white/40">Size</dt>
+          <dt className="text-ink/60">Size</dt>
           <dd>{fmtBytes(a.bytes)}</dd>
           {a.provider && (
             <>
-              <dt className="text-white/40">Made with</dt>
+              <dt className="text-ink/60">Made with</dt>
               <dd>
                 {a.provider} · {a.model}
               </dd>
@@ -302,32 +305,32 @@ function AssetDrawer({ a, onClose, onChanged, onDeleted }: { a: AssetMeta; onClo
           )}
           {typeof a.costUsd === 'number' && (
             <>
-              <dt className="text-white/40">Cost</dt>
+              <dt className="text-ink/60">Cost</dt>
               <dd>{fmtUsd(a.costUsd)}</dd>
             </>
           )}
-          <dt className="text-white/40">Used in</dt>
+          <dt className="text-ink/60">Used in</dt>
           <dd>{a.usedIn.length ? `${a.usedIn.length} video${a.usedIn.length > 1 ? 's' : ''} ♻️` : 'not yet'}</dd>
-          <dt className="text-white/40">Licence</dt>
+          <dt className="text-ink/60">Licence</dt>
           <dd>
             {a.license.name}
             {a.license.author ? ` · ${a.license.author}` : ''}
           </dd>
         </dl>
         {a.license.requiresAttribution && a.license.attribution && (
-          <div className="mt-2 rounded-lg border border-amber-300/25 bg-amber-300/[0.06] p-2 text-[11px] text-amber-100">
+          <div className="mt-2 rounded-lg border border-sunny/50 bg-sunny-soft p-2 text-[11px] text-ink">
             ✍️ Credit needed: {a.license.attribution}
           </div>
         )}
         {a.prompt && (
-          <div className="mt-3 rounded-lg bg-white/[0.04] p-2.5 text-[11px] leading-relaxed text-white/55">
-            <div className="mb-1 font-bold text-white/40">Prompt</div>
+          <div className="mt-3 rounded-lg bg-white p-2.5 text-[11px] leading-relaxed text-ink/60">
+            <div className="mb-1 font-bold text-ink/60">Prompt</div>
             {a.prompt}
           </div>
         )}
 
         {editable && (
-          <div className="mt-4 rounded-xl border border-white/10 p-3">
+          <div className="mt-4 rounded-xl border border-ink/10 p-3">
             <div className="text-xs font-bold">Who can see it?</div>
             <div className="mt-2 flex gap-2">
               <Chip active={a.sharing === 'local'} onClick={() => save({ sharing: 'local' })}>
@@ -337,7 +340,7 @@ function AssetDrawer({ a, onClose, onChanged, onDeleted }: { a: AssetMeta; onClo
                 🌍 OK to share
               </Chip>
             </div>
-            <div className="mt-1.5 text-[10px] text-white/35">Shareable assets go into share packs you export. Nothing is uploaded automatically.</div>
+            <div className="mt-1.5 text-[10px] text-ink/45">Shareable assets go into share packs you export. Nothing is uploaded automatically.</div>
           </div>
         )}
 
@@ -356,7 +359,7 @@ function AssetDrawer({ a, onClose, onChanged, onDeleted }: { a: AssetMeta; onClo
                   onDeleted()
                 }
               }}
-              className="btn-ghost !text-red-300 hover:!bg-red-500/15"
+              className="btn-ghost !text-coral hover:!bg-coral-soft"
             >
               🗑️ Remove
             </button>
@@ -437,20 +440,20 @@ function StockPanel({ initialKind, onClose, onAdded }: { initialKind: AssetKind;
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="e.g. mountain sunrise, coffee beans, city at night"
-          className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-4 py-2 text-sm outline-none focus:border-[#00E5FF]/60"
+          className="field min-w-0 flex-1 px-4 py-2 text-sm"
         />
         <button className="btn-primary" disabled={busy}>
           {busy ? '⏳' : '🔎'} Search
         </button>
       </form>
       {errors.map((e) => (
-        <div key={e} className="mt-2 text-xs text-amber-200/80">
+        <div key={e} className="mt-2 text-xs text-ink">
           ⚠️ {e}
         </div>
       ))}
       <div className="mt-4 grid max-h-[55vh] grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3 overflow-y-auto pr-1">
         {results.map((r) => (
-          <div key={r.id} className="overflow-hidden rounded-xl border border-white/10 bg-white/[0.03]">
+          <div key={r.id} className="overflow-hidden rounded-xl border border-ink/10 bg-white">
             {r.kind === 'music' ? (
               <div className="p-2">
                 <div className="truncate text-xs font-bold">{r.title}</div>
@@ -460,20 +463,20 @@ function StockPanel({ initialKind, onClose, onAdded }: { initialKind: AssetKind;
               <img src={r.thumb} alt="" loading="lazy" className="aspect-[4/3] w-full object-cover" />
             )}
             <div className="flex items-center justify-between gap-1 p-2">
-              <span className="truncate text-[10px] text-white/45" title={r.license.attribution ?? r.license.name}>
+              <span className="truncate text-[10px] text-ink/60" title={r.license.attribution ?? r.license.name}>
                 {r.license.name}
               </span>
               <button
                 onClick={() => grab(r)}
                 disabled={saving.has(r.id) || saved.has(r.id)}
-                className="shrink-0 rounded-lg bg-emerald-500/20 px-2 py-1 text-[10px] font-bold text-emerald-200 hover:bg-emerald-500/35 disabled:opacity-60"
+                className="shrink-0 rounded-lg bg-mint-soft px-2 py-1 text-[10px] font-bold text-mint hover:bg-mint-soft disabled:opacity-60"
               >
                 {saved.has(r.id) ? '✓ saved' : saving.has(r.id) ? '…' : '＋ Save'}
               </button>
             </div>
           </div>
         ))}
-        {!busy && results.length === 0 && q && <div className="col-span-full py-8 text-center text-sm text-white/35">Press Search to look around 👀</div>}
+        {!busy && results.length === 0 && q && <div className="col-span-full py-8 text-center text-sm text-ink/45">Press Search to look around 👀</div>}
       </div>
     </Modal>
   )
@@ -524,7 +527,7 @@ function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: 
         onChange={(e) => setPrompt(e.target.value)}
         rows={3}
         placeholder={hint}
-        className="mt-3 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-sm outline-none focus:border-[#7C5CFF]/60"
+        className="field mt-3 w-full resize-none px-4 py-3 text-sm"
       />
       {(kind === 'image' || kind === 'video') && (
         <div className="mt-2 flex gap-2">
@@ -539,13 +542,13 @@ function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: 
         {busy ? <span className="pulse-dot">✨ Making it…</span> : '✨ Make it'}
       </button>
       {made && (
-        <div className="pop-in mt-4 flex items-center gap-3 rounded-xl border border-emerald-400/25 bg-emerald-400/[0.06] p-3">
+        <div className="pop-in mt-4 flex items-center gap-3 rounded-xl border border-mint/40 bg-mint-soft p-3">
           {made.kind === 'image' ? (
             <img src={thumbUrl(made.id)} alt="" className="h-16 w-16 rounded-lg object-cover" />
           ) : made.kind === 'video' ? (
             <video src={fileUrl(made.id)} controls className="h-24 rounded-lg" />
           ) : <audio src={fileUrl(made.id)} controls className="h-8 flex-1" />}
-          <div className="text-xs text-emerald-100">Saved to your library {made.costUsd ? `· ${fmtUsd(made.costUsd)}` : ''}</div>
+          <div className="text-xs text-mint">Saved to your library {made.costUsd ? `· ${fmtUsd(made.costUsd)}` : ''}</div>
         </div>
       )}
     </Modal>
@@ -554,14 +557,14 @@ function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: 
 
 function Modal({ title, subtitle, onClose, children }: { title: string; subtitle?: string; onClose: () => void; children: React.ReactNode }) {
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6" onClick={onClose}>
-      <div className="pop-in w-full max-w-3xl rounded-3xl border border-white/10 bg-[#11111c] p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-ink/30 p-6 backdrop-blur-sm" onClick={onClose}>
+      <div className="pop-in w-full max-w-3xl rounded-3xl border-2 border-ink/10 bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between">
           <div>
             <div className="text-lg font-black">{title}</div>
-            {subtitle && <div className="mt-0.5 text-xs text-white/45">{subtitle}</div>}
+            {subtitle && <div className="mt-0.5 text-xs text-ink/60">{subtitle}</div>}
           </div>
-          <button onClick={onClose} className="text-white/40 hover:text-white">
+          <button onClick={onClose} className="text-ink/60 hover:text-ink">
             ✕
           </button>
         </div>
