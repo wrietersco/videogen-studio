@@ -16,6 +16,7 @@ import { MediaRouter } from './media/router'
 import { ensureBrowser } from './rendererService/hyperframes'
 import { projectsDir, appRoot, libraryDir, builtinPackDir } from './paths'
 import { meter, readProjectUsage, type UsageRun } from './usage/meter'
+import { checkForUpdate, downloadUpdate, installUpdate } from './updater'
 
 /**
  * Electron main process — owns the pipeline, project store, provider keys
@@ -203,6 +204,36 @@ function registerIpc(): void {
     else win.maximize()
   })
   ipcMain.on('win:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
+
+  // ---- in-app updates (GitHub releases) ----
+  ipcMain.handle('update:version', () => app.getVersion())
+  ipcMain.handle('update:check', async () => {
+    try {
+      return { ok: true as const, info: await checkForUpdate() }
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  ipcMain.handle('update:download', async () => {
+    try {
+      await downloadUpdate((done, total) => emit('update:progress', { done, total }))
+      return { ok: true as const }
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  ipcMain.handle('update:install', () => {
+    if (busy) return { ok: false as const, error: 'A video is being made — update once it finishes' }
+    try {
+      installUpdate()
+      return { ok: true as const }
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  ipcMain.handle('update:openRelease', (_e, url: string) => {
+    if (/^https:\/\/github\.com\/wrietersco\/videogen-studio\//.test(url)) void shell.openExternal(url)
+  })
 
   ipcMain.handle('settings:get', () => ({
     ...settings,

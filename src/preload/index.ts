@@ -49,6 +49,18 @@ const api = {
   setKey: (provider: string, key: string) => ipcRenderer.invoke('settings:setKey', provider, key),
   clearKey: (provider: string) => ipcRenderer.invoke('settings:clearKey', provider),
   keyStatus: () => ipcRenderer.invoke('settings:keyStatus'),
+  update: {
+    version: () => ipcRenderer.invoke('update:version'),
+    check: () => ipcRenderer.invoke('update:check'),
+    download: () => ipcRenderer.invoke('update:download'),
+    install: () => ipcRenderer.invoke('update:install'),
+    openRelease: (url: string) => ipcRenderer.invoke('update:openRelease', url),
+    onProgress: (cb: (p: { done: number; total: number }) => void) => {
+      const listener = (_e: unknown, payload: { done: number; total: number }) => cb(payload)
+      ipcRenderer.on('update:progress', listener)
+      return () => ipcRenderer.removeListener('update:progress', listener)
+    }
+  },
   assets: {
     list: (q?: unknown) => ipcRenderer.invoke('assets:list', q),
     stats: () => ipcRenderer.invoke('assets:stats'),

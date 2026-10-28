@@ -5,6 +5,7 @@ import Library from './views/Library'
 import Settings from './views/Settings'
 import Editor from './views/Editor'
 import Assets from './views/Assets'
+import Updater from './components/Updater'
 
 type Tab = 'studio' | 'library' | 'assets' | 'editor' | 'settings'
 
@@ -83,6 +84,8 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      <Updater mode="banner" />
 
       {/* content */}
       <div className="min-h-0 flex-1">

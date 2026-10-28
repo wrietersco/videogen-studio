@@ -9,6 +9,9 @@ import type { AssetKind, AssetMeta, AssetSource } from '@shared/assets'
 import type { StockResult } from '../../main/media/stock'
 import type { KeyId, MediaSettings } from '../../main/settings'
 
+import type { UpdateInfo } from '../../main/updater'
+
+export type { UpdateInfo }
 export type { UsageEntry, UsageRun, ProjectUsage, AssetKind, AssetMeta, AssetSource, StockResult, KeyId, MediaSettings }
 export type { PipelineEvent, ProjectMeta, ProviderId, ModelInfo, PlatformId, StyleFamily, VideoSpec }
 
@@ -87,6 +90,14 @@ declare global {
       setKey: (provider: KeyId, key: string) => Promise<boolean>
       clearKey: (provider: KeyId) => Promise<boolean>
       keyStatus: () => Promise<Record<KeyId, boolean>>
+      update: {
+        version: () => Promise<string>
+        check: () => Promise<{ ok: true; info: UpdateInfo } | { ok: false; error: string }>
+        download: () => Promise<{ ok: true } | { ok: false; error: string }>
+        install: () => Promise<{ ok: true } | { ok: false; error: string }>
+        openRelease: (url: string) => Promise<void>
+        onProgress: (cb: (p: { done: number; total: number }) => void) => () => void
+      }
       assets: {
         list: (q?: { kind?: AssetKind; source?: AssetSource; query?: string }) => Promise<AssetMeta[]>
         stats: () => Promise<Record<AssetSource, number> & { total: number; bytes: number }>

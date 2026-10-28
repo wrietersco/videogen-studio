@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { MEDIA_MODELS, PRICES_AS_OF, RATES, modelTags, type MediaModel } from '@shared/pricing'
 import { api, type KeyId, type MediaSettings, type ModelInfo, type ProviderId, type ProviderStatus, type SettingsView } from '../api'
 import { Chip, Meter, Section } from '../components/ui'
+import Updater from '../components/Updater'
 
 /**
  * Settings — five friendly sections: the brain (chat model), keys, media
@@ -141,6 +142,10 @@ export default function Settings() {
             </div>
           </div>
         )}
+
+        <Section icon="🔄" title="App updates" hint="Get the newest version straight from GitHub — one click, and your videos and keys stay put." tone="cyan">
+          <Updater mode="card" />
+        </Section>
 
         {/* keys */}
         <Section icon="🔑" title="Your AI accounts" hint="Paste a key to connect an account. Keys are encrypted on this PC and only ever sent to that company." tone="amber">
