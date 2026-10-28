@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import type { LLMProvider } from '../providers/types'
+import type { SpeechProvider, VoiceCache } from '../providers/types'
 import type { VideoSpec, VoiceTake } from '@shared/spec'
 import { decodeMono, SR } from './pcm'
 import { beatGrid } from './score'
@@ -15,18 +15,21 @@ import { beatGrid } from './score'
 
 const TONES = {
   documentary:
-    'Documentary narrator. Calm, assured and warm, low register, measured unhurried pace with natural pauses at commas. ' +
+    'Documentary narrator. Calm, assured and warm, low register. Steady, purposeful pace — about 150 words a minute, only brief pauses. ' +
     'Quiet gravitas; give numbers and names a little weight. Never sing-song, never salesy.',
   social:
     'Confident short-form explainer. Brisk, energetic pace, crisp consonants, a hint of a smile. ' +
     'Punch the key word and every number. Conversational, never shouty or salesy.'
 } as const
 
-/** voices the speech endpoint accepts (it rejects anything else outright) */
+/** voices OpenAI's speech endpoint accepts (it rejects anything else outright) */
 export const VOICES = ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'] as const
 
-export function defaultVoice(spec: VideoSpec): { id: string; tone: string } {
-  return spec.design?.look === 'documentary' ? { id: 'onyx', tone: TONES.documentary } : { id: 'nova', tone: TONES.social }
+export function defaultVoice(spec: VideoSpec, speech?: Pick<SpeechProvider, 'defaultVoice'>): { id: string; tone: string } {
+  const look = spec.design?.look
+  const tone = look === 'documentary' ? TONES.documentary : TONES.social
+  if (speech) return { id: speech.defaultVoice(look), tone }
+  return { id: look === 'documentary' ? 'onyx' : 'nova', tone }
 }
 
 /** narration text per scene (several lines for one scene are joined) */
@@ -43,10 +46,10 @@ function linesByScene(spec: VideoSpec): Map<string, string> {
  * Synthesize (or reuse) every scene's take, then fit scene durations to the
  * voice. Mutates and returns `spec`. No TTS-capable provider → unchanged.
  */
-export async function narrate(spec: VideoSpec, provider: LLMProvider | null, projectDir: string): Promise<VideoSpec> {
+export async function narrate(spec: VideoSpec, provider: SpeechProvider | null, projectDir: string, cache?: VoiceCache): Promise<VideoSpec> {
   const lines = linesByScene(spec)
-  if (!provider?.tts || lines.size === 0) return spec
-  const voice = spec.voice && (VOICES as readonly string[]).includes(spec.voice.id) ? spec.voice : defaultVoice(spec)
+  if (!provider || lines.size === 0) return spec
+  const voice = spec.voice && provider.voices.includes(spec.voice.id) ? spec.voice : defaultVoice(spec, provider)
   spec.voice = voice
   const dir = join(projectDir, 'assets', 'audio')
   mkdirSync(dir, { recursive: true })
@@ -57,14 +60,42 @@ export async function narrate(spec: VideoSpec, provider: LLMProvider | null, pro
       const text = lines.get(scene.id)
       if (!text) return null
       const key = createHash('sha1').update(`${voice.id}|${voice.tone}|${text}`).digest('hex').slice(0, 12)
-      const file = `assets/audio/vo-${key}.mp3`
-      const leadSec = i === 0 ? 0.3 : 0.25
+      let file = `assets/audio/vo-${key}.mp3`
+      // the first word lands this long after the cut (the file's own leading silence is absorbed)
+      const lead = (speechStart: number) => Math.max(0, (i === 0 ? 0.3 : 0.22) - speechStart)
       const hit = cached.get(key)
-      if (hit && existsSync(join(projectDir, hit.file))) return { ...hit, sceneId: scene.id, leadSec }
-      const res = await provider.tts!({ text, voice: voice.id, instructions: voice.tone })
-      writeFileSync(join(projectDir, file), res.audio)
-      const durationSec = decodeMono(join(projectDir, file)).length / SR
-      return { sceneId: scene.id, key, file, durationSec, leadSec, words: alignWords(text, res.words ?? [], durationSec) }
+      if (hit && existsSync(join(projectDir, hit.file))) {
+        // takes saved before silence trimming carry no bounds — measure them once
+        const b = typeof hit.speechStartSec === 'number' ? null : speechBounds(decodeMono(join(projectDir, hit.file)))
+        const start = b ? b.start : hit.speechStartSec
+        return { ...hit, ...(b ? { durationSec: b.end } : {}), speechStartSec: start, sceneId: scene.id, leadSec: lead(start) }
+      }
+      // another video already paid for this exact take → reuse it from the library
+      const shared = cache?.lookup(key)
+      let heard: Array<{ word: string; startSec: number; endSec: number }> = []
+      if (shared) {
+        file = `assets/audio/vo-${key}${shared.ext}`
+        writeFileSync(join(projectDir, file), shared.audio)
+        heard = shared.words ?? []
+      } else {
+        const res = await provider.tts({ text, voice: voice.id, instructions: voice.tone })
+        const ext = res.mimeType === 'audio/wav' ? '.wav' : '.mp3'
+        file = `assets/audio/vo-${key}${ext}`
+        writeFileSync(join(projectDir, file), res.audio)
+        heard = res.words ?? []
+        cache?.store(key, res.audio, ext, { text, voice: voice.id, provider: provider.id, model: provider.model, words: heard })
+      }
+      const pcm = decodeMono(join(projectDir, file))
+      const { start, end } = speechBounds(pcm)
+      return {
+        sceneId: scene.id,
+        key,
+        file,
+        durationSec: end,
+        speechStartSec: start,
+        leadSec: lead(start),
+        words: alignWords(text, heard, end)
+      }
     })
   )
   spec.voiceover = takes.filter((t): t is VoiceTake => t !== null)
@@ -79,11 +110,31 @@ export function fitScenes(spec: VideoSpec): void {
   const take = new Map(spec.voiceover.map((t) => [t.sceneId, t]))
   for (const scene of spec.scenes) {
     const t = take.get(scene.id)
-    const want = t ? t.leadSec + t.durationSec + 0.45 : scene.durationSec
-    scene.durationSec = Math.max(2, Math.ceil((want - 0.05) / unit)) * unit
+    const want = t ? t.leadSec + t.durationSec + 0.35 : scene.durationSec
+    scene.durationSec = Math.max(Math.ceil(2 / unit), Math.ceil((want - 0.05) / unit)) * unit
     scene.durationSec = Math.round(scene.durationSec * 1000) / 1000
   }
   spec.durationSec = Math.round(spec.scenes.reduce((a, s) => a + s.durationSec, 0) * 100) / 100
+}
+
+/** first and last moment of actual speech in a take (−40 dBFS gate, 10 ms frames) */
+export function speechBounds(pcm: Float32Array): { start: number; end: number } {
+  const hop = Math.round(SR / 100)
+  const gate = 0.01
+  let first = -1
+  let last = -1
+  for (let f = 0; f * hop < pcm.length; f++) {
+    let e = 0
+    const a = f * hop
+    const b = Math.min(pcm.length, a + hop)
+    for (let i = a; i < b; i++) e += pcm[i] * pcm[i]
+    if (Math.sqrt(e / (b - a)) > gate) {
+      if (first < 0) first = f
+      last = f
+    }
+  }
+  if (first < 0) return { start: 0, end: pcm.length / SR }
+  return { start: (first * hop) / SR, end: Math.min(pcm.length, (last + 1) * hop + hop * 3) / SR }
 }
 
 const norm = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '')

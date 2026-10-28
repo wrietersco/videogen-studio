@@ -1,0 +1,28 @@
+{
+  "id": "builtin-bg-ember-portrait",
+  "kind": "image",
+  "source": "builtin",
+  "title": "Ember gradient (portrait)",
+  "tags": [
+    "warm",
+    "orange",
+    "fire",
+    "gradient",
+    "background",
+    "backdrop",
+    "texture"
+  ],
+  "file": "builtin-bg-ember-portrait.jpg",
+  "mime": "image/jpeg",
+  "bytes": 66256,
+  "sha256": "4b7a7860eba7faef9010e5ac7c2984104202015da84c8ec5b4823a619e16bcf0",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "width": 1080,
+  "height": 1920
+}

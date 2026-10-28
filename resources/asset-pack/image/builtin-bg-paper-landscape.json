@@ -1,0 +1,29 @@
+{
+  "id": "builtin-bg-paper-landscape",
+  "kind": "image",
+  "source": "builtin",
+  "title": "Warm paper (landscape)",
+  "tags": [
+    "paper",
+    "light",
+    "cream",
+    "documentary",
+    "gradient",
+    "background",
+    "backdrop",
+    "texture"
+  ],
+  "file": "builtin-bg-paper-landscape.jpg",
+  "mime": "image/jpeg",
+  "bytes": 19490,
+  "sha256": "f65e14db0a4a60e61766286d8acb41a5c516fc46e212ae43924b4f528b57042c",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "width": 1920,
+  "height": 1080
+}

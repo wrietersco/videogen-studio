@@ -1,0 +1,28 @@
+{
+  "id": "builtin-music-corporate",
+  "kind": "music",
+  "source": "builtin",
+  "title": "Clean corporate bed",
+  "tags": [
+    "corporate",
+    "infographic",
+    "bed",
+    "loop",
+    "instrumental"
+  ],
+  "file": "builtin-music-corporate.m4a",
+  "mime": "audio/mp4",
+  "bytes": 1131636,
+  "sha256": "e1c513aa194ff71041effaf0450daa5895138f2eebc25595784881eb6912a325",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "durationSec": 45,
+  "extra": {
+    "bpm": 104
+  }
+}

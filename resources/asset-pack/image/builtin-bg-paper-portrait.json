@@ -1,0 +1,29 @@
+{
+  "id": "builtin-bg-paper-portrait",
+  "kind": "image",
+  "source": "builtin",
+  "title": "Warm paper (portrait)",
+  "tags": [
+    "paper",
+    "light",
+    "cream",
+    "documentary",
+    "gradient",
+    "background",
+    "backdrop",
+    "texture"
+  ],
+  "file": "builtin-bg-paper-portrait.jpg",
+  "mime": "image/jpeg",
+  "bytes": 20585,
+  "sha256": "38a3fc81d51eb097d478c982dbae7920ad7a90e31349063364f94ec1bd85220e",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "width": 1080,
+  "height": 1920
+}

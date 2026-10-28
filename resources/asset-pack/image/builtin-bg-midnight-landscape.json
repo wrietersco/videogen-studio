@@ -1,0 +1,28 @@
+{
+  "id": "builtin-bg-midnight-landscape",
+  "kind": "image",
+  "source": "builtin",
+  "title": "Midnight gradient (landscape)",
+  "tags": [
+    "dark",
+    "blue",
+    "night",
+    "gradient",
+    "background",
+    "backdrop",
+    "texture"
+  ],
+  "file": "builtin-bg-midnight-landscape.jpg",
+  "mime": "image/jpeg",
+  "bytes": 69454,
+  "sha256": "c99bbffd01898f198c57023f17371c01669a8318b153002564e83d44628cf391",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "width": 1920,
+  "height": 1080
+}

@@ -1,0 +1,24 @@
+{
+  "id": "builtin-sfx-impact-tight",
+  "kind": "sfx",
+  "source": "builtin",
+  "title": "Tight impact",
+  "tags": [
+    "impact",
+    "hit",
+    "punch",
+    "sfx"
+  ],
+  "file": "builtin-sfx-impact-tight.m4a",
+  "mime": "audio/mp4",
+  "bytes": 39876,
+  "sha256": "a11d4223c1d2e3c91b1cc4ce0b124a1d778c1f22cef5ee2f54a48caee6a8e348",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "durationSec": 1.8
+}

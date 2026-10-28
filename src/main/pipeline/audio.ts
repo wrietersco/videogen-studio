@@ -42,7 +42,9 @@ export async function buildAudio(
   spec: VideoSpec,
   sceneWindows: Array<{ id: string; start: number; end: number }>,
   projectDir: string,
-  musicDir: string
+  musicDir: string,
+  /** a library/generated track chosen by the media router (else the user's folder, else an original score) */
+  musicFile?: string | null
 ): Promise<AudioResult> {
   const audioDir = join(projectDir, 'assets', 'audio')
   mkdirSync(audioDir, { recursive: true })
@@ -76,7 +78,7 @@ export async function buildAudio(
   }
 
   // ---------- music: the user's own track, else an original score ----------
-  const music = userTrack(spec.musicMood, musicDir, total) ?? scoreMusic(spec, cuts, total)
+  const music = (musicFile ? loopTrack(musicFile, total) : null) ?? userTrack(spec.musicMood, musicDir, total) ?? scoreMusic(spec, cuts, total)
   if (music && hasNarration) duck(music, voice)
 
   // ---------- master ----------
@@ -135,7 +137,12 @@ function userTrack(mood: VideoSpec['musicMood'], musicDir: string, totalSec: num
     }
   }
   const path = find(key)
-  if (!path) return null
+  return path ? loopTrack(path, totalSec) : null
+}
+
+/** any track, looped to length with soft edges (mono, centred) */
+function loopTrack(path: string, totalSec: number) {
+  if (!existsSync(path)) return null
   const src = decodeMono(path)
   if (src.length === 0) return null
   const out = stereo(totalSec)

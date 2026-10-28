@@ -1,0 +1,28 @@
+{
+  "id": "builtin-music-cinematic",
+  "kind": "music",
+  "source": "builtin",
+  "title": "Slow-building cinematic bed",
+  "tags": [
+    "cinematic",
+    "documentary",
+    "bed",
+    "loop",
+    "instrumental"
+  ],
+  "file": "builtin-music-cinematic.m4a",
+  "mime": "audio/mp4",
+  "bytes": 1104494,
+  "sha256": "7e6141ca9022c15a556ee91e1c36d1a985050fd5f4cab4c1c290f3e748d716ac",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "durationSec": 45,
+  "extra": {
+    "bpm": 84
+  }
+}

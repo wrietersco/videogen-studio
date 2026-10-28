@@ -493,22 +493,29 @@ export function renderCraftedScene(
   return { html, steps, plate: plateJob }
 }
 
-/** split a take into readable phrases: punctuation, breath pauses, or a word cap */
+/**
+ * Split a take into readable phrases: break at punctuation and breath pauses,
+ * then cut any phrase over `max` words into even parts (no orphaned tails).
+ */
 function phraseChunks<W extends { word: string; startSec: number; endSec: number }>(words: W[], max: number): W[][] {
-  const out: W[][] = []
+  const phrases: W[][] = []
   let cur: W[] = []
   words.forEach((w, i) => {
     cur.push(w)
     const next = words[i + 1]
     const pause = next ? next.startSec - w.endSec > 0.45 : true
     const punct = /[.!?;:]$/.test(w.word) || (/,$/.test(w.word) && cur.length >= 3)
-    if (cur.length >= max || pause || punct) {
-      out.push(cur)
+    if (pause || punct) {
+      phrases.push(cur)
       cur = []
     }
   })
-  if (cur.length) out.push(cur)
-  return out
+  if (cur.length) phrases.push(cur)
+  return phrases.flatMap((p) => {
+    const parts = Math.ceil(p.length / max)
+    const size = Math.ceil(p.length / parts)
+    return Array.from({ length: parts }, (_, k) => p.slice(k * size, (k + 1) * size)).filter((c) => c.length)
+  })
 }
 
 // ---------------------------------------------------------------- plate engine (in-page)

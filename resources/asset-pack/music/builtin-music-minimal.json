@@ -1,0 +1,28 @@
+{
+  "id": "builtin-music-minimal",
+  "kind": "music",
+  "source": "builtin",
+  "title": "Minimal pulse for explainers",
+  "tags": [
+    "minimal",
+    "infographic",
+    "bed",
+    "loop",
+    "instrumental"
+  ],
+  "file": "builtin-music-minimal.m4a",
+  "mime": "audio/mp4",
+  "bytes": 1096801,
+  "sha256": "427370c7598dad7e7b2eb8778a03260641aacfff8d47df6df637ffa466caeaa8",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "durationSec": 45,
+  "extra": {
+    "bpm": 96
+  }
+}

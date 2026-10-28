@@ -126,7 +126,8 @@ export async function relocatePlate(opts: { vision: LLMProvider | null; plate: P
 }
 
 export async function makePlate(opts: {
-  imageProvider: LLMProvider
+  /** paints (or fetches/reuses) the still for a full prompt */
+  obtain: (fullPrompt: string) => Promise<Buffer>
   vision: LLMProvider | null
   plate: Plate
   design: FilmDesign
@@ -135,9 +136,8 @@ export async function makePlate(opts: {
   width: number
   height: number
 }): Promise<PlateResult> {
-  const { imageProvider, plate, design, sceneId, projectDir, width, height } = opts
-  if (!imageProvider.generateImage) throw new Error(`${imageProvider.label} cannot generate images`)
-  const raw = await imageProvider.generateImage({ prompt: platePrompt(plate, design, width, height), width, height })
+  const { plate, design, sceneId, projectDir, width, height } = opts
+  const raw = await opts.obtain(platePrompt(plate, design, width, height))
   const color = await sharp(raw).resize(width, height, { fit: 'cover', kernel: 'lanczos3' }).sharpen({ sigma: 0.6 }).jpeg({ quality: 90 }).toBuffer()
   const depth = await estimateDepth(color, width, height)
   const dir = join(projectDir, 'assets', 'plates')

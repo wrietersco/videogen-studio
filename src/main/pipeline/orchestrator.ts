@@ -1,10 +1,11 @@
 import { join } from 'node:path'
 import type { VideoSpec } from '@shared/spec'
-import type { LLMProvider } from '../providers/types'
+import type { LLMProvider, SpeechProvider } from '../providers/types'
+import type { MediaRouter } from '../media/router'
 import { Planner } from './planner'
 import { CompositionFixer } from './fixer'
 import { buildAudio } from './audio'
-import { narrate } from '../audio/voice'
+import { narrate, VOICES } from '../audio/voice'
 import { compose, COMPOSER_VERSION, type AudioLayer } from '../composer'
 import { captureSceneThumbs } from '../livePreview'
 import { ProjectStore, type StageName, type StageState } from '../store/projectStore'
@@ -155,8 +156,25 @@ export class Orchestrator {
     /** resolved per-run so settings changes take effect without restart */
     private readonly providerFor: () => LLMProvider,
     /** image model for painted plates (null → directed scenes use dot-grid backgrounds) */
-    private readonly imageProviderFor: () => LLMProvider | null = () => null
+    private readonly imageProviderFor: () => LLMProvider | null = () => null,
+    /** library-first media routing (desktop app); absent → direct provider calls (CLI, tests) */
+    private readonly media: MediaRouter | null = null
   ) {}
+
+  /** narrator: the media router's choice, else any provider that speaks (legacy OpenAI voices) */
+  private speech(): SpeechProvider | null {
+    if (this.media) return this.media.speech()
+    const p = [this.providerFor(), this.imageProviderFor()].find((x) => x?.tts) ?? null
+    if (!p?.tts) return null
+    return {
+      id: p.id,
+      label: p.label,
+      model: 'gpt-4o-mini-tts',
+      voices: VOICES,
+      defaultVoice: (look) => (look === 'documentary' ? 'onyx' : 'nova'),
+      tts: (req) => p.tts!(req)
+    }
+  }
 
   /** Persist stage progress to state.json — the resume contract. */
   private track(projectId: string, stage: StageName, status: StageState['status'], detail?: string): void {
@@ -460,7 +478,7 @@ export class Orchestrator {
     emit({ stage: 'direct', status: 'started', total: only ? only.ids.size : spec.scenes.length })
     const director = new SceneDirector({
       provider,
-      platesAvailable: imageProvider !== null,
+      platesAvailable: this.media ? this.media.imageAvailable() : imageProvider !== null,
       userPrompt,
       onScene: (i, c) =>
         emit({ stage: 'direct', status: 'scene', sceneIndex: i, headline: c.headline, widgets: c.widgets.map((w) => w.type), background: c.background })
@@ -511,7 +529,7 @@ export class Orchestrator {
       c.plate = undefined
       c.widgets = c.widgets.filter((w) => w.type !== 'annotation')
     }
-    if (!imageProvider) {
+    if (this.media ? !this.media.imageAvailable() : !imageProvider) {
       todo.forEach((c) => toGrid(c.sceneId))
       return { ...spec, crafts: spec.crafts.map((c) => crafts.get(c.sceneId) ?? c) }
     }
@@ -528,8 +546,25 @@ export class Orchestrator {
         const plate = job.plate
         if (!plate) continue
         try {
+          const media = this.media
           const r = await makePlate({
-            imageProvider,
+            obtain: media
+              ? async (fullPrompt) =>
+                  (
+                    await media.paint({
+                      brief: plate.prompt,
+                      fullPrompt,
+                      subjectLabel: plate.subjectLabel,
+                      look: design.look,
+                      width: preset.width,
+                      height: preset.height,
+                      projectId
+                    })
+                  ).buffer
+              : async (fullPrompt) => {
+                  if (!imageProvider?.generateImage) throw new Error('no image model configured')
+                  return imageProvider.generateImage({ prompt: fullPrompt, width: preset.width, height: preset.height })
+                },
             vision: vision.id === 'mock' ? null : vision,
             plate,
             design,
@@ -607,9 +642,9 @@ export class Orchestrator {
     // voice-first: narration is synthesized (or reused) and measured, and scene
     // durations are fitted to it — in place, so every caller's spec follows
     try {
-      const voiced = [this.providerFor(), this.imageProviderFor()].find((p) => p?.tts) ?? null
+      const speech = this.speech()
       const before = spec.durationSec
-      await narrate(spec, voiced, this.store.dir(projectId))
+      await narrate(spec, speech, this.store.dir(projectId), speech && this.media ? this.media.voiceCache(projectId, speech) : undefined)
       this.store.saveSpec(projectId, spec)
       if (spec.voiceover.length) {
         this.store.appendEvent(projectId, `voice: ${spec.voiceover.length} takes (${spec.voice?.id}) · ${before}s → ${spec.durationSec}s`)
@@ -625,7 +660,13 @@ export class Orchestrator {
       return w
     })
     // audio is enhancement-only: any failure degrades to a silent video
-    const audio = await buildAudio(spec, sceneWindows, this.store.dir(projectId), musicDir).catch((e: Error) => {
+    const musicFile = this.media
+      ? await this.media.music(spec, acc, projectId).catch((e: Error) => {
+          this.store.appendEvent(projectId, `music: built-in score (${e.message.slice(0, 120)})`)
+          return null
+        })
+      : null
+    const audio = await buildAudio(spec, sceneWindows, this.store.dir(projectId), musicDir, musicFile).catch((e: Error) => {
       this.store.appendEvent(projectId, `audio: silent (${e.message.slice(0, 120)})`)
       return { clips: [], captions: [], hasNarration: false }
     })

@@ -1,0 +1,24 @@
+{
+  "id": "builtin-sfx-riser-long",
+  "kind": "sfx",
+  "source": "builtin",
+  "title": "Long riser",
+  "tags": [
+    "riser",
+    "build",
+    "tension",
+    "sfx"
+  ],
+  "file": "builtin-sfx-riser-long.m4a",
+  "mime": "audio/mp4",
+  "bytes": 59775,
+  "sha256": "32dedb1474008bf372e1f3fb21f70c79b6f1312a448d2b6ccc168a15282b0da5",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "durationSec": 2.6
+}

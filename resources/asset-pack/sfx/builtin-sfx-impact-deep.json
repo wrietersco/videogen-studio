@@ -1,0 +1,24 @@
+{
+  "id": "builtin-sfx-impact-deep",
+  "kind": "sfx",
+  "source": "builtin",
+  "title": "Deep impact",
+  "tags": [
+    "impact",
+    "hit",
+    "boom",
+    "sfx"
+  ],
+  "file": "builtin-sfx-impact-deep.m4a",
+  "mime": "audio/mp4",
+  "bytes": 39990,
+  "sha256": "cb996bf1f1d493213a944adb76919275bb4a8621a31d6da8cef18e08646b1747",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "durationSec": 1.8
+}

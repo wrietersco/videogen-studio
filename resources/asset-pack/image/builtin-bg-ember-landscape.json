@@ -1,0 +1,28 @@
+{
+  "id": "builtin-bg-ember-landscape",
+  "kind": "image",
+  "source": "builtin",
+  "title": "Ember gradient (landscape)",
+  "tags": [
+    "warm",
+    "orange",
+    "fire",
+    "gradient",
+    "background",
+    "backdrop",
+    "texture"
+  ],
+  "file": "builtin-bg-ember-landscape.jpg",
+  "mime": "image/jpeg",
+  "bytes": 64283,
+  "sha256": "c5ae8928d491c5888b40225360f9be1b96a1c5d8ae07601133ea5af8790d8a01",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "width": 1920,
+  "height": 1080
+}

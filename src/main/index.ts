@@ -9,9 +9,12 @@ import { Orchestrator, GenerationCancelled, type GenerateOptions } from './pipel
 import { ProjectStore } from './store/projectStore'
 import { providerRegistry } from './providers/registry'
 import type { ProviderId } from './providers/types'
-import { DEFAULT_SETTINGS, type Settings } from './settings'
+import { DEFAULT_MEDIA, DEFAULT_SETTINGS, type KeyId, type Settings } from './settings'
+import { AssetLibrary } from './assets/library'
+import { registerAssetIpc, registerAssetScheme } from './assets/ipc'
+import { MediaRouter } from './media/router'
 import { ensureBrowser } from './rendererService/hyperframes'
-import { projectsDir, appRoot } from './paths'
+import { projectsDir, appRoot, libraryDir, builtinPackDir } from './paths'
 import { meter, readProjectUsage, type UsageRun } from './usage/meter'
 
 /**
@@ -19,11 +22,29 @@ import { meter, readProjectUsage, type UsageRun } from './usage/meter'
  * (safeStorage-encrypted on disk), and the render job queue.
  */
 
+// custom protocols must be declared before 'ready'
+registerAssetScheme()
+
 const store = new ProjectStore(projectsDir)
+const library = new AssetLibrary(libraryDir, builtinPackDir, () => settings.sharing)
+/** decrypted keys, cached (safeStorage round-trips are not free) */
+const keyCache = new Map<KeyId, string>()
+const keyOf = (id: KeyId): string => {
+  if (!keyCache.has(id)) keyCache.set(id, decryptKey(settings.keys[id]))
+  return keyCache.get(id) ?? ''
+}
+const media = new MediaRouter({
+  library,
+  settings: () => settings,
+  key: keyOf,
+  provider: (id) => providerRegistry.get(id),
+  autoImageProvider: () => providerRegistry.imageProvider()
+})
 const orchestrator = new Orchestrator(
   store,
   () => providerRegistry.active(),
-  () => providerRegistry.imageProvider()
+  () => providerRegistry.imageProvider(),
+  media
 )
 
 // ---------------- settings (encrypted key storage) ----------------
@@ -35,7 +56,7 @@ function loadSettings(): void {
   if (!existsSync(settingsPath)) return
   try {
     const raw = JSON.parse(readFileSync(settingsPath, 'utf8')) as Partial<Settings>
-    settings = { ...settings, ...raw }
+    settings = { ...settings, ...raw, media: { ...DEFAULT_MEDIA, ...(raw.media ?? {}) } }
   } catch {
     /* corrupt settings — keep defaults */
   }
@@ -187,25 +208,33 @@ function registerIpc(): void {
     ...settings,
     keys: {} // never send raw keys back to the UI; presence flags only
   }))
-  ipcMain.handle('settings:hasKey', (_e, provider: ProviderId) => Boolean(settings.keys[provider]))
+  ipcMain.handle('settings:hasKey', (_e, provider: KeyId) => Boolean(settings.keys[provider]))
+  ipcMain.handle('settings:keyStatus', () =>
+    Object.fromEntries((['openai', 'anthropic', 'gemini', 'elevenlabs', 'pexels'] as KeyId[]).map((k) => [k, Boolean(settings.keys[k])]))
+  )
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
     if (patch.provider) settings.provider = patch.provider
     if (patch.models) settings.models = { ...settings.models, ...patch.models }
     if (patch.quality) settings.quality = patch.quality
     if (typeof patch.allowGpu === 'boolean') settings.allowGpu = patch.allowGpu
     if (patch.craft === 'directed' || patch.craft === 'classic') settings.craft = patch.craft
+    if (patch.media) settings.media = { ...settings.media, ...patch.media }
+    if (patch.reuse === 'smart' || patch.reuse === 'fresh') settings.reuse = patch.reuse
+    if (patch.sharing === 'local' || patch.sharing === 'shareable') settings.sharing = patch.sharing
     saveSettings()
     providerRegistry.reconfigure(settings)
     return true
   })
-  ipcMain.handle('settings:setKey', (_e, provider: ProviderId, key: string) => {
+  ipcMain.handle('settings:setKey', (_e, provider: KeyId, key: string) => {
     settings.keys[provider] = encryptKey(key.trim())
+    keyCache.delete(provider)
     saveSettings()
-    providerRegistry.reconfigure(settings, { [provider]: decryptKey(settings.keys[provider]) })
+    if (provider !== 'elevenlabs' && provider !== 'pexels') providerRegistry.reconfigure(settings, { [provider]: decryptKey(settings.keys[provider]) })
     return true
   })
-  ipcMain.handle('settings:clearKey', (_e, provider: ProviderId) => {
+  ipcMain.handle('settings:clearKey', (_e, provider: KeyId) => {
     delete settings.keys[provider]
+    keyCache.delete(provider)
     saveSettings()
     providerRegistry.reconfigure(settings)
     return true
@@ -326,6 +355,7 @@ app.whenReady().then(() => {
     gemini: decryptKey(settings.keys.gemini)
   })
   registerIpc()
+  registerAssetIpc({ library, router: media, key: keyOf, isBusy: () => busy })
   createWindow()
   createTray()
   app.on('activate', () => {

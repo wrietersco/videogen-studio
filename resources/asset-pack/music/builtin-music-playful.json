@@ -1,0 +1,28 @@
+{
+  "id": "builtin-music-playful",
+  "kind": "music",
+  "source": "builtin",
+  "title": "Playful bouncy bed",
+  "tags": [
+    "playful",
+    "infographic",
+    "bed",
+    "loop",
+    "instrumental"
+  ],
+  "file": "builtin-music-playful.m4a",
+  "mime": "audio/mp4",
+  "bytes": 1145492,
+  "sha256": "43e79e2ca816dd4019d531bdf454adae35d8a4692b6c63c9421572a1360221ba",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "durationSec": 45.25,
+  "extra": {
+    "bpm": 118
+  }
+}

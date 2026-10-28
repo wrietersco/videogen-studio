@@ -1,0 +1,27 @@
+{
+  "id": "builtin-bg-forest-portrait",
+  "kind": "image",
+  "source": "builtin",
+  "title": "Forest gradient (portrait)",
+  "tags": [
+    "green",
+    "nature",
+    "gradient",
+    "background",
+    "backdrop",
+    "texture"
+  ],
+  "file": "builtin-bg-forest-portrait.jpg",
+  "mime": "image/jpeg",
+  "bytes": 64960,
+  "sha256": "0ebc260de9963fe0528d9e7df96715e0974d738316c662ced3022c057564abf8",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "width": 1080,
+  "height": 1920
+}

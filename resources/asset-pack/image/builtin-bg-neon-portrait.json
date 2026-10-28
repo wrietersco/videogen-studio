@@ -1,0 +1,29 @@
+{
+  "id": "builtin-bg-neon-portrait",
+  "kind": "image",
+  "source": "builtin",
+  "title": "Neon dusk (portrait)",
+  "tags": [
+    "neon",
+    "purple",
+    "pink",
+    "synthwave",
+    "gradient",
+    "background",
+    "backdrop",
+    "texture"
+  ],
+  "file": "builtin-bg-neon-portrait.jpg",
+  "mime": "image/jpeg",
+  "bytes": 64903,
+  "sha256": "74eb6c1b5876599820c8eecfa34a35b229e839d7c9a496d4f9f5e38200308556",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "width": 1080,
+  "height": 1920
+}

@@ -4,7 +4,9 @@ import type {
   ImageGenRequest,
   LLMProvider,
   ModelInfo,
-  ProviderId
+  ProviderId,
+  TTSRequest,
+  TTSResult
 } from './types'
 import { ProviderError } from './types'
 import { meter } from '../usage/meter'
@@ -122,6 +124,28 @@ export class GeminiProvider implements LLMProvider {
     return Buffer.from(b64, 'base64')
   }
 
+  /** Gemini TTS: 24 kHz 16-bit mono PCM, wrapped as WAV; style rides in the prompt */
+  async tts(req: TTSRequest): Promise<TTSResult> {
+    const model = req.model ?? 'gemini-2.5-flash-preview-tts'
+    const text = req.instructions ? `${req.instructions.split('.')[0]}. Read this: ${req.text}` : req.text
+    const json = await this.request<{ candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string } }> } }> } & UsageMeta>(
+      'POST',
+      `/models/${model}:generateContent`,
+      {
+        contents: [{ role: 'user', parts: [{ text }] }],
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: req.voice ?? 'Charon' } } }
+        }
+      }
+    )
+    const u = json.usageMetadata
+    meter.record({ kind: 'voice', provider: 'gemini', model, usage: { inputTokens: u?.promptTokenCount ?? 0, outputTokens: u?.candidatesTokenCount ?? 0 } })
+    const b64 = json.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data)?.inlineData?.data
+    if (!b64) throw new ProviderError('speech returned no audio', this.id, 'server')
+    return { audio: pcmToWav(Buffer.from(b64, 'base64'), 24000), mimeType: 'audio/wav', words: [] }
+  }
+
   private meterText(model: string, json: UsageMeta): void {
     const u = json.usageMetadata
     meter.record({
@@ -192,4 +216,22 @@ function toOpenApiish(schema: Record<string, unknown>): Record<string, unknown> 
     return obj
   }
   return clean(schema) as Record<string, unknown>
+}
+
+function pcmToWav(pcm: Buffer, rate: number): Buffer {
+  const h = Buffer.alloc(44)
+  h.write('RIFF', 0)
+  h.writeUInt32LE(36 + pcm.length, 4)
+  h.write('WAVE', 8)
+  h.write('fmt ', 12)
+  h.writeUInt32LE(16, 16)
+  h.writeUInt16LE(1, 20)
+  h.writeUInt16LE(1, 22)
+  h.writeUInt32LE(rate, 24)
+  h.writeUInt32LE(rate * 2, 28)
+  h.writeUInt16LE(2, 32)
+  h.writeUInt16LE(16, 34)
+  h.write('data', 36)
+  h.writeUInt32LE(pcm.length, 40)
+  return Buffer.concat([h, pcm])
 }

@@ -30,9 +30,9 @@ interface MoodRecipe {
 }
 
 const RECIPES: Record<Mood, MoodRecipe> = {
-  cinematic: { bpm: 84, minor: true, beatsPerCut: 2, chordBeats: 8, arp: 2, kick: 'heartbeat', hats: false, cutoff: 1500, padGain: 1 },
-  dark: { bpm: 72, minor: true, beatsPerCut: 2, chordBeats: 8, arp: 1, kick: 'heartbeat', hats: false, cutoff: 900, padGain: 1.1 },
-  minimal: { bpm: 96, minor: false, beatsPerCut: 2, chordBeats: 8, arp: 2, kick: 'none', hats: false, cutoff: 2200, padGain: 0.7 },
+  cinematic: { bpm: 84, minor: true, beatsPerCut: 1, chordBeats: 8, arp: 2, kick: 'heartbeat', hats: false, cutoff: 1500, padGain: 1 },
+  dark: { bpm: 72, minor: true, beatsPerCut: 1, chordBeats: 8, arp: 1, kick: 'heartbeat', hats: false, cutoff: 900, padGain: 1.1 },
+  minimal: { bpm: 96, minor: false, beatsPerCut: 1, chordBeats: 8, arp: 2, kick: 'none', hats: false, cutoff: 2200, padGain: 0.7 },
   upbeat: { bpm: 112, minor: false, beatsPerCut: 1, chordBeats: 4, arp: 2, kick: 'four', hats: true, cutoff: 2600, padGain: 0.65 },
   playful: { bpm: 118, minor: false, beatsPerCut: 1, chordBeats: 4, arp: 2, kick: 'half', hats: true, cutoff: 3000, padGain: 0.55 },
   corporate: { bpm: 104, minor: false, beatsPerCut: 1, chordBeats: 4, arp: 1, kick: 'half', hats: true, cutoff: 2400, padGain: 0.7 }

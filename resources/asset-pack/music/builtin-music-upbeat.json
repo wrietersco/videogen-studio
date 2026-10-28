@@ -1,0 +1,28 @@
+{
+  "id": "builtin-music-upbeat",
+  "kind": "music",
+  "source": "builtin",
+  "title": "Bright upbeat groove",
+  "tags": [
+    "upbeat",
+    "infographic",
+    "bed",
+    "loop",
+    "instrumental"
+  ],
+  "file": "builtin-music-upbeat.m4a",
+  "mime": "audio/mp4",
+  "bytes": 1143888,
+  "sha256": "02b66f73ff227771eae30f692a8c60980de842862132c6364a163a30e709d398",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "durationSec": 45,
+  "extra": {
+    "bpm": 112
+  }
+}

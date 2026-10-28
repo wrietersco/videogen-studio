@@ -1,0 +1,27 @@
+{
+  "id": "builtin-bg-forest-landscape",
+  "kind": "image",
+  "source": "builtin",
+  "title": "Forest gradient (landscape)",
+  "tags": [
+    "green",
+    "nature",
+    "gradient",
+    "background",
+    "backdrop",
+    "texture"
+  ],
+  "file": "builtin-bg-forest-landscape.jpg",
+  "mime": "image/jpeg",
+  "bytes": 64327,
+  "sha256": "75d816777d74be0b4bf5672a51bb50361ee09763171404eb48895fb2bdf9b5e5",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "width": 1920,
+  "height": 1080
+}

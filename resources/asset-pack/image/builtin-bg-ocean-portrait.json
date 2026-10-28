@@ -1,0 +1,29 @@
+{
+  "id": "builtin-bg-ocean-portrait",
+  "kind": "image",
+  "source": "builtin",
+  "title": "Ocean gradient (portrait)",
+  "tags": [
+    "blue",
+    "teal",
+    "water",
+    "sea",
+    "gradient",
+    "background",
+    "backdrop",
+    "texture"
+  ],
+  "file": "builtin-bg-ocean-portrait.jpg",
+  "mime": "image/jpeg",
+  "bytes": 65620,
+  "sha256": "43b128ebe6b6f5bed0ca55c7338587050a200e49a3b020a8f701c87941bdf28b",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "width": 1080,
+  "height": 1920
+}

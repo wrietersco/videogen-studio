@@ -60,6 +60,24 @@ export interface TTSResult {
   words?: Array<{ word: string; startSec: number; endSec: number }>
 }
 
+/** a narrator: any engine that turns text into speech (OpenAI, Gemini, ElevenLabs) */
+export interface SpeechProvider {
+  id: string
+  label: string
+  model: string
+  /** voice names this engine accepts */
+  voices: readonly string[]
+  /** the house voice for a film look ('documentary' or anything else) */
+  defaultVoice(look?: string): string
+  tts(req: TTSRequest): Promise<TTSResult>
+}
+
+/** cross-project cache for voice takes (backed by the asset library) */
+export interface VoiceCache {
+  lookup(key: string): { audio: Buffer; ext: string; words?: TTSResult['words'] } | null
+  store(key: string, audio: Buffer, ext: string, info: { text: string; voice: string; provider: string; model: string; words?: TTSResult['words'] }): void
+}
+
 export interface ImageGenRequest {
   prompt: string
   /** overrides the provider's configured image model (Settings → Media models) */

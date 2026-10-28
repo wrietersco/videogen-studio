@@ -1,0 +1,29 @@
+{
+  "id": "builtin-bg-neon-landscape",
+  "kind": "image",
+  "source": "builtin",
+  "title": "Neon dusk (landscape)",
+  "tags": [
+    "neon",
+    "purple",
+    "pink",
+    "synthwave",
+    "gradient",
+    "background",
+    "backdrop",
+    "texture"
+  ],
+  "file": "builtin-bg-neon-landscape.jpg",
+  "mime": "image/jpeg",
+  "bytes": 63347,
+  "sha256": "c024b26a4682a582048726eb37fe06104ce5db0448fb13a1802f4a7e09196204",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "width": 1920,
+  "height": 1080
+}

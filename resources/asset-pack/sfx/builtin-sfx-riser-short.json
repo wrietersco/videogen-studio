@@ -1,0 +1,24 @@
+{
+  "id": "builtin-sfx-riser-short",
+  "kind": "sfx",
+  "source": "builtin",
+  "title": "Short riser",
+  "tags": [
+    "riser",
+    "build",
+    "tension",
+    "sfx"
+  ],
+  "file": "builtin-sfx-riser-short.m4a",
+  "mime": "audio/mp4",
+  "bytes": 30641,
+  "sha256": "00cd7deeebc81de6e8f76d19430fd200a9a45ce0352543616f099fcc373d7bfc",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "durationSec": 1.4
+}

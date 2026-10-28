@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 /**
  * Preload — typed, promise-based bridge. The renderer never touches Node;
@@ -47,7 +47,25 @@ const api = {
   setSettings: (patch: unknown) => ipcRenderer.invoke('settings:set', patch),
   hasKey: (provider: string) => ipcRenderer.invoke('settings:hasKey', provider),
   setKey: (provider: string, key: string) => ipcRenderer.invoke('settings:setKey', provider, key),
-  clearKey: (provider: string) => ipcRenderer.invoke('settings:clearKey', provider)
+  clearKey: (provider: string) => ipcRenderer.invoke('settings:clearKey', provider),
+  keyStatus: () => ipcRenderer.invoke('settings:keyStatus'),
+  assets: {
+    list: (q?: unknown) => ipcRenderer.invoke('assets:list', q),
+    stats: () => ipcRenderer.invoke('assets:stats'),
+    update: (id: string, patch: unknown) => ipcRenderer.invoke('assets:update', id, patch),
+    remove: (id: string) => ipcRenderer.invoke('assets:remove', id),
+    reveal: (id: string) => ipcRenderer.invoke('assets:reveal', id),
+    upload: (paths?: string[], tags?: string[]) => ipcRenderer.invoke('assets:upload', paths, tags),
+    generate: (req: unknown) => ipcRenderer.invoke('assets:generate', req),
+    exportPack: () => ipcRenderer.invoke('assets:exportPack'),
+    importPack: () => ipcRenderer.invoke('assets:importPack'),
+    /** real path of a dropped File (Electron removed File.path) */
+    pathForFile: (f: File) => webUtils.getPathForFile(f)
+  },
+  stock: {
+    search: (kind: string, query: string, orientation?: string) => ipcRenderer.invoke('stock:search', kind, query, orientation),
+    download: (r: unknown, tags?: string[]) => ipcRenderer.invoke('stock:download', r, tags)
+  }
 }
 
 contextBridge.exposeInMainWorld('api', api)

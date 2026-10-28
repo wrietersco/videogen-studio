@@ -9,3 +9,4 @@ vendor/fonts/*.woff2
 .DS_Store
 release/
 samples-out/
+library/

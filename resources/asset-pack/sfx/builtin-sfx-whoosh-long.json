@@ -1,0 +1,24 @@
+{
+  "id": "builtin-sfx-whoosh-long",
+  "kind": "sfx",
+  "source": "builtin",
+  "title": "Long whoosh",
+  "tags": [
+    "whoosh",
+    "transition",
+    "swoosh",
+    "sfx"
+  ],
+  "file": "builtin-sfx-whoosh-long.m4a",
+  "mime": "audio/mp4",
+  "bytes": 28133,
+  "sha256": "bc6d22357b8e4646c4ca78fdb7632ae6d5c79fb50db2f8e7db154f0256eb26b7",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "durationSec": 1.3
+}

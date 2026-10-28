@@ -37,3 +37,7 @@ export const isPackaged =
   typeof (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath === 'string' &&
   appRoot.startsWith((process as NodeJS.Process & { resourcesPath: string }).resourcesPath)
 export const projectsDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'projects') : resolve(appRoot, 'projects')
+/** the user's asset library (generated, uploaded, downloaded) — outlives projects */
+export const libraryDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'library') : resolve(appRoot, 'library')
+/** read-only starter pack shipped with the app */
+export const builtinPackDir = resolve(appRoot, 'resources', 'asset-pack')

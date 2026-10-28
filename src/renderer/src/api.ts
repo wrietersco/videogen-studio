@@ -5,8 +5,11 @@ import type { ProjectMeta } from '../../main/store/projectStore'
 import type { ProviderId, ModelInfo } from '../../main/providers/types'
 import type { PlatformId, StyleFamily, VideoSpec } from '@shared/spec'
 import type { UsageEntry, UsageRun, ProjectUsage } from '../../main/usage/meter'
+import type { AssetKind, AssetMeta, AssetSource } from '@shared/assets'
+import type { StockResult } from '../../main/media/stock'
+import type { KeyId, MediaSettings } from '../../main/settings'
 
-export type { UsageEntry, UsageRun, ProjectUsage }
+export type { UsageEntry, UsageRun, ProjectUsage, AssetKind, AssetMeta, AssetSource, StockResult, KeyId, MediaSettings }
 export type { PipelineEvent, ProjectMeta, ProviderId, ModelInfo, PlatformId, StyleFamily, VideoSpec }
 
 export interface ProviderStatus {
@@ -23,7 +26,12 @@ export interface SettingsView {
   quality: 'draft' | 'standard' | 'delivery'
   allowGpu: boolean
   craft: 'directed' | 'classic'
+  media: MediaSettings
+  reuse: 'smart' | 'fresh'
+  sharing: 'local' | 'shareable'
 }
+
+export type Orientation = 'portrait' | 'landscape' | 'square'
 
 export interface GenerateOptionsView {
   prompt: string
@@ -75,9 +83,26 @@ declare global {
       listImageModels: () => Promise<ModelInfo[]>
       getSettings: () => Promise<SettingsView>
       setSettings: (patch: Partial<SettingsView>) => Promise<boolean>
-      hasKey: (provider: ProviderId) => Promise<boolean>
-      setKey: (provider: ProviderId, key: string) => Promise<boolean>
-      clearKey: (provider: ProviderId) => Promise<boolean>
+      hasKey: (provider: KeyId) => Promise<boolean>
+      setKey: (provider: KeyId, key: string) => Promise<boolean>
+      clearKey: (provider: KeyId) => Promise<boolean>
+      keyStatus: () => Promise<Record<KeyId, boolean>>
+      assets: {
+        list: (q?: { kind?: AssetKind; source?: AssetSource; query?: string }) => Promise<AssetMeta[]>
+        stats: () => Promise<Record<AssetSource, number> & { total: number; bytes: number }>
+        update: (id: string, patch: Partial<Pick<AssetMeta, 'title' | 'tags' | 'sharing' | 'favorite'>>) => Promise<AssetMeta | null>
+        remove: (id: string) => Promise<boolean>
+        reveal: (id: string) => Promise<boolean>
+        upload: (paths?: string[], tags?: string[]) => Promise<{ added: AssetMeta[]; skipped: string[] }>
+        generate: (req: { kind: 'image' | 'voice' | 'music'; prompt: string; orientation?: Orientation }) => Promise<AssetMeta | null>
+        exportPack: () => Promise<{ exported: number; folder?: string }>
+        importPack: () => Promise<{ imported: number }>
+        pathForFile: (f: File) => string
+      }
+      stock: {
+        search: (kind: AssetKind, query: string, orientation?: Orientation) => Promise<{ results: StockResult[]; errors: string[] }>
+        download: (r: StockResult, tags?: string[]) => Promise<AssetMeta>
+      }
     }
   }
 }

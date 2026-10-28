@@ -1,0 +1,24 @@
+{
+  "id": "builtin-sfx-whoosh-soft",
+  "kind": "sfx",
+  "source": "builtin",
+  "title": "Soft whoosh",
+  "tags": [
+    "whoosh",
+    "transition",
+    "swish",
+    "sfx"
+  ],
+  "file": "builtin-sfx-whoosh-soft.m4a",
+  "mime": "audio/mp4",
+  "bytes": 15846,
+  "sha256": "3be072bf878e932a6d2d24aa1f4b41585a7692c548947c930951d4f446ff7300",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "durationSec": 0.8
+}

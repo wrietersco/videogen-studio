@@ -1,0 +1,28 @@
+{
+  "id": "builtin-music-dark",
+  "kind": "music",
+  "source": "builtin",
+  "title": "Dark tension drone",
+  "tags": [
+    "dark",
+    "documentary",
+    "bed",
+    "loop",
+    "instrumental"
+  ],
+  "file": "builtin-music-dark.m4a",
+  "mime": "audio/mp4",
+  "bytes": 1095331,
+  "sha256": "71ca0bfb089b22ac9ac8cf2781fb29e01d9b2c2ae5cea4e2abc5c739954396a3",
+  "license": {
+    "name": "VideoGen built-in (free to use)",
+    "requiresAttribution": false
+  },
+  "sharing": "local",
+  "createdAt": "2026-10-28T00:00:00.000Z",
+  "usedIn": [],
+  "durationSec": 45,
+  "extra": {
+    "bpm": 72
+  }
+}

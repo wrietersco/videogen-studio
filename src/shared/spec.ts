@@ -214,6 +214,8 @@ export const VoiceTake = z.object({
   key: z.string(),
   file: z.string(),
   durationSec: z.number().positive(),
+  /** leading silence inside the file — absorbed into the scene's lead */
+  speechStartSec: z.number().min(0).default(0),
   /** the take starts this long after its scene starts */
   leadSec: z.number().min(0),
   words: z.array(z.object({ word: z.string(), startSec: z.number(), endSec: z.number() })).default([])
