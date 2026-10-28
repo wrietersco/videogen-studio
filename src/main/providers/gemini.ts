@@ -138,6 +138,21 @@ export class GeminiProvider implements LLMProvider {
     return { audio: pcmToWav(Buffer.from(b64, 'base64'), 24000), mimeType: 'audio/wav', words: [] }
   }
 
+  /**
+   * Lyria (Interactions API): one request → one finished 44.1 kHz stereo track.
+   * Length, structure, tempo and "instrumental" all ride in the prompt.
+   */
+  async music(prompt: string, model = 'lyria-3.5'): Promise<{ audio: Buffer; text: string }> {
+    const json = await this.request<{
+      steps?: Array<{ type?: string; content?: Array<{ type?: string; data?: string; text?: string }> }>
+    }>('POST', '/interactions', { model, input: prompt })
+    meter.record({ kind: 'music', provider: 'gemini', model, usage: { items: 1 } })
+    const blocks = (json.steps ?? []).filter((s) => s.type === 'model_output').flatMap((s) => s.content ?? [])
+    const b64 = blocks.filter((c) => c.type === 'audio' && c.data).at(-1)?.data
+    if (!b64) throw new ProviderError('music generation returned no audio', this.id, 'server')
+    return { audio: Buffer.from(b64, 'base64'), text: blocks.map((c) => c.text ?? '').join('\n').trim() }
+  }
+
   private meterText(model: string, json: UsageMeta): void {
     const u = json.usageMetadata
     meter.record({

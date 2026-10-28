@@ -86,6 +86,9 @@ export const RATES: Record<string, Rate> = {
   eleven_flash_v2_5: { perKChars: 0.04 },
   eleven_turbo_v2_5: { perKChars: 0.04 },
   music_v1: { perMinute: 0.15 },
+  // ---- Google Lyria (paid tier only, per finished track) ----
+  'lyria-3.5': { perItem: 0.08 },
+  'lyria-3-clip-preview': { perItem: 0.04 },
   eleven_text_to_sound_v2: { perMinute: 0.12 }
 }
 
@@ -150,6 +153,7 @@ export const MEDIA_MODELS: MediaModel[] = [
   // music
   { kind: 'music', provider: 'builtin', id: 'procedural', label: 'Built-in composer', typical: 'free', cost: 1, speed: 3, quality: 2, note: 'beat-synced score made on your PC' },
   { kind: 'music', provider: 'elevenlabs', id: 'music_v1', label: 'ElevenLabs Music', typical: '≈ $0.15 / min', cost: 2, speed: 2, quality: 3 },
+  { kind: 'music', provider: 'gemini', id: 'lyria-3.5', label: 'Google Lyria 3.5', typical: '≈ $0.08 / track', cost: 1, speed: 2, quality: 3, note: 'scored to your cuts · Gemini paid tier' },
   // sfx
   { kind: 'sfx', provider: 'builtin', id: 'procedural', label: 'Built-in sound design', typical: 'free', cost: 1, speed: 3, quality: 2 },
   // video

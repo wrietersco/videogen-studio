@@ -1,7 +1,7 @@
 import { mkdirSync, existsSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { VideoSpec } from '@shared/spec'
-import { decodeMono, hashSeed, loudnorm, mixIn, stereo, writeWav, SR } from '../audio/pcm'
+import { decodeMono, decodeStereo, hashSeed, loudnorm, mixIn, stereo, writeWav, SR } from '../audio/pcm'
 import { scoreMusic } from '../audio/score'
 import { designSfx } from '../audio/sfx'
 import { duck } from '../audio/mix'
@@ -78,7 +78,7 @@ export async function buildAudio(
   }
 
   // ---------- music: the user's own track, else an original score ----------
-  const music = (musicFile ? loopTrack(musicFile, total) : null) ?? userTrack(spec.musicMood, musicDir, total) ?? scoreMusic(spec, cuts, total)
+  const music = (musicFile ? loopTrack(musicFile, total, cuts) : null) ?? userTrack(spec.musicMood, musicDir, total, cuts) ?? scoreMusic(spec, cuts, total)
   if (music && hasNarration) duck(music, voice)
 
   // ---------- master ----------
@@ -124,7 +124,7 @@ function karaokeCues(words: Array<{ word: string; startSec: number }>): CaptionC
 }
 
 /** a track from the user's music folder, looped to length (mono, centred) */
-function userTrack(mood: VideoSpec['musicMood'], musicDir: string, totalSec: number) {
+function userTrack(mood: VideoSpec['musicMood'], musicDir: string, totalSec: number, cuts: number[]) {
   if (mood === 'none' || !existsSync(musicDir)) return null
   const key = MUSIC_DIR_KEYS.includes(mood as (typeof MUSIC_DIR_KEYS)[number]) ? mood : 'upbeat'
   const find = (sub: string): string | null => {
@@ -137,23 +137,81 @@ function userTrack(mood: VideoSpec['musicMood'], musicDir: string, totalSec: num
     }
   }
   const path = find(key)
-  return path ? loopTrack(path, totalSec) : null
+  return path ? loopTrack(path, totalSec, cuts) : null
 }
 
-/** any track, looped to length with soft edges (mono, centred) */
-function loopTrack(path: string, totalSec: number) {
+/**
+ * Any track fitted to the video, in stereo. A track scored to this length
+ * keeps its own intro and composed ending (only a short safety fade). A much
+ * longer one keeps both too: its opening plays up to a cut, then crossfades
+ * (under the cut's whoosh) into the bars that lead to its real ending, so the
+ * video lands on the song's final chord instead of a fade. A shorter one loops.
+ */
+function loopTrack(path: string, totalSec: number, cuts: number[] = []) {
   if (!existsSync(path)) return null
-  const src = decodeMono(path)
-  if (src.length === 0) return null
+  const src = decodeStereo(path)
+  const end = musicEnd(src)
+  if (end === 0) return null
   const out = stereo(totalSec)
-  const fade = Math.min(1.5, totalSec * 0.15)
+  const n = out.l.length
+  const srcSec = end / SR
   let peak = 1e-9
-  for (const v of src) peak = Math.max(peak, Math.abs(v))
-  for (let i = 0; i < out.l.length; i++) {
+  for (let i = 0; i < end; i++) peak = Math.max(peak, Math.abs(src.l[i]), Math.abs(src.r[i]))
+
+  // splice point: the latest cut that leaves 5–10 s for the ending
+  const splice = srcSec > totalSec + 2 ? [...cuts].reverse().find((c) => totalSec - c >= 5 && totalSec - c <= 10) ?? totalSec * 0.65 : null
+  const xf = Math.round(0.4 * SR)
+  const at = splice === null ? 0 : Math.round(splice * SR)
+  const tailFrom = splice === null ? 0 : end - (n - at)
+  const spliced = splice !== null && tailFrom > at
+  const fade = spliced || (srcSec >= totalSec && srcSec - totalSec < 2) ? 0.25 : Math.min(1.5, totalSec * 0.15)
+
+  for (let i = 0; i < n; i++) {
     const t = i / SR
-    const v = (src[i % src.length] / peak) * 0.5 * Math.min(1, t / 0.4) * Math.min(1, (totalSec - t) / fade)
-    out.l[i] = v
-    out.r[i] = v
+    const g = (0.5 / peak) * Math.min(1, t / 0.02) * Math.max(0, Math.min(1, (totalSec - t) / fade))
+    let l: number
+    let r: number
+    if (spliced && i >= at - xf / 2) {
+      // equal-power crossfade centred on the cut
+      const k = Math.min(1, (i - (at - xf / 2)) / xf)
+      const a = Math.cos((k * Math.PI) / 2)
+      const b = Math.sin((k * Math.PI) / 2)
+      const j = tailFrom + (i - at)
+      const hl = a > 0 && i < end ? src.l[i] * a : 0
+      const hr = a > 0 && i < end ? src.r[i] * a : 0
+      l = hl + (j >= 0 ? src.l[j] * b : 0)
+      r = hr + (j >= 0 ? src.r[j] * b : 0)
+    } else {
+      l = src.l[i % end]
+      r = src.r[i % end]
+    }
+    out.l[i] = l * g
+    out.r[i] = r * g
   }
   return out
+}
+
+/**
+ * Where the music actually ends: generated songs often trail silence (and the
+ * odd stray blip) after their final chord rings out, so the end is the start
+ * of the first 1.5 s silence after the track's first third.
+ */
+function musicEnd(src: { l: Float32Array; r: Float32Array }): number {
+  const len = src.l.length
+  const frame = Math.round(0.05 * SR)
+  const gate = 10 ** (-50 / 20)
+  let quiet = 0
+  let lastLoud = 0
+  for (let f = 0; f * frame < len; f++) {
+    let e = 0
+    const a = f * frame
+    const b = Math.min(len, a + frame)
+    for (let i = a; i < b; i++) e += src.l[i] * src.l[i] + src.r[i] * src.r[i]
+    const loud = Math.sqrt(e / (2 * (b - a))) > gate
+    if (loud) {
+      lastLoud = b
+      quiet = 0
+    } else if (++quiet * 0.05 >= 1.5 && a > len / 3) return lastLoud
+  }
+  return lastLoud
 }

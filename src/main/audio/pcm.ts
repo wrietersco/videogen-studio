@@ -36,6 +36,24 @@ export function decodeMono(file: string): Float32Array {
   return new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))
 }
 
+/** decode any audio file to stereo float PCM at SR (mono sources are duplicated) */
+export function decodeStereo(file: string): Stereo {
+  const res = spawnSync(ffmpegBin(), ['-v', 'error', '-i', file, '-ac', '2', '-ar', String(SR), '-f', 'f32le', '-'], {
+    maxBuffer: 1 << 30
+  })
+  if (res.status !== 0) throw new Error(`ffmpeg decode failed: ${res.stderr?.toString().slice(0, 300)}`)
+  const buf = res.stdout as Buffer
+  const all = new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))
+  const n = all.length >> 1
+  const l = new Float32Array(n)
+  const r = new Float32Array(n)
+  for (let i = 0; i < n; i++) {
+    l[i] = all[2 * i]
+    r[i] = all[2 * i + 1]
+  }
+  return { l, r }
+}
+
 /** add a mono source into a stereo bus at `atSec` with gain and pan (-1..1) */
 export function mixIn(bus: Stereo, src: Float32Array, atSec: number, gain = 1, pan = 0): void {
   const off = Math.round(atSec * SR)

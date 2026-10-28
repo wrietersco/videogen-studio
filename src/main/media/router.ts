@@ -9,6 +9,7 @@ import type { LLMProvider, ProviderId, SpeechProvider, VoiceCache } from '../pro
 import { ElevenLabsClient, ELEVEN_VOICES } from '../providers/elevenlabs'
 import { VOICES } from '../audio/voice'
 import { beatGrid } from '../audio/score'
+import { musicBrief } from '../audio/cue'
 import { meter } from '../usage/meter'
 import type { KeyId, Settings } from '../settings'
 import { downloadStock, searchStock } from './stock'
@@ -256,7 +257,7 @@ export class MediaRouter {
    */
   async music(spec: VideoSpec, totalSec: number, projectId: string): Promise<string | null> {
     if (spec.musicMood === 'none') return null
-    const [p] = split(this.d.settings().media.music || 'builtin:procedural')
+    const [p, model] = split(this.d.settings().media.music || 'builtin:procedural')
     const lib = this.d.library
     const mood = spec.musicMood
     const pickFrom = (sources: AssetMeta['source'][], minDur = 0) => {
@@ -266,6 +267,39 @@ export class MediaRouter {
     if (p === 'library') {
       const a = pickFrom(['uploaded', 'generated', 'stock', 'builtin'])
       if (!a) return null
+      lib.markUsed(a.id, projectId)
+      return lib.path(a.id)
+    }
+    if (p === 'gemini' && this.d.key('gemini')) {
+      // Lyria scores *this* edit: the brief carries the cut times, so the
+      // track is cached by brief (same edit → same track) rather than by mood
+      let acc = 0
+      const cuts = spec.scenes.map((s) => ((acc += s.durationSec), acc - s.durationSec))
+      const brief = musicBrief(spec, cuts, totalSec)
+      if (!brief) return null
+      const cue = `cue-${createHash('sha1').update(brief).digest('hex').slice(0, 12)}`
+      const hit = lib.search('', { kind: 'music', tags: [cue], sources: ['generated'], limit: 1 })[0]
+      if (hit) {
+        lib.markUsed(hit.asset.id, projectId)
+        meter.record({ kind: 'music', provider: 'gemini', model: model ?? 'lyria-3.5', usage: { items: 1 }, saved: true, note: `reused ${hit.asset.id}` })
+        return lib.path(hit.asset.id)
+      }
+      const gemini = this.d.provider('gemini') as LLMProvider & { music?: (p: string, m?: string) => Promise<{ audio: Buffer }> }
+      if (!gemini.music) return null
+      const lyria = model ?? 'lyria-3.5'
+      const { audio } = await gemini.music(brief, lyria)
+      const a = this.d.library.add(audio, '.mp3', {
+        kind: 'music',
+        source: 'generated',
+        title: `${mood} score — ${spec.title}`.slice(0, 80),
+        tags: [cue, mood, spec.design?.look ?? spec.style, 'score', 'lyria'],
+        prompt: brief,
+        provider: 'gemini',
+        model: lyria,
+        durationSec: totalSec,
+        costUsd: priceUsage(lyria, { items: 1 }).usd,
+        license: { name: 'Generated with your API key (SynthID watermarked)', requiresAttribution: false }
+      })
       lib.markUsed(a.id, projectId)
       return lib.path(a.id)
     }
