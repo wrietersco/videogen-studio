@@ -4,6 +4,7 @@ import type { LLMProvider } from '../providers/types'
 import { Planner } from './planner'
 import { CompositionFixer } from './fixer'
 import { buildAudio } from './audio'
+import { narrate } from '../audio/voice'
 import { compose, COMPOSER_VERSION, type AudioLayer } from '../composer'
 import { captureSceneThumbs } from '../livePreview'
 import { ProjectStore, type StageName, type StageState } from '../store/projectStore'
@@ -603,6 +604,19 @@ export class Orchestrator {
   private async runCompose(projectId: string, spec: VideoSpec, emit: (e: PipelineEvent) => void) {
     this.track(projectId, 'compose', 'running')
     emit({ stage: 'compose', status: 'started' })
+    // voice-first: narration is synthesized (or reused) and measured, and scene
+    // durations are fitted to it — in place, so every caller's spec follows
+    try {
+      const voiced = [this.providerFor(), this.imageProviderFor()].find((p) => p?.tts) ?? null
+      const before = spec.durationSec
+      await narrate(spec, voiced, this.store.dir(projectId))
+      this.store.saveSpec(projectId, spec)
+      if (spec.voiceover.length) {
+        this.store.appendEvent(projectId, `voice: ${spec.voiceover.length} takes (${spec.voice?.id}) · ${before}s → ${spec.durationSec}s`)
+      }
+    } catch (e) {
+      this.store.appendEvent(projectId, `voice: skipped (${(e as Error).message.slice(0, 120)})`)
+    }
     // scene windows are recomputed here to place audio clips at scene starts
     let acc = 0
     const sceneWindows = spec.scenes.map((s) => {
@@ -611,9 +625,10 @@ export class Orchestrator {
       return w
     })
     // audio is enhancement-only: any failure degrades to a silent video
-    const audio = await buildAudio(spec, sceneWindows, this.providerFor(), this.store.dir(projectId), musicDir).catch(
-      () => ({ clips: [], captions: [], hasNarration: false })
-    )
+    const audio = await buildAudio(spec, sceneWindows, this.store.dir(projectId), musicDir).catch((e: Error) => {
+      this.store.appendEvent(projectId, `audio: silent (${e.message.slice(0, 120)})`)
+      return { clips: [], captions: [], hasNarration: false }
+    })
     const composed = compose(spec, vendorDir, fontsDir, audio)
     this.store.saveComposition(projectId, composed)
     this.track(projectId, 'compose', 'done', 'composition written')

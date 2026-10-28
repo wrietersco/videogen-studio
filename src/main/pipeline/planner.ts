@@ -32,7 +32,7 @@ function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {
 let cachedSpecSchema: Record<string, unknown> | null = null
 export function videoSpecJsonSchema(): Record<string, unknown> {
   // design + crafts belong to the scene director, never the planner
-  cachedSpecSchema ??= zodToJsonSchema(VideoSpec.omit({ design: true, crafts: true }))
+  cachedSpecSchema ??= zodToJsonSchema(VideoSpec.omit({ design: true, crafts: true, voice: true, voiceover: true }))
   return cachedSpecSchema
 }
 

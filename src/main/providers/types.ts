@@ -45,6 +45,8 @@ export interface GenerateTextRequest {
 export interface TTSRequest {
   text: string
   voice?: string
+  /** delivery direction (tone, pace, emphasis) for steerable voices */
+  instructions?: string
   /** provider-specific voice/model overrides */
   options?: Record<string, unknown>
 }

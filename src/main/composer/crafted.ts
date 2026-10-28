@@ -123,6 +123,7 @@ export function craftedCSS(ctx: DesignContext, th: CraftTheme): string {
     .cr-chip.hot { border-color: ${th.accent}; }
     .cr-cap { position: absolute; margin: 0; font-family: 'Inter', sans-serif; font-weight: 650; line-height: 1.25; letter-spacing: -0.01em; color: ${th.ink}; overflow-wrap: break-word; text-shadow: 0 2px 18px rgba(0,0,0,0.55); }
     .cr-cap .cw { opacity: 0.28; }
+    .cr-cap.vo { visibility: hidden; opacity: 0; }
     .cr-cap .cw.key { color: ${th.accent}; }
     .cr-over { position: absolute; left: 0; top: 0; overflow: visible; }
     .cr-wbox.on-plate::before { content: ''; position: absolute; inset: -36px -44px; border-radius: ${th.doc ? '4px' : '24px'}; background: rgba(5,7,10,0.84); border: 1.5px solid ${th.hair}; }
@@ -449,7 +450,30 @@ export function renderCraftedScene(
   }
 
   // ---------- kinetic caption ----------
-  if (craft.caption) {
+  const take = spec.voiceover.find((t) => t.sceneId === spec.scenes[index]?.id && t.words.length > 0)
+  if (take) {
+    // voice-synced: the narration itself, a phrase at a time, each word lit as it's spoken
+    const key = norm(craft.keyWord) || norm(craft.accentWord)
+    const at = startSec + take.leadSec
+    const chunks = phraseChunks(take.words, ctx.width > ctx.height * 1.15 ? 8 : 6)
+    const cfs = Math.round(40 * s)
+    chunks.forEach((chunk, c) => {
+      const cid = `${id}-cap${c}`
+      parts.push(
+        `<p class="cr-cap vo" id="${cid}" style="${boxStyle(R.caption)};font-size:${cfs}px;text-align:${R.align}" ${fitAttrs(R.caption.w, R.caption.h, 'box')}>${chunk
+          .map((w, k) => `<span class="cw${key && norm(w.word) === key ? ' key' : ''}" id="${cid}-w${k}">${esc(w.word)}</span>`)
+          .join(' ')}</p>`
+      )
+      const t0 = Math.max(startSec, at + chunk[0].startSec - 0.08)
+      steps.push({ kind: 'tween', t: t0, sel: `#${cid}`, from: { autoAlpha: 0, y: 6 * s }, to: { autoAlpha: 1, y: 0 }, dur: 0.16, ease: 'power2.out' })
+      chunk.forEach((w, k) => {
+        steps.push({ kind: 'tween', t: at + w.startSec, sel: `#${cid}-w${k}`, from: { opacity: 0.28 }, to: { opacity: 1 }, dur: 0.1, ease: 'power1.out' })
+      })
+      const next = chunks[c + 1]
+      const t1 = next ? at + next[0].startSec - 0.08 : endSec - 0.15
+      steps.push({ kind: 'set', t: Math.max(t0 + 0.2, t1), sel: `#${cid}`, set: { autoAlpha: 0 } })
+    })
+  } else if (craft.caption) {
     const key = norm(craft.keyWord)
     const words = craft.caption.split(/\s+/).filter(Boolean)
     const cfs = Math.round(40 * s)
@@ -467,6 +491,24 @@ export function renderCraftedScene(
 
   const html = `<section class="scene crafted" id="${id}" data-kind="crafted">${parts.join('\n')}</section>`
   return { html, steps, plate: plateJob }
+}
+
+/** split a take into readable phrases: punctuation, breath pauses, or a word cap */
+function phraseChunks<W extends { word: string; startSec: number; endSec: number }>(words: W[], max: number): W[][] {
+  const out: W[][] = []
+  let cur: W[] = []
+  words.forEach((w, i) => {
+    cur.push(w)
+    const next = words[i + 1]
+    const pause = next ? next.startSec - w.endSec > 0.45 : true
+    const punct = /[.!?;:]$/.test(w.word) || (/,$/.test(w.word) && cur.length >= 3)
+    if (cur.length >= max || pause || punct) {
+      out.push(cur)
+      cur = []
+    }
+  })
+  if (cur.length) out.push(cur)
+  return out
 }
 
 // ---------------------------------------------------------------- plate engine (in-page)

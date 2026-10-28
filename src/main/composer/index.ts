@@ -562,7 +562,7 @@ const INTERPRETER = `
 `
 
 /** bump when presentation changes enough to re-compose old projects */
-export const COMPOSER_VERSION = 5
+export const COMPOSER_VERSION = 6
 
 function buildDocument(
   spec: VideoSpec,

@@ -259,6 +259,7 @@ export class OpenAIProvider implements LLMProvider {
       model: 'gpt-4o-mini-tts',
       voice: req.voice ?? 'nova',
       input: req.text,
+      ...(req.instructions ? { instructions: req.instructions } : {}),
       response_format: 'mp3'
     })
     const audio = Buffer.from(await speech.arrayBuffer())

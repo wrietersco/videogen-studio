@@ -244,6 +244,7 @@ export class MockProvider implements LLMProvider {
       scenes,
       narration: scenes.map((s) => ({ sceneId: s.id, text: narrationFor(s, topic) })),
       assetNeeds: [],
+      voiceover: [],
       crafts: [],
       musicMood: mood.music,
       captionStyle: {

@@ -207,6 +207,19 @@ export const SceneCraft = z.object({
 })
 export type SceneCraft = z.infer<typeof SceneCraft>
 
+/** one scene's narration, synthesized and measured (times relative to the take's own start) */
+export const VoiceTake = z.object({
+  sceneId: z.string(),
+  /** cache key: voice + tone + text — an unchanged line is never re-synthesized */
+  key: z.string(),
+  file: z.string(),
+  durationSec: z.number().positive(),
+  /** the take starts this long after its scene starts */
+  leadSec: z.number().min(0),
+  words: z.array(z.object({ word: z.string(), startSec: z.number(), endSec: z.number() })).default([])
+})
+export type VoiceTake = z.infer<typeof VoiceTake>
+
 export const VideoSpec = z.object({
   schemaVersion: z.literal(1).default(1),
   title: z.string(),
@@ -237,6 +250,10 @@ export const VideoSpec = z.object({
       uppercase: z.boolean().default(true)
     })
     .default({ enabled: true, position: 'bottom', uppercase: true }),
+  /** narration voice + delivery direction (absent = chosen from the film look) */
+  voice: z.object({ id: z.string(), tone: z.string().max(400) }).optional(),
+  /** voice-first timing: measured narration takes; scene durations are fitted to them */
+  voiceover: z.array(VoiceTake).default([]),
   /** directed mode: film design system + per-scene crafts (absent = classic template scenes) */
   design: FilmDesign.optional(),
   crafts: z.array(SceneCraft).default([])
