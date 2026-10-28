@@ -100,11 +100,13 @@ export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string, au
   }
 
   // whole-film atmosphere motion (no dead stretches)
-  steps.push(...kit.atmoIdle(totalSec, ctx))
+  // directed films sit on their own dark backdrop — the template atmosphere
+  // would flash through every slide/whip transition
+  if (!theme) steps.push(...kit.atmoIdle(totalSec, ctx))
 
   // self-heal: drop any step targeting elements that don't exist in the
   // assembled markup (guarantees no "GSAP target not found" at render time)
-  const markup = sceneHTML.join('\n') + kit.atmosphere(ctx)
+  const markup = sceneHTML.join('\n') + (theme ? '' : kit.atmosphere(ctx))
   const invalid = new Set(validateSelectors(markup, steps).map((i) => i.selector))
   const safeSteps = invalid.size > 0 ? steps.filter((s) => !invalid.has((s as { sel?: string }).sel)) : steps
 
@@ -643,7 +645,7 @@ ${style}
       data-height="${ctx.height}"
       data-fps="${spec.fps}"
     >
-      <div class="atmo">${kit.atmosphere(ctx)}</div>
+      <div class="atmo">${directed ? '' : kit.atmosphere(ctx)}</div>
 ${sceneHTML.join('\n')}
 ${captionLayer}
 ${grain}

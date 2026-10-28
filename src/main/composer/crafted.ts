@@ -86,6 +86,7 @@ export function craftedCSS(ctx: DesignContext, th: CraftTheme): string {
   const s = ctx.scale
   const px = (n: number) => `${Math.round(n * s)}px`
   return `
+    html, body, #root { background: ${th.bg}; }
     .scene.crafted { background: ${th.bg}; overflow: hidden; }
     .cr-grid { position: absolute; inset: -40px; background-image: radial-gradient(${th.doc ? 'rgba(242,238,230,0.07)' : 'rgba(238,241,250,0.13)'} ${px(1.6)}, transparent ${px(1.9)}); background-size: ${px(40)} ${px(40)}; }
     .cr-glow { position: absolute; left: 50%; top: 52%; width: ${Math.round(ctx.width * 1.3)}px; height: ${Math.round(ctx.width * 1.3)}px; transform: translate(-50%, -50%); background: radial-gradient(circle, ${th.accent2}2E 0%, ${th.accent}0F 35%, transparent 62%); }

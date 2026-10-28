@@ -2,6 +2,12 @@
 
 Prompt in → platform-ready video out. A desktop app that turns freestyle text (and image) prompts into dynamic, editable videos for TikTok, YouTube/Shorts, Instagram Reels/Feed, and Facebook — with minimal LLM involvement, deterministic rendering, and self-healing generation agents.
 
+## Download
+
+Windows 10/11 (x64): grab **VideoGen-Studio-Setup.exe** from the [latest release](https://github.com/wrietersco/videogen-studio/releases/latest).
+The installer isn't code-signed yet — if Windows shows *"Windows protected your PC"*, click **More info → Run anyway**.
+On first run the app downloads its rendering browser (~150 MB) once; projects are saved to `Documents\VideoGen Studio\projects`.
+
 ## How it works
 
 ```
@@ -45,6 +51,7 @@ VideoSpec ──▶ Film director (1 call) ── design system: look · series 
 npm install
 npm run setup-vendor   # fetch GSAP/Three + fonts into vendor/ (one-time)
 npm run dev            # Electron app (studio · library · editor · settings)
+npm run dist           # Windows installer → release/VideoGen-Studio-Setup-<version>.exe
 ```
 
 ### Headless CLI

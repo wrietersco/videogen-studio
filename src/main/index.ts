@@ -10,6 +10,7 @@ import { ProjectStore } from './store/projectStore'
 import { providerRegistry } from './providers/registry'
 import type { ProviderId } from './providers/types'
 import { DEFAULT_SETTINGS, type Settings } from './settings'
+import { ensureBrowser } from './rendererService/hyperframes'
 import { projectsDir, appRoot } from './paths'
 
 /**
@@ -320,6 +321,8 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(() => {
+  // fresh installs download the renderer's Chrome once; start before the first job
+  void ensureBrowser()
   loadSettings()
   providerRegistry.reconfigure(settings, {
     openai: decryptKey(settings.keys.openai),

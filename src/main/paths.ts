@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { resolve, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -31,4 +32,8 @@ export const appRoot = findAppRoot()
 export const vendorDir = resolve(appRoot, 'vendor')
 export const fontsDir = resolve(appRoot, 'vendor', 'fonts')
 export const musicDir = resolve(appRoot, 'music')
-export const projectsDir = resolve(appRoot, 'projects')
+/** true inside an installed build (code lives under Electron's resources dir) */
+export const isPackaged =
+  typeof (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath === 'string' &&
+  appRoot.startsWith((process as NodeJS.Process & { resourcesPath: string }).resourcesPath)
+export const projectsDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'projects') : resolve(appRoot, 'projects')

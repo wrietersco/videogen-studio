@@ -7,3 +7,5 @@ vendor/fonts/*.woff2
 .hyperframes/
 *.log
 .DS_Store
+release/
+samples-out/

@@ -32,29 +32,54 @@ function toolEnv(): NodeJS.ProcessEnv {
     resolve(appRoot, 'node_modules/ffprobe-static/bin/win32/x64'),
     process.env.PATH ?? ''
   ]
-  return { ...process.env, PATH: pathEntries.join(process.platform === 'win32' ? ';' : ':') }
+  // ELECTRON_RUN_AS_NODE: inside the app, process.execPath is Electron — this
+  // makes it behave as the bundled Node runtime (ignored by plain node/tsx)
+  return { ...process.env, ELECTRON_RUN_AS_NODE: '1', PATH: pathEntries.join(process.platform === 'win32' ? ';' : ':') }
 }
 
+/**
+ * The HyperFrames CLI runs on this process's own runtime (Electron-as-Node in
+ * the app, node under tsx) — installed copies need no system Node.js, and no
+ * shell is involved, so arguments with spaces pass through intact.
+ */
 function hfArgs(): string[] {
-  // run the locally installed hyperframes CLI
-  return []
+  return [resolve(appRoot, 'node_modules/hyperframes/bin/hyperframes.mjs')]
 }
 
 function hfBin(): string {
-  const local = resolve(appRoot, 'node_modules/.bin/hyperframes.cmd')
-  if (existsSync(local)) return local
-  return 'hyperframes'
+  return process.execPath
+}
+
+let browserReady: Promise<boolean> | null = null
+
+/**
+ * HyperFrames renders in Chrome: find it or download it once (~150 MB on a
+ * fresh install). Memoized; every render/check/snapshot waits for it.
+ */
+export function ensureBrowser(): Promise<boolean> {
+  if (browserReady) return browserReady
+  const ready = new Promise<boolean>((resolvePromise) => {
+    const child = spawn(hfBin(), [...hfArgs(), 'browser', 'ensure'], { env: toolEnv(), windowsHide: true })
+    child.on('error', () => resolvePromise(false))
+    child.on('close', (code) => resolvePromise(code === 0))
+  }).then((ok) => {
+    if (!ok) browserReady = null // retry on the next job
+    return ok
+  })
+  browserReady = ready
+  return ready
 }
 
 export class RenderService {
   private active = new Map<string, ReturnType<typeof spawn>>()
 
-  render(
+  async render(
     projectDir: string,
     output: string,
     opts: { fps?: number; quality?: string; gpu?: boolean; onProgress?: (p: RenderProgress) => void },
     jobKey = 'default'
   ): Promise<RenderResult> {
+    await ensureBrowser()
     // Determinism strategy (measured empirically):
     //  - Chrome's GPU rasterization varies run-to-run  -> --no-browser-gpu default
     //  - multi-worker capture varies text antialiasing  -> single worker for
@@ -77,8 +102,7 @@ export class RenderService {
       const child = spawn(hfBin(), args, {
         env: toolEnv(),
         cwd: projectDir,
-        windowsHide: true,
-        shell: process.platform === 'win32'
+        windowsHide: true
       })
       this.active.set(jobKey, child)
 
@@ -124,10 +148,11 @@ export class RenderService {
    * Still frames at exact timeline instants (deterministic software raster) —
    * what the vision critic looks at. Returns PNG paths in the order of `times`.
    */
-  snapshot(projectDir: string, times: number[], outDir: string): Promise<string[]> {
+  async snapshot(projectDir: string, times: number[], outDir: string): Promise<string[]> {
+    await ensureBrowser()
     const args = [...hfArgs(), 'snapshot', projectDir, '--at', times.map((t) => t.toFixed(2)).join(','), '--no-end', '-o', outDir, '--no-browser-gpu']
     return new Promise((resolvePromise) => {
-      const child = spawn(hfBin(), args, { env: toolEnv(), cwd: projectDir, windowsHide: true, shell: process.platform === 'win32' })
+      const child = spawn(hfBin(), args, { env: toolEnv(), cwd: projectDir, windowsHide: true })
       child.on('error', () => resolvePromise([]))
       child.on('close', () => {
         try {
@@ -143,6 +168,7 @@ export class RenderService {
   }
 
   async check(projectDir: string, opts?: { samples?: number }): Promise<CheckReport> {
+    await ensureBrowser()
     const args = [
       ...hfArgs(),
       'check',
@@ -156,8 +182,7 @@ export class RenderService {
       const child = spawn(hfBin(), args, {
         env: toolEnv(),
         cwd: projectDir,
-        windowsHide: true,
-        shell: process.platform === 'win32'
+        windowsHide: true
       })
       let stdout = ''
       let stderr = ''

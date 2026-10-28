@@ -1,6 +1,6 @@
 {
   "name": "videogen-studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Dynamic, editable AI video generator — prompt in, platform-ready video out",
   "main": "out/main/index.js",
   "type": "module",
@@ -15,7 +15,8 @@
     "test:e2e": "vitest run tests/pipeline.test.ts",
     "gen": "tsx scripts/gen.ts",
     "verify": "npm run typecheck && npm run test",
-    "setup-vendor": "node scripts/setup-vendor.mjs"
+    "setup-vendor": "node scripts/setup-vendor.mjs",
+    "dist": "electron-vite build && electron-builder --win nsis --x64"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.2.8",
@@ -28,6 +29,7 @@
     "ffmpeg-static": "^5.2.0",
     "ffprobe-static": "^3.1.0",
     "gsap": "^3.13.0",
+    "hyperframes": "^0.8.204",
     "sharp": "^0.34.5",
     "three": "^0.180.0",
     "zod": "^4.1.0"
@@ -39,13 +41,57 @@
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^5.0.0",
     "electron": "^38.0.0",
+    "electron-builder": "^26.0.12",
     "electron-vite": "^4.0.0",
-    "hyperframes": "^0.8.204",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tailwindcss": "^4.1.0",
     "tsx": "^4.23.15",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
+  },
+  "build": {
+    "appId": "com.videogen.studio",
+    "productName": "VideoGen Studio",
+    "copyright": "MIT License",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "asar": false,
+    "files": [
+      "out/**",
+      "vendor/**",
+      "music/**",
+      "resources/**",
+      "package.json",
+      "!**/node_modules/onnxruntime-node/bin/napi-v3/{darwin,linux}/**",
+      "!**/node_modules/onnxruntime-node/bin/napi-v3/win32/arm64/**",
+      "!**/node_modules/ffprobe-static/bin/{darwin,linux}/**",
+      "!**/node_modules/ffprobe-static/bin/win32/ia32/**",
+      "!**/node_modules/@img/*{darwin,linux}*/**",
+      "!**/node_modules/**/*.{md,map,ts}",
+      "!**/node_modules/**/{test,tests,__tests__,docs,example,examples}/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "VideoGen Studio",
+      "artifactName": "VideoGen-Studio-Setup-${version}.exe"
+    }
   }
 }
