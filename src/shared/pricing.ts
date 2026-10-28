@@ -89,7 +89,9 @@ export const RATES: Record<string, Rate> = {
   // ---- Google Lyria (paid tier only, per finished track) ----
   'lyria-3.5': { perItem: 0.08 },
   'lyria-3-clip-preview': { perItem: 0.04 },
-  eleven_text_to_sound_v2: { perMinute: 0.12 }
+  eleven_text_to_sound_v2: { perMinute: 0.12 },
+  // ---- Gemini video (Veo previews shut down 2026-10-22; output billed at 5,792 tok/s of 720p ≈ $0.10/s) ----
+  'gemini-omni-1.1-flash': { inTok: 1.5, outTok: 17.5 }
 }
 
 export interface UsageNumbers {
@@ -157,7 +159,8 @@ export const MEDIA_MODELS: MediaModel[] = [
   // sfx
   { kind: 'sfx', provider: 'builtin', id: 'procedural', label: 'Built-in sound design', typical: 'free', cost: 1, speed: 3, quality: 2 },
   // video
-  { kind: 'video', provider: 'stock', id: 'stock', label: 'Free stock clips', typical: 'free', cost: 1, speed: 3, quality: 2, note: 'Pexels / Pixabay clips (free key)' }
+  { kind: 'video', provider: 'stock', id: 'stock', label: 'Free stock clips', typical: 'free', cost: 1, speed: 3, quality: 2, note: 'Pexels / Pixabay clips (free key)' },
+  { kind: 'video', provider: 'gemini', id: 'gemini-omni-1.1-flash', label: 'Gemini Omni Flash', typical: '≈ $0.10 / sec · ~$0.80 / clip', cost: 3, speed: 1, quality: 3, note: 'AI clips with sound, 720p · Gemini paid tier' }
 ]
 
 /** human tags for a model card: 💰 cheap · ⚡ fast · 🏆 best */

@@ -480,7 +480,7 @@ function StockPanel({ initialKind, onClose, onAdded }: { initialKind: AssetKind;
 }
 
 function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: (a: AssetMeta) => void; onError: (m: string) => void }) {
-  const [kind, setKind] = useState<'image' | 'voice' | 'music'>('image')
+  const [kind, setKind] = useState<'image' | 'video' | 'voice' | 'music'>('image')
   const [prompt, setPrompt] = useState('')
   const [orientation, setOrientation] = useState<Orientation>('portrait')
   const [busy, setBusy] = useState(false)
@@ -489,6 +489,7 @@ function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: 
     () =>
       ({
         image: 'A detailed picture — e.g. “a cosy reading nook at golden hour, film photo”',
+        video: 'A short shot with motion — e.g. “slow drone push over misty pine forest at dawn” (Gemini Omni, ≈ $0.80, takes a minute or two)',
         voice: 'The exact line to speak — uses your narrator from Settings → Media',
         music: 'Mood + vibe — e.g. “upbeat lo-fi beat for a cooking video” (needs ElevenLabs)'
       })[kind],
@@ -512,9 +513,9 @@ function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: 
   return (
     <Modal title="✨ Make with AI" subtitle="Uses your own API keys and the models picked in Settings → Media. The cost shows on the asset." onClose={onClose}>
       <div className="flex gap-2">
-        {(['image', 'voice', 'music'] as const).map((k) => (
+        {(['image', 'video', 'voice', 'music'] as const).map((k) => (
           <Chip key={k} active={kind === k} onClick={() => setKind(k)}>
-            {KIND_LABEL[k].icon} {k === 'image' ? 'Picture' : k === 'voice' ? 'Voice line' : 'Music track'}
+            {KIND_LABEL[k].icon} {k === 'image' ? 'Picture' : k === 'video' ? 'Video clip' : k === 'voice' ? 'Voice line' : 'Music track'}
           </Chip>
         ))}
       </div>
@@ -525,9 +526,9 @@ function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: 
         placeholder={hint}
         className="mt-3 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-sm outline-none focus:border-[#7C5CFF]/60"
       />
-      {kind === 'image' && (
+      {(kind === 'image' || kind === 'video') && (
         <div className="mt-2 flex gap-2">
-          {(['portrait', 'landscape', 'square'] as const).map((o) => (
+          {(kind === 'video' ? (['portrait', 'landscape'] as const) : (['portrait', 'landscape', 'square'] as const)).map((o) => (
             <Chip key={o} active={orientation === o} onClick={() => setOrientation(o)}>
               {o === 'landscape' ? '▭ wide' : o === 'portrait' ? '▯ tall' : '□ square'}
             </Chip>
@@ -539,7 +540,11 @@ function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: 
       </button>
       {made && (
         <div className="pop-in mt-4 flex items-center gap-3 rounded-xl border border-emerald-400/25 bg-emerald-400/[0.06] p-3">
-          {made.kind === 'image' ? <img src={thumbUrl(made.id)} alt="" className="h-16 w-16 rounded-lg object-cover" /> : <audio src={fileUrl(made.id)} controls className="h-8 flex-1" />}
+          {made.kind === 'image' ? (
+            <img src={thumbUrl(made.id)} alt="" className="h-16 w-16 rounded-lg object-cover" />
+          ) : made.kind === 'video' ? (
+            <video src={fileUrl(made.id)} controls className="h-24 rounded-lg" />
+          ) : <audio src={fileUrl(made.id)} controls className="h-8 flex-1" />}
           <div className="text-xs text-emerald-100">Saved to your library {made.costUsd ? `· ${fmtUsd(made.costUsd)}` : ''}</div>
         </div>
       )}

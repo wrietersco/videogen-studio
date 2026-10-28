@@ -94,7 +94,7 @@ declare global {
         remove: (id: string) => Promise<boolean>
         reveal: (id: string) => Promise<boolean>
         upload: (paths?: string[], tags?: string[]) => Promise<{ added: AssetMeta[]; skipped: string[] }>
-        generate: (req: { kind: 'image' | 'voice' | 'music'; prompt: string; orientation?: Orientation }) => Promise<AssetMeta | null>
+        generate: (req: { kind: 'image' | 'video' | 'voice' | 'music'; prompt: string; orientation?: Orientation }) => Promise<AssetMeta | null>
         exportPack: () => Promise<{ exported: number; folder?: string }>
         importPack: () => Promise<{ imported: number }>
         pathForFile: (f: File) => string

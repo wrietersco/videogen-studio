@@ -7,6 +7,7 @@ import { priceUsage, type UsageNumbers } from '@shared/pricing'
 import { orientationOf, type AssetLibrary } from '../assets/library'
 import type { LLMProvider, ProviderId, SpeechProvider, VoiceCache } from '../providers/types'
 import { ElevenLabsClient, ELEVEN_VOICES } from '../providers/elevenlabs'
+import { GeminiVideoClient, GEMINI_VIDEO_MODEL } from '../providers/geminiVideo'
 import { VOICES } from '../audio/voice'
 import { beatGrid } from '../audio/score'
 import { musicBrief } from '../audio/cue'
@@ -61,9 +62,11 @@ function split(v: string): [string, string | undefined] {
 
 export class MediaRouter {
   private readonly eleven: ElevenLabsClient
+  private readonly omni: GeminiVideoClient
 
   constructor(private readonly d: MediaDeps) {
     this.eleven = new ElevenLabsClient(() => d.key('elevenlabs'))
+    this.omni = new GeminiVideoClient(() => d.key('gemini'))
   }
 
   get library(): AssetLibrary {
@@ -338,6 +341,44 @@ export class MediaRouter {
       costUsd: priceUsage('music_v1', { seconds }).usd,
       license: { name: 'Generated with your API key', requiresAttribution: false }
     })
+  }
+
+  // ---------------- video clips ----------------
+
+  /** the clip model Settings → Media points at (Gemini Omni Flash is the only generator today) */
+  private clipModel(): string {
+    const [p, model] = split(this.d.settings().media.video || 'stock')
+    return p === 'gemini' && model ? model : GEMINI_VIDEO_MODEL
+  }
+
+  /** generate a clip with Gemini (reusing an identical earlier one) and file it */
+  async clipToLibrary(prompt: string, orientation: 'portrait' | 'landscape' | 'square' = 'landscape', opts: { fresh?: boolean; projectId?: string } = {}): Promise<AssetMeta> {
+    if (!this.omni.configured()) throw new Error('Add a Gemini key in Settings to make video clips')
+    const lib = this.d.library
+    const aspect = orientation === 'portrait' ? '9:16' : '16:9'
+    const model = this.clipModel()
+    const key = createHash('sha1').update(`${model}|${aspect}|${prompt}`).digest('hex').slice(0, 16)
+    const hit = this.reuse && !opts.fresh ? lib.findByKey('video', key) : null
+    if (hit) {
+      if (opts.projectId) lib.markUsed(hit.id, opts.projectId)
+      meter.record({ kind: 'video', provider: 'gemini', model, usage: { outputTokens: (hit.durationSec ?? 8) * 5792 }, saved: true, note: `reused ${hit.id}` })
+      return hit
+    }
+    const { video, usd } = await this.omni.clip({ prompt, aspect, model })
+    const a = lib.add(video, '.mp4', {
+      kind: 'video',
+      source: 'generated',
+      title: prompt.slice(0, 80),
+      tags: [...tokenize(prompt).slice(0, 10), 'clip', 'omni'],
+      prompt,
+      provider: 'gemini',
+      model,
+      key,
+      costUsd: usd,
+      license: { name: 'Generated with your API key (SynthID watermarked)', requiresAttribution: false }
+    })
+    if (opts.projectId) lib.markUsed(a.id, opts.projectId)
+    return a
   }
 
   /** speak a line with the chosen narrator and file it */

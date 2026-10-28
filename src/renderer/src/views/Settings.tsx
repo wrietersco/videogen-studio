@@ -39,7 +39,7 @@ const MEDIA_KINDS: Array<{ kind: keyof MediaSettings; icon: string; title: strin
   { kind: 'image', icon: '🖼️', title: 'Pictures', hint: 'Painted backgrounds for directed scenes. Reused from your library first.' },
   { kind: 'voice', icon: '🎙️', title: 'Narrator voice', hint: 'Speaks the script. Takes are reused across videos when the line matches.' },
   { kind: 'music', icon: '🎵', title: 'Music', hint: 'The soundtrack under your video.' },
-  { kind: 'video', icon: '🎬', title: 'Video clips', hint: 'B-roll clips for your library. Free stock only for now — OpenAI shut down its Sora video API in Sept 2026.' }
+  { kind: 'video', icon: '🎬', title: 'Video clips', hint: 'B-roll clips for your library — free stock, or made by Gemini Omni Flash (“Make with AI” on the Assets tab).' }
 ]
 
 type Option = { value: string; label: string; typical: string; cost: number; speed: number; quality: number; tags: string[]; note?: string; needs?: KeyId }

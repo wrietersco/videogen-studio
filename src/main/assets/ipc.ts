@@ -130,7 +130,7 @@ export function registerAssetIpc(deps: { library: AssetLibrary; router: MediaRou
   })
 
   /** make a single asset on demand from the library screen (metered like any job) */
-  ipcMain.handle('assets:generate', async (_e, req: { kind: 'image' | 'voice' | 'music'; prompt: string; orientation?: Orientation }) => {
+  ipcMain.handle('assets:generate', async (_e, req: { kind: 'image' | 'video' | 'voice' | 'music'; prompt: string; orientation?: Orientation }) => {
     if (deps.isBusy()) throw new Error('A video is generating — try again when it finishes')
     const prompt = req.prompt?.trim()
     if (!prompt) throw new Error('Describe what to make first')
@@ -142,6 +142,7 @@ export function registerAssetIpc(deps: { library: AssetLibrary; router: MediaRou
         const r = await router.paint({ brief: prompt, fullPrompt: prompt, subjectLabel: prompt.slice(0, 60), width: w, height: h, projectId: 'library' }, { fresh: true })
         return library.get(r.assetId)
       }
+      if (req.kind === 'video') return await router.clipToLibrary(prompt, req.orientation, { fresh: true })
       if (req.kind === 'voice') return await router.speakToLibrary(prompt)
       return await router.composeToLibrary(prompt, 30)
     } finally {
