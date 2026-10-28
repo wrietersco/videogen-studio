@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 
 
 // ESM output: derive the directory from import.meta.url
 const moduleDir = dirname(fileURLToPath(import.meta.url))
+import { VideoSpec } from '@shared/spec'
 import { Orchestrator, GenerationCancelled, type GenerateOptions } from './pipeline/orchestrator'
 import { ProjectStore } from './store/projectStore'
 import { providerRegistry } from './providers/registry'
@@ -297,7 +298,15 @@ function registerIpc(): void {
           .sort()
           .map((f) => `data:image/jpeg;base64,${readFileSync(join(thumbsDir, f)).toString('base64')}`)
       : []
-    return { meta, spec, html, dir: store.dir(id), thumbs }
+    // no live captures yet (e.g. a video made from the command line): show each scene's painted picture
+    const shown = thumbs.length
+      ? thumbs
+      : (spec?.scenes ?? []).map((sc) => {
+          const f = spec?.crafts.find((c) => c.sceneId === sc.id)?.plate?.file
+          const path = f ? join(store.dir(id), f) : ''
+          return path && existsSync(path) ? `data:image/${path.endsWith('.png') ? 'png' : 'jpeg'};base64,${readFileSync(path).toString('base64')}` : ''
+        })
+    return { meta, spec, html, dir: store.dir(id), thumbs: shown }
   })
 
   ipcMain.handle('gen:generate', async (_e, opts: GenerateOptions) => {
@@ -331,6 +340,20 @@ function registerIpc(): void {
       })
     )
   })
+
+  ipcMain.handle('gen:applyEdit', async (_e, projectId: string, edited: unknown) => {
+    if (busy) return { ok: false, error: 'Another job is running' }
+    try {
+      VideoSpec.parse(edited)
+    } catch (e) {
+      return { ok: false, error: `Those changes don't make a valid video: ${String((e as Error).message).slice(0, 160)}` }
+    }
+    return runJob('revise', projectId, () =>
+      orchestrator.applyEdit(projectId, edited, { quality: settings.quality, gpu: settings.allowGpu, onEvent: pipelineEvent })
+    )
+  })
+  ipcMain.handle('project:history', (_e, id: string) => store.listHistory(id))
+  ipcMain.handle('project:historyGet', (_e, id: string, at: number) => store.readHistory(id, at))
 
   ipcMain.handle('gen:resume', async (_e, projectId: string) => {
     if (busy) return { ok: false, error: 'Another job is running' }

@@ -166,6 +166,38 @@ export class ProjectStore {
     writeFileSync(join(this.dir(id), 'spec.json'), JSON.stringify(spec, null, 2))
   }
 
+  /** keep a copy of the spec before a hand edit, so the editor can go back (newest last, 20 kept) */
+  pushHistory(id: string, spec: VideoSpec): void {
+    const dir = join(this.dir(id), 'history')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${Date.now()}.json`), JSON.stringify(spec))
+    const all = readdirSync(dir).filter((f) => f.endsWith('.json')).sort()
+    for (const f of all.slice(0, Math.max(0, all.length - 20))) rmSync(join(dir, f), { force: true })
+  }
+
+  /** previous versions (newest first) */
+  listHistory(id: string): Array<{ at: number; title: string; scenes: number; durationSec: number }> {
+    const dir = join(this.dir(id), 'history')
+    if (!existsSync(dir)) return []
+    return readdirSync(dir)
+      .filter((f) => f.endsWith('.json'))
+      .sort()
+      .reverse()
+      .flatMap((f) => {
+        try {
+          const sp = JSON.parse(readFileSync(join(dir, f), 'utf8')) as VideoSpec
+          return [{ at: Number(f.replace('.json', '')), title: sp.title, scenes: sp.scenes.length, durationSec: sp.durationSec }]
+        } catch {
+          return []
+        }
+      })
+  }
+
+  readHistory(id: string, at: number): VideoSpec | null {
+    const p = join(this.dir(id), 'history', `${Math.round(at)}.json`)
+    return existsSync(p) ? (JSON.parse(readFileSync(p, 'utf8')) as VideoSpec) : null
+  }
+
   readSpec(id: string): VideoSpec | null {
     const p = join(this.dir(id), 'spec.json')
     if (!existsSync(p)) return null

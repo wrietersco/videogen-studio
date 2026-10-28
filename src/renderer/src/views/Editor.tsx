@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api, type ProjectView, type VideoSpec } from '../api'
 import { CostReceipt } from '../components/CostReceipt'
 import { ErrorCard } from '../components/friendly'
+import { SceneEditor } from '../components/SceneEditor'
 
 /**
  * Editor — project details: generated VideoSpec structure and composition source
@@ -11,7 +12,7 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
   const [projects, setProjects] = useState<Array<{ id: string; title: string }>>([])
   const [activeId, setActiveId] = useState<string | null>(initialProjectId ?? null)
   const [project, setProject] = useState<ProjectView | null>(null)
-  const [view, setView] = useState<'spec' | 'code'>('spec')
+  const [view, setView] = useState<'edit' | 'spec' | 'code'>('edit')
   // per-scene feedback → regenerate that scene
   const [editScene, setEditScene] = useState<string | null>(null)
   const [feedbackText, setFeedbackText] = useState('')
@@ -66,6 +67,17 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
     setFeedbackText('')
   }
 
+  const applyEdit = async (edited: VideoSpec) => {
+    if (!activeId || revising) return
+    setReviseError(null)
+    const res = await api.applyEdit(activeId, edited)
+    if (!res.ok) {
+      setReviseError(res.error ?? 'Could not start')
+      return
+    }
+    setRevising({ sceneId: '*', pct: 0 })
+  }
+
   const spec: VideoSpec | null = project?.spec ?? null
 
   return (
@@ -117,10 +129,16 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
                   </button>
                 )}
                 <button
+                  onClick={() => setView('edit')}
+                  className={`rounded-xl px-3 py-1.5 text-sm font-bold ${view === 'edit' ? 'bg-grape-soft text-grape' : 'text-ink/60 hover:bg-grape-soft'}`}
+                >
+                  ✂️ Edit
+                </button>
+                <button
                   onClick={() => setView('spec')}
                   className={`rounded-xl px-3 py-1.5 text-sm font-bold ${view === 'spec' ? 'bg-grape-soft text-grape' : 'text-ink/60 hover:bg-grape-soft'}`}
                 >
-                  🎞️ Scenes
+                  🤖 Ask AI
                 </button>
                 <button
                   onClick={() => setView('code')}
@@ -132,6 +150,22 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
               </div>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-6">
+              {view === 'edit' && (
+                <div className="space-y-4">
+                  {revising?.sceneId === '*' && (
+                    <div className="card !border-sky/60 !bg-sky-soft p-4">
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-white">
+                        <div className="progress-stripes h-full rounded-full transition-all" style={{ width: `${Math.max(4, revising.pct)}%` }} />
+                      </div>
+                      <div className="mt-1.5 text-sm font-bold text-sky">
+                        {revising.pct > 0 ? `Making your new video — ${revising.pct}%` : 'Re-doing the voice, captions and music…'}
+                      </div>
+                    </div>
+                  )}
+                  {reviseError && <ErrorCard error={reviseError} />}
+                  <SceneEditor projectId={activeId ?? ''} spec={spec} thumbs={project?.thumbs ?? []} busy={Boolean(revising)} onApply={applyEdit} />
+                </div>
+              )}
               {view === 'spec' && (
                 <div className="space-y-3">
                   {project?.meta?.prompt && (

@@ -35,6 +35,9 @@ const api = {
   deleteProject: (id: string) => ipcRenderer.invoke('project:delete', id),
   revealProject: (id: string, filePath?: string) => ipcRenderer.invoke('project:reveal', id, filePath),
   playProject: (id: string, filePath?: string) => ipcRenderer.invoke('project:play', id, filePath),
+  applyEdit: (projectId: string, spec: unknown) => ipcRenderer.invoke('gen:applyEdit', projectId, spec),
+  projectHistory: (id: string) => ipcRenderer.invoke('project:history', id),
+  historySpec: (id: string, at: number) => ipcRenderer.invoke('project:historyGet', id, at),
   rerenderProject: (id: string) => ipcRenderer.invoke('gen:rerender', id),
   reviseScene: (projectId: string, sceneId: string, feedback: string) =>
     ipcRenderer.invoke('gen:revise', projectId, sceneId, feedback),

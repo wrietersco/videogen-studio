@@ -72,6 +72,9 @@ declare global {
       deleteProject: (id: string) => Promise<{ ok: boolean; error?: string }>
       revealProject: (id: string, filePath?: string) => Promise<boolean>
       playProject: (id: string, filePath?: string) => Promise<boolean>
+      applyEdit: (projectId: string, spec: VideoSpec) => Promise<{ ok: boolean; error?: string }>
+      projectHistory: (id: string) => Promise<Array<{ at: number; title: string; scenes: number; durationSec: number }>>
+      historySpec: (id: string, at: number) => Promise<VideoSpec | null>
       rerenderProject: (id: string) => Promise<{ ok: boolean; error?: string }>
       reviseScene: (projectId: string, sceneId: string, feedback: string) => Promise<{ ok: boolean; error?: string }>
       resumeProject: (id: string) => Promise<{ ok: boolean; error?: string }>

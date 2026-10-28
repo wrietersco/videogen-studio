@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import type { VideoSpec } from '@shared/spec'
+import { VideoSpec } from '@shared/spec'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import type { MediaRouter } from '../media/router'
 import { Planner } from './planner'
@@ -369,6 +369,54 @@ export class Orchestrator {
       qa
     )
     emit({ stage: 'revise', status: 'done', sceneId, sceneIndex })
+  }
+
+  /**
+   * Apply the editor's changes: the edited spec replaces the saved one (the old
+   * one is kept in history/ for undo), pictures whose prompt changed are
+   * repainted, then narration → audio → composition → render run as usual.
+   */
+  async applyEdit(
+    projectId: string,
+    edited: unknown,
+    opts: { quality?: 'draft' | 'standard' | 'delivery'; gpu?: boolean; onEvent?: (e: PipelineEvent) => void } = {}
+  ): Promise<void> {
+    const emit = (e: PipelineEvent) => opts.onEvent?.(e)
+    const before = this.store.readSpec(projectId)
+    if (!before) throw new Error(`project ${projectId} has no spec`)
+    let spec = VideoSpec.parse(edited)
+    const ids = new Set(spec.scenes.map((s) => s.id))
+    spec.narration = spec.narration.filter((n) => ids.has(n.sceneId))
+    spec.crafts = spec.crafts.filter((c) => ids.has(c.sceneId))
+    spec.voiceover = spec.voiceover.filter((t) => ids.has(t.sceneId))
+    this.cancelled = false
+    this.activeJobId = projectId
+    this.store.pushHistory(projectId, before)
+    this.store.saveSpec(projectId, spec)
+    this.store.appendEvent(projectId, `edited by hand: ${spec.scenes.length} scenes`)
+    emit({ stage: 'revise', status: 'started', sceneId: '', sceneIndex: 0, feedback: 'manual edit' })
+
+    // repaint pictures the user changed (their file was cleared by the editor)
+    if (spec.design && spec.crafts.some((c) => c.background === 'plate' && c.plate && !c.plate.file)) {
+      spec = await this.runPlates(projectId, spec, emit, this.providerFor())
+      this.store.saveSpec(projectId, spec)
+    }
+    if (this.cancelled) return this.abort(projectId, emit)
+    const audio = await this.runCompose(projectId, spec, emit)
+    const qa = await this.runQaLoop(projectId, spec, audio, emit)
+    if (this.cancelled) return this.abort(projectId, emit)
+    await this.captureThumbs(projectId, spec, emit)
+    if (this.cancelled) return this.abort(projectId, emit)
+    const meta = this.store.readMeta(projectId)
+    await this.runRender(
+      projectId,
+      spec,
+      (meta?.platform as VideoSpec['platform']) ?? spec.platform,
+      { quality: opts.quality, gpu: opts.gpu, suffix: `edit${Date.now().toString(36)}` },
+      emit,
+      qa
+    )
+    emit({ stage: 'revise', status: 'done', sceneId: '', sceneIndex: 0 })
   }
 
   async generate(opts: GenerateOptions): Promise<GenerateResult> {
