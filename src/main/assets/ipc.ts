@@ -121,11 +121,11 @@ export function registerAssetIpc(deps: { library: AssetLibrary; router: MediaRou
 
   ipcMain.handle('stock:search', async (_e, kind: AssetKind, query: string, orientation?: Orientation) => {
     if (!query?.trim()) return { results: [], errors: [] }
-    return searchStock(kind, query.trim(), { orientation, pexelsKey: deps.key('pexels') })
+    return searchStock(kind, query.trim(), { orientation, pexelsKey: deps.key('pexels'), pixabayKey: deps.key('pixabay') })
   })
   ipcMain.handle('stock:download', async (_e, r: StockResult, tags: string[] = []) => {
     // only results shaped by our own connectors, over https
-    if (!['openverse', 'pexels'].includes(r?.provider) || !/^https:\/\//.test(r?.downloadUrl ?? '')) throw new Error('not a stock result')
+    if (!['openverse', 'pexels', 'pixabay'].includes(r?.provider) || !/^https:\/\//.test(r?.downloadUrl ?? '')) throw new Error('not a stock result')
     return downloadStock(library, r, tags)
   })
 

@@ -7,11 +7,12 @@ import type { AssetLibrary } from '../assets/library'
  * Free-licence stock connectors — official APIs only, no scraping:
  *   Openverse (keyless; CC0 / CC BY images and audio, commercial-use filter)
  *   Pexels    (free key; photos + video clips under the Pexels License)
+ *   Pixabay   (free key; photos + video clips under the Pixabay Content License)
  * Downloads land in the asset library with their licence and credit line.
  */
 
 export interface StockResult {
-  provider: 'openverse' | 'pexels'
+  provider: 'openverse' | 'pexels' | 'pixabay'
   id: string
   kind: AssetKind
   title: string
@@ -27,8 +28,14 @@ export interface StockResult {
 const UA = 'VideoGenStudio/0.3 (+https://github.com/wrietersco/videogen-studio)'
 
 async function getJSON<T>(url: string, headers: Record<string, string> = {}): Promise<T> {
-  const res = await fetch(url, { headers: { 'User-Agent': UA, ...headers } })
-  if (!res.ok) throw new Error(`${new URL(url).host} ${res.status}`)
+  const host = new URL(url).host
+  let res: Response
+  try {
+    res = await fetch(url, { headers: { 'User-Agent': UA, ...headers }, signal: AbortSignal.timeout(12_000) })
+  } catch {
+    throw new Error(`${host} didn't answer — try again in a bit`)
+  }
+  if (!res.ok) throw new Error(`${host} said ${res.status}`)
   return (await res.json()) as T
 }
 
@@ -147,18 +154,74 @@ async function pexelsVideos(key: string, query: string, orientation?: Orientatio
   })
 }
 
+// ---------------- Pixabay ----------------
+
+const PIXABAY_LICENSE = (author: string): AssetLicense => ({
+  name: 'Pixabay Content License',
+  url: 'https://pixabay.com/service/license-summary/',
+  author,
+  attribution: `by ${author} on Pixabay`,
+  requiresAttribution: false
+})
+
+async function pixabay(kind: 'image' | 'video', key: string, query: string, orientation?: Orientation): Promise<StockResult[]> {
+  const p = new URLSearchParams({ key, q: query.slice(0, 100), per_page: '20', safesearch: 'true' })
+  if (kind === 'image') {
+    p.set('image_type', 'photo')
+    if (orientation && orientation !== 'square') p.set('orientation', orientation === 'landscape' ? 'horizontal' : 'vertical')
+    const json = await getJSON<{
+      hits: Array<{ id: number; pageURL: string; tags: string; webformatURL: string; largeImageURL: string; imageWidth: number; imageHeight: number; user: string }>
+    }>(`https://pixabay.com/api/?${p}`)
+    return json.hits.map((h) => ({
+      provider: 'pixabay' as const,
+      id: `pb-${h.id}`,
+      kind: 'image' as const,
+      title: h.tags || query,
+      thumb: h.webformatURL,
+      downloadUrl: h.largeImageURL,
+      pageUrl: h.pageURL,
+      width: h.imageWidth,
+      height: h.imageHeight,
+      license: PIXABAY_LICENSE(h.user)
+    }))
+  }
+  const json = await getJSON<{
+    hits: Array<{ id: number; pageURL: string; tags: string; duration: number; user: string; videos: Record<string, { url: string; width: number; height: number; thumbnail?: string }> }>
+  }>(`https://pixabay.com/api/videos/?${p}`)
+  return json.hits
+    .map((h) => {
+      const v = h.videos.large?.url ? h.videos.large : h.videos.medium
+      return {
+        provider: 'pixabay' as const,
+        id: `pbv-${h.id}`,
+        kind: 'video' as const,
+        title: h.tags || query,
+        thumb: v?.thumbnail ?? h.videos.small?.thumbnail ?? '',
+        downloadUrl: v?.url ?? '',
+        pageUrl: h.pageURL,
+        width: v?.width,
+        height: v?.height,
+        durationSec: h.duration,
+        license: PIXABAY_LICENSE(h.user)
+      }
+    })
+    .filter((r) => !orientation || !r.width || !r.height || (orientation === 'landscape' ? r.width > r.height : orientation === 'portrait' ? r.height > r.width : true))
+}
+
 /** search every connector that can serve this kind; one failing source never sinks the others */
 export async function searchStock(
   kind: AssetKind,
   query: string,
-  opts: { orientation?: Orientation; pexelsKey?: string } = {}
+  opts: { orientation?: Orientation; pexelsKey?: string; pixabayKey?: string } = {}
 ): Promise<{ results: StockResult[]; errors: string[] }> {
   const jobs: Array<Promise<StockResult[]>> = []
   if (kind === 'image') {
     if (opts.pexelsKey) jobs.push(pexelsPhotos(opts.pexelsKey, query, opts.orientation))
+    if (opts.pixabayKey) jobs.push(pixabay('image', opts.pixabayKey, query, opts.orientation))
     jobs.push(openverse('image', query, opts.orientation))
   } else if (kind === 'video') {
     if (opts.pexelsKey) jobs.push(pexelsVideos(opts.pexelsKey, query, opts.orientation))
+    if (opts.pixabayKey) jobs.push(pixabay('video', opts.pixabayKey, query, opts.orientation))
   } else if (kind === 'music' || kind === 'sfx') {
     jobs.push(openverse('audio', query))
   }
@@ -169,7 +232,8 @@ export async function searchStock(
     if (s.status === 'fulfilled') results.push(...s.value.filter((r) => r.downloadUrl))
     else errors.push(String((s.reason as Error)?.message ?? s.reason))
   }
-  if (kind === 'video' && !opts.pexelsKey) errors.push('Add a free Pexels key in Settings to search video clips')
+  if (kind === 'video' && !opts.pexelsKey && !opts.pixabayKey) errors.push('Add a free Pexels or Pixabay key in Settings to search video clips')
+  if (kind === 'image' && !opts.pexelsKey && !opts.pixabayKey && results.length === 0) errors.push('Tip: a free Pexels or Pixabay key gives far better photos')
   // interleave providers so the best of each shows first
   return { results, errors }
 }
@@ -178,7 +242,7 @@ const MAX_BYTES = 120 * 1024 * 1024
 
 /** download a stock result into the library (images are re-encoded, which also proves they are images) */
 export async function downloadStock(library: AssetLibrary, r: StockResult, extraTags: string[] = []): Promise<AssetMeta> {
-  const res = await fetch(r.downloadUrl, { headers: { 'User-Agent': UA } })
+  const res = await fetch(r.downloadUrl, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(120_000) })
   if (!res.ok) throw new Error(`download failed (${res.status})`)
   const len = Number(res.headers.get('content-length') ?? 0)
   if (len > MAX_BYTES) throw new Error('file is too large (over 120 MB)')

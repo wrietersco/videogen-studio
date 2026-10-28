@@ -66,3 +66,47 @@ html, body, #app {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #2a2a3d; border-radius: 6px; }
 ::-webkit-scrollbar-thumb:hover { background: #3a3a55; }
+
+/* ---------- shared playful controls ---------- */
+.btn-primary {
+  border-radius: 0.9rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 900;
+  color: #0b0b12;
+  background: linear-gradient(90deg, #7c5cff, #00e5ff);
+  transition: transform 0.15s, filter 0.15s, opacity 0.15s;
+}
+.btn-primary:hover { filter: brightness(1.12); transform: translateY(-1px); }
+.btn-primary:active { transform: scale(0.96); }
+.btn-primary:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+.btn-ghost {
+  border-radius: 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.8);
+  transition: background 0.15s, transform 0.15s, border-color 0.15s;
+}
+.btn-ghost:hover { background: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.25); transform: translateY(-1px); }
+.btn-ghost:active { transform: scale(0.96); }
+
+@keyframes wiggle {
+  0%, 100% { transform: rotate(0); }
+  25% { transform: rotate(-8deg); }
+  75% { transform: rotate(8deg); }
+}
+.wiggle { animation: wiggle 2.4s ease-in-out infinite; }
+
+@keyframes slide-in-right {
+  from { transform: translateX(40px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+.slide-in-right { animation: slide-in-right 0.25s ease-out; }
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+.float { animation: float 3s ease-in-out infinite; }

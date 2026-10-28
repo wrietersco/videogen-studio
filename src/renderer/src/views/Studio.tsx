@@ -2,23 +2,25 @@ import { useEffect, useRef, useState } from 'react'
 import { api, type PipelineEvent, type PlatformId, type StyleFamily } from '../api'
 import { ActivityFeed } from '../components/ActivityFeed'
 import { CostReceipt } from '../components/CostReceipt'
+import { estimateVideoCost, fmtUsd } from '@shared/pricing'
+import type { SettingsView } from '../api'
 
 const PLATFORMS: Array<{ id: PlatformId; label: string; hint: string }> = [
-  { id: 'tiktok', label: 'TikTok', hint: '9:16 · punchy' },
-  { id: 'youtube-shorts', label: 'Shorts', hint: '9:16 · snappy' },
-  { id: 'instagram-reels', label: 'Reels', hint: '9:16 · polished' },
-  { id: 'instagram-feed', label: 'IG Feed', hint: '4:5 · calm' },
-  { id: 'youtube', label: 'YouTube', hint: '16:9 · explainer' },
-  { id: 'facebook-feed', label: 'Facebook', hint: '4:5 · captions' }
+  { id: 'tiktok', label: '🎵 TikTok', hint: '9:16 · punchy' },
+  { id: 'youtube-shorts', label: '▶️ Shorts', hint: '9:16 · snappy' },
+  { id: 'instagram-reels', label: '📸 Reels', hint: '9:16 · polished' },
+  { id: 'instagram-feed', label: '🖼️ IG Feed', hint: '4:5 · calm' },
+  { id: 'youtube', label: '📺 YouTube', hint: '16:9 · explainer' },
+  { id: 'facebook-feed', label: '👍 Facebook', hint: '4:5 · captions' }
 ]
 
 type StyleChoice = 'auto' | StyleFamily
 
 const STYLES: Array<{ id: StyleChoice; label: string; hint: string }> = [
-  { id: 'auto', label: 'Auto', hint: 'AI picks' },
-  { id: 'social', label: 'Kinetic / Social', hint: 'hooks, memes, hype' },
-  { id: 'explainer', label: 'Explainer', hint: 'slides, clarity' },
-  { id: 'motion3d', label: '3D / Motion', hint: 'three.js, cinematic' }
+  { id: 'auto', label: '🪄 Auto', hint: 'AI picks' },
+  { id: 'social', label: '💥 Kinetic / Social', hint: 'hooks, memes, hype' },
+  { id: 'explainer', label: '🧑‍🏫 Explainer', hint: 'slides, clarity' },
+  { id: 'motion3d', label: '🧊 3D / Motion', hint: 'three.js, cinematic' }
 ]
 
 const EXAMPLES: Array<{ prompt: string; platform: PlatformId; style?: StyleFamily; result: string }> = [
@@ -43,6 +45,11 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
   const [notice, setNotice] = useState<string | null>(null)
   const [board, setBoard] = useState<{ title: string | null; scenes: SceneCard[]; captured: number } | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
+  const [cfg, setCfg] = useState<SettingsView | null>(null)
+  useEffect(() => {
+    api.getSettings().then(setCfg).catch(() => {})
+  }, [])
+  const estimate = cfg ? estimateFor(cfg, duration) : null
 
   useEffect(() => {
     unsubRef.current = api.onEvent((e) => {
@@ -136,9 +143,11 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
     <div className="grid h-full grid-cols-[1fr_380px] gap-0">
       {/* left: prompt surface */}
       <div className="min-h-0 overflow-y-auto p-8">
-        <h1 className="mb-1 text-2xl font-black tracking-tight">Describe the video you want</h1>
+        <h1 className="mb-1 text-2xl font-black tracking-tight">
+          <span className="float inline-block">✨</span> What should we make today?
+        </h1>
         <p className="mb-6 text-sm text-white/45">
-          Any topic, any style, freestyle — the planner, composer and QA agents handle the rest.
+          Type an idea in plain words. A little film crew of AI agents writes, designs, voices and renders it for you.
         </p>
 
         <textarea
@@ -153,7 +162,7 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
 
         {/* platform row */}
         <div className="mt-6">
-          <div className="mb-2 text-xs font-bold uppercase tracking-wider text-white/40">Platform</div>
+          <div className="mb-2 text-xs font-bold uppercase tracking-wider text-white/40">Where will it go?</div>
           <div className="flex flex-wrap gap-2">
             {PLATFORMS.map((p) => (
               <button
@@ -175,7 +184,7 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
         {/* style + duration row */}
         <div className="mt-6 grid grid-cols-[1fr_auto] gap-6">
           <div>
-            <div className="mb-2 text-xs font-bold uppercase tracking-wider text-white/40">Style</div>
+            <div className="mb-2 text-xs font-bold uppercase tracking-wider text-white/40">What vibe?</div>
             <div className="flex flex-wrap gap-2">
               {STYLES.map((s) => (
                 <button
@@ -195,7 +204,7 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
           </div>
           <div className="w-52">
             <div className="mb-2 flex items-baseline justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-white/40">Duration</span>
+              <span className="text-xs font-bold uppercase tracking-wider text-white/40">⏱️ How long?</span>
               <span className="text-sm font-bold text-[#b9a5ff]">{duration}s</span>
             </div>
             <input
@@ -225,8 +234,15 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
             disabled={!prompt.trim()}
             className="mt-8 w-full rounded-2xl bg-gradient-to-r from-[#7C5CFF] to-[#00E5FF] py-4 text-base font-black uppercase tracking-widest text-[#0b0b12] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-30"
           >
-            Generate video
+            ✨ Make my video
           </button>
+        )}
+        {!running && estimate && (
+          <div className="mt-2 text-center text-[11px] text-white/40">
+            {estimate.usd === 0
+              ? '🆓 Free with your current settings'
+              : `🧾 roughly ${fmtUsd(estimate.usd)} with ${estimate.label} — reusing library assets can make it cheaper`}
+          </div>
         )}
         {running && (
           <div className="mt-4">
@@ -353,7 +369,7 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
         {/* examples gallery */}
         <div className="mt-10">
           <div className="mb-3 text-xs font-bold uppercase tracking-wider text-white/40">
-            What kind of prompt leads to what
+            💡 Need ideas? Tap one
           </div>
           <div className="grid grid-cols-2 gap-3">
             {EXAMPLES.map((ex, i) => (
@@ -380,4 +396,24 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
       </div>
     </div>
   )
+}
+
+const DEFAULT_CHAT: Record<string, string> = { openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash' }
+const DEFAULT_IMAGE: Record<string, string> = { openai: 'gpt-image-2.5-sunburst', gemini: 'gemini-3.1-flash-image' }
+const DEFAULT_VOICE: Record<string, string> = { openai: 'gpt-4o-mini-tts', gemini: 'gemini-2.5-flash-preview-tts', elevenlabs: 'eleven_flash_v2_5' }
+
+/** rough cost for one video with the current picks ('auto' media resolves to the brain's provider) */
+function estimateFor(s: SettingsView, durationSec: number): { usd: number; label: string } {
+  if (s.provider === 'mock') return { usd: 0, label: 'the free engine' }
+  const chatModel = s.models[s.provider] || DEFAULT_CHAT[s.provider]
+  const pick = (v: string, defaults: Record<string, string>) => {
+    if (!v || v === 'none' || v === 'stock' || v.startsWith('builtin') || v === 'library') return undefined
+    if (v === 'auto') return defaults[s.provider]
+    const [p, m] = v.split(':')
+    return m || defaults[p]
+  }
+  const imageModel = pick(s.media?.image ?? 'auto', DEFAULT_IMAGE)
+  const voiceModel = pick(s.media?.voice ?? 'auto', DEFAULT_VOICE)
+  const usd = estimateVideoCost({ chatModel, imageModel, voiceModel, durationSec, directed: s.craft !== 'classic' })
+  return { usd, label: [chatModel, imageModel, voiceModel].filter(Boolean).join(' + ') }
 }

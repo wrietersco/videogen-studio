@@ -88,8 +88,8 @@ export class MediaRouter {
 
   private useStock(): boolean {
     const v = this.d.settings().media.image || 'auto'
-    // auto falls back to Pexels photos when no painter is keyed (Openverse alone is too hit-and-miss for plates)
-    return v === 'stock' || (v === 'auto' && !this.painter() && Boolean(this.d.key('pexels')))
+    // auto falls back to Pexels/Pixabay photos when no painter is keyed (Openverse alone is too hit-and-miss for plates)
+    return v === 'stock' || (v === 'auto' && !this.painter() && Boolean(this.d.key('pexels') || this.d.key('pixabay')))
   }
 
   /** can directed scenes get plates at all? (also counts a library full of reusable images) */
@@ -144,7 +144,7 @@ export class MediaRouter {
     const tags = [...tokenize(req.subjectLabel ?? ''), ...(req.look ? [req.look] : []), 'plate']
     if (this.useStock() && !(opts.fresh && this.painter())) {
       const query = req.subjectLabel?.trim() || tokenize(req.brief).slice(0, 4).join(' ')
-      const { results } = await searchStock('image', query, { orientation: orientationOf(req.width, req.height), pexelsKey: this.d.key('pexels') })
+      const { results } = await searchStock('image', query, { orientation: orientationOf(req.width, req.height), pexelsKey: this.d.key('pexels'), pixabayKey: this.d.key('pixabay') })
       if (!results.length) throw new Error(`no free stock photo found for "${query}"`)
       const asset = await downloadStock(lib, results[0], tags)
       lib.markUsed(asset.id, req.projectId)

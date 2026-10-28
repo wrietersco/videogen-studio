@@ -135,7 +135,7 @@ export interface MediaModel {
 
 export const MEDIA_MODELS: MediaModel[] = [
   // images
-  { kind: 'image', provider: 'stock', id: 'stock', label: 'Free stock photos', typical: 'free', cost: 1, speed: 3, quality: 2, note: 'Openverse + Pexels, licence saved with each photo' },
+  { kind: 'image', provider: 'stock', id: 'stock', label: 'Free stock photos', typical: 'free', cost: 1, speed: 3, quality: 2, note: 'Openverse, Pexels & Pixabay — licence saved with each photo' },
   { kind: 'image', provider: 'gemini', id: 'gemini-nano-banana-2.1', label: 'Nano Banana 2.1', typical: '≈ $0.03 / image', cost: 1, speed: 3, quality: 2 },
   { kind: 'image', provider: 'gemini', id: 'gemini-3.1-flash-image', label: 'Gemini 3.1 Flash Image', typical: '≈ $0.07 / image', cost: 2, speed: 3, quality: 2 },
   { kind: 'image', provider: 'gemini', id: 'gemini-3-pro-image', label: 'Gemini 3 Pro Image', typical: '≈ $0.13 / image', cost: 3, speed: 2, quality: 3 },
@@ -153,7 +153,7 @@ export const MEDIA_MODELS: MediaModel[] = [
   // sfx
   { kind: 'sfx', provider: 'builtin', id: 'procedural', label: 'Built-in sound design', typical: 'free', cost: 1, speed: 3, quality: 2 },
   // video
-  { kind: 'video', provider: 'stock', id: 'stock', label: 'Free stock clips', typical: 'free', cost: 1, speed: 3, quality: 2, note: 'Pexels videos (free key)' }
+  { kind: 'video', provider: 'stock', id: 'stock', label: 'Free stock clips', typical: 'free', cost: 1, speed: 3, quality: 2, note: 'Pexels / Pixabay clips (free key)' }
 ]
 
 /** human tags for a model card: 💰 cheap · ⚡ fast · 🏆 best */
@@ -173,4 +173,27 @@ export function fmtUsd(v: number): string {
   if (v < 0.01) return `$${v.toFixed(4)}`
   if (v < 1) return `$${v.toFixed(3)}`
   return `$${v.toFixed(2)}`
+}
+
+/**
+ * Rough pre-flight estimate for one video with the user's current picks —
+ * shown before generating. Typical directed run: plan + film design + scene
+ * directors + vision critic ≈ 70k input / 25k output tokens; about half the
+ * scenes get a painted plate; narration ≈ 15 characters per second.
+ */
+export function estimateVideoCost(o: { chatModel?: string; imageModel?: string; voiceModel?: string; durationSec: number; directed: boolean }): number {
+  const scenes = Math.max(3, Math.round(o.durationSec / 5))
+  let usd = 0
+  if (o.chatModel) usd += priceUsage(o.chatModel, { inputTokens: o.directed ? 70_000 : 15_000, outputTokens: o.directed ? 25_000 : 6_000 }).usd
+  if (o.imageModel && o.directed) {
+    const per = RATES[o.imageModel]?.perImage !== undefined ? { images: 1 } : { inputTokens: 200, outputTokens: 6240 }
+    usd += Math.ceil(scenes / 2) * priceUsage(o.imageModel, per).usd
+  }
+  if (o.voiceModel) {
+    const chars = o.durationSec * 15
+    const r = RATES[o.voiceModel]
+    usd += priceUsage(o.voiceModel, r?.perKChars ? { chars } : { inputTokens: chars / 4, outputTokens: o.durationSec * 21, seconds: o.durationSec }).usd
+    if (o.voiceModel === 'gpt-4o-mini-tts') usd += priceUsage('whisper-1', { seconds: o.durationSec }).usd
+  }
+  return usd
 }

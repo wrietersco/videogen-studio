@@ -210,7 +210,7 @@ function registerIpc(): void {
   }))
   ipcMain.handle('settings:hasKey', (_e, provider: KeyId) => Boolean(settings.keys[provider]))
   ipcMain.handle('settings:keyStatus', () =>
-    Object.fromEntries((['openai', 'anthropic', 'gemini', 'elevenlabs', 'pexels'] as KeyId[]).map((k) => [k, Boolean(settings.keys[k])]))
+    Object.fromEntries((['openai', 'anthropic', 'gemini', 'elevenlabs', 'pexels', 'pixabay'] as KeyId[]).map((k) => [k, Boolean(settings.keys[k])]))
   )
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
     if (patch.provider) settings.provider = patch.provider
@@ -229,7 +229,7 @@ function registerIpc(): void {
     settings.keys[provider] = encryptKey(key.trim())
     keyCache.delete(provider)
     saveSettings()
-    if (provider !== 'elevenlabs' && provider !== 'pexels') providerRegistry.reconfigure(settings, { [provider]: decryptKey(settings.keys[provider]) })
+    if (provider === 'openai' || provider === 'anthropic' || provider === 'gemini') providerRegistry.reconfigure(settings, { [provider]: decryptKey(settings.keys[provider]) })
     return true
   })
   ipcMain.handle('settings:clearKey', (_e, provider: KeyId) => {

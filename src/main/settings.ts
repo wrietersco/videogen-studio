@@ -1,7 +1,7 @@
 import type { ProviderId } from './providers/types'
 
 /** every secret the app can hold: chat providers plus media/stock services */
-export type KeyId = ProviderId | 'elevenlabs' | 'pexels'
+export type KeyId = ProviderId | 'elevenlabs' | 'pexels' | 'pixabay'
 
 /**
  * Which engine makes each kind of media. Values are "provider:model" or a

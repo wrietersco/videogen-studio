@@ -4,14 +4,16 @@ import Studio from './views/Studio'
 import Library from './views/Library'
 import Settings from './views/Settings'
 import Editor from './views/Editor'
+import Assets from './views/Assets'
 
-type Tab = 'studio' | 'library' | 'editor' | 'settings'
+type Tab = 'studio' | 'library' | 'assets' | 'editor' | 'settings'
 
-const TABS: Array<{ id: Tab; label: string; icon: string }> = [
-  { id: 'studio', label: 'Studio', icon: '✦' },
-  { id: 'library', label: 'Library', icon: '▦' },
-  { id: 'editor', label: 'Editor', icon: '✎' },
-  { id: 'settings', label: 'Settings', icon: '⚙' }
+const TABS: Array<{ id: Tab; label: string; icon: string; tip: string }> = [
+  { id: 'studio', label: 'Create', icon: '✨', tip: 'Describe a video and watch it get made' },
+  { id: 'library', label: 'My videos', icon: '🎞️', tip: 'Everything you have made' },
+  { id: 'assets', label: 'Assets', icon: '🧺', tip: 'Pictures, clips, voices and music the app reuses' },
+  { id: 'editor', label: 'Editor', icon: '✏️', tip: 'Rework scenes and see what a video cost' },
+  { id: 'settings', label: 'Settings', icon: '⚙️', tip: 'Engines, keys, media models, privacy' }
 ]
 
 export default function App() {
@@ -36,11 +38,12 @@ export default function App() {
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
+              title={t.tip}
               className={`my-1 self-center rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
                 tab === t.id ? 'bg-[#7C5CFF]/20 text-[#b9a5ff]' : 'text-white/50 hover:bg-white/5 hover:text-white/80'
               }`}
             >
-              <span className="mr-1.5 opacity-70">{t.icon}</span>
+              <span className="mr-1.5">{t.icon}</span>
               {t.label}
             </button>
           ))}
@@ -86,6 +89,7 @@ export default function App() {
             onBack={() => setTab('library')}
           />
         )}
+        {tab === 'assets' && <Assets />}
         {tab === 'settings' && <Settings />}
       </div>
     </div>

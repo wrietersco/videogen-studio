@@ -40,25 +40,17 @@ export class GeminiProvider implements LLMProvider {
     return this.key().length > 0
   }
 
+  /** Curated catalog (rates from the shipped price book), cheapest → priciest. */
   async listModels(): Promise<ModelInfo[]> {
-    const json = await this.request<{ models: Array<{ name: string; displayName?: string; supportedGenerationMethods?: string[] }> }>(
-      'GET',
-      '/models'
-    )
-    return json.models
-      .filter(
-        (m) =>
-          /gemini/.test(m.name) &&
-          !/embedding|aqa|tts|image|native-audio|live|thinking-exp/.test(m.name) &&
-          (m.supportedGenerationMethods?.includes('generateContent') ?? true)
-      )
-      .map((m) => ({
-        id: m.name.replace(/^models\//, ''),
-        label: m.displayName ?? m.name,
-        provider: this.id,
-        supportsJSON: true,
-        supportsVision: !/gemini-1\.0/.test(m.name)
-      }))
+    const m = (id: string, label: string, priceNote: string): ModelInfo => ({ id, label, provider: this.id, supportsJSON: true, supportsVision: true, priceNote })
+    return [
+      m('gemini-2.5-flash-lite', 'Gemini 2.5 Flash-Lite', '$0.10 in / $0.40 out per 1M tok'),
+      m('gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite', '$0.25 in / $1.50 out per 1M tok'),
+      m('gemini-3.5-flash-lite', 'Gemini 3.5 Flash-Lite', '$0.30 in / $2.50 out per 1M tok'),
+      m('gemini-3.8-flash', 'Gemini 3.8 Flash', '$0.75 in / $3.75 out per 1M tok · intro price to Dec 31'),
+      m('gemini-4-argon', 'Gemini 4 Argon', '$2 in / $10 out per 1M tok · intro price to Nov 30'),
+      m('gemini-3.1-pro-preview', 'Gemini 3.1 Pro (preview)', '$2 in / $12 out per 1M tok')
+    ]
   }
 
   async generateJSON<T>(req: GenerateJSONRequest): Promise<T> {

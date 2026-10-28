@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type PipelineEvent, type ProjectMeta } from '../api'
+import { EmptyState } from '../components/ui'
 
 export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) => void }) {
   const [projects, setProjects] = useState<ProjectMeta[]>([])
@@ -87,13 +88,13 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
     <div className="relative h-full overflow-y-auto p-8">
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-black tracking-tight">Library</h1>
+          <h1 className="text-2xl font-black tracking-tight">🎞️ My videos</h1>
           <p className="text-sm text-white/45">
-            Every generated video is a resumable project on disk — re-render, reveal, or delete it.
+            Everything you've made. Play it, re-render it, open it in the Editor to rework a scene, or see what it cost.
           </p>
         </div>
-        <button onClick={refresh} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-bold hover:bg-white/5">
-          Refresh
+        <button onClick={refresh} className="btn-ghost">
+          🔄 Refresh
         </button>
       </div>
 
@@ -104,9 +105,9 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
       )}
 
       {projects.length === 0 && (
-        <div className="mt-24 text-center text-sm text-white/30">
-          No projects yet — generate your first video in the Studio.
-        </div>
+        <EmptyState emoji="🎬" title="No videos yet">
+          Head to ✨ Create, type an idea, and your first video lands here.
+        </EmptyState>
       )}
 
       <div className="grid grid-cols-3 gap-4">
