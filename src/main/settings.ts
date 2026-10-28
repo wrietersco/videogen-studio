@@ -8,6 +8,8 @@ export interface Settings {
   keys: Partial<Record<ProviderId, string>>
   quality: 'draft' | 'standard' | 'delivery'
   allowGpu: boolean
+  /** 'directed' = scene director + plates + widgets (default) · 'classic' = template scenes */
+  craft: 'directed' | 'classic'
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -15,5 +17,6 @@ export const DEFAULT_SETTINGS: Settings = {
   models: {},
   keys: {},
   quality: 'standard',
-  allowGpu: false
+  allowGpu: false,
+  craft: 'directed'
 }

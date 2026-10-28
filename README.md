@@ -18,6 +18,22 @@ freestyle prompt ──▶ Planner (1 LLM call, JSON-schema constrained) ──�
         Renderer: headless Chromium frame-stepping + FFmpeg ──▶ MP4
 ```
 
+### Directed scenes (default)
+
+```
+VideoSpec ──▶ Film director (1 call) ── design system: look · series · art direction · accents
+          ──▶ Scene directors (1 call per scene, parallel) ── visual metaphor → widget + HUD + caption (+ plate brief)
+          ──▶ Plate painter: image model → cover-crop → Depth Anything V2 (local) → vision locator
+          ──▶ Composer: crafted scenes (widgets · HUD · 2.5D depth camera · grain) ──▶ QA
+          ──▶ Vision critic: grades real frames, sends weak scenes back to their director (1 round)
+```
+
+- **Two looks**: `infographic` (dark UI diagrams, dot grid, glowing widgets) and `documentary` (painted stills animated as a 2.5D camera move over their depth map, editorial HUD, subject annotations).
+- **Small-model friendly**: directors only fill schema-constrained forms (pick a widget, fill its data). Output is repaired (over-long text trimmed), guarded (e.g. plate scenes get annotation + one compact widget) and falls back to heuristics, so even the cheapest chat models direct reliably.
+- **Widget library** (`src/main/composer/widgets.ts`): ring gauge, counter, bars, toggle, timeline, quote card, stat pair, slots (receptor metaphor), distance bar, waveform, annotation.
+- **Plates** need an OpenAI or Gemini key (any active chat provider works for directing). Depth maps run locally on CPU; the model (~25 MB) downloads once to `~/.videogen-studio/models`. Without an image model, scenes use dot-grid backgrounds.
+- Switch to the old template scenes in Settings → Scene craft → Classic, or `npm run gen -- --craft classic`.
+
 - **Deterministic rendering**: the same project always renders to the same pixels (software rasterization + single capture worker for standard/delivery quality). That's what makes videos *editable* and the fix-loop *verifiable*.
 - **Fully dynamic compositions**: no template grid — the composer writes bespoke HTML/CSS/GSAP (and Three.js scenes driven by `hf-seek`) from the spec, constrained by design-system craft (motion physics, type scales, safe zones, contrast).
 - **Works without API keys**: the built-in **Mock engine** plans videos with built-in heuristics. Add OpenAI / Claude / Gemini keys in Settings for full creative generation; model lists are fetched at runtime so new models work without app updates.
@@ -51,8 +67,10 @@ npm run test:e2e       # full pipeline → MP4 + determinism gate (minutes)
 src/shared/       VideoSpec schema (zod) · platform presets
 src/main/
   providers/      LLMProvider seam: mock · openai · anthropic · gemini (+registry)
-  pipeline/       planner · orchestrator (QA fix-loop)
+  pipeline/       planner · orchestrator (direct → plates → compose → QA → critic → render)
+  director/       film + scene directors · plate painter (image → depth → locator) · vision critic
   composer/       layout engine · animation DSL · scene renderers · style kits · three.js
+                  crafted.ts (directed scenes + in-page plate engine) · widgets.ts
   rendererService HyperFrames render + check wrappers
   store/          project store (projects/<id>/spec.json · index.html · renders/)
 src/renderer/     React UI (studio, library, editor, settings)

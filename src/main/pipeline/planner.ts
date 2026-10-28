@@ -31,7 +31,8 @@ function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {
 
 let cachedSpecSchema: Record<string, unknown> | null = null
 export function videoSpecJsonSchema(): Record<string, unknown> {
-  cachedSpecSchema ??= zodToJsonSchema(VideoSpec)
+  // design + crafts belong to the scene director, never the planner
+  cachedSpecSchema ??= zodToJsonSchema(VideoSpec.omit({ design: true, crafts: true }))
   return cachedSpecSchema
 }
 
@@ -176,6 +177,11 @@ Be a good director: concrete visuals, strong on-screen text, honest pacing.`
     const preset = PLATFORM_PRESETS[spec.platform]
     const patched: VideoSpecT = {
       ...spec,
+      typography: {
+        ...spec.typography,
+        display: bundledFont(spec.typography.display, 'display'),
+        body: bundledFont(spec.typography.body, 'body')
+      },
       fps: spec.fps ?? preset.fps,
       durationSec: Math.min(
         preset.durationRange[1],
@@ -200,6 +206,32 @@ Be a good director: concrete visuals, strong on-screen text, honest pacing.`
       Math.round(patched.scenes.reduce((a, s) => a + s.durationSec, 0) * 10) / 10
     return patched
   }
+}
+
+/** families the composer ships as local font files */
+const BUNDLED_FONTS = ['Archivo Black', 'Inter', 'Space Grotesk', 'Playfair Display', 'Nunito']
+
+/**
+ * Small models sometimes write a description ("condensed bold sans-serif")
+ * where a family name belongs; an unknown family would fall back to a generic
+ * face at render time. Map anything unbundled onto the closest bundled family.
+ */
+export function bundledFont(value: string, role: 'display' | 'body'): string {
+  const primary = (value ?? '').split(',')[0].trim().replace(/['"]/g, '')
+  const hit = BUNDLED_FONTS.find((f) => f.toLowerCase() === primary.toLowerCase())
+  if (hit) return value
+  const v = (value ?? '').toLowerCase()
+  const family =
+    /serif/.test(v) && !/sans/.test(v)
+      ? 'Playfair Display'
+      : /round|friendly|playful/.test(v)
+        ? 'Nunito'
+        : /geometric|grotesk|tech|mono/.test(v)
+          ? 'Space Grotesk'
+          : role === 'display' && /bold|black|heavy|condensed|impact|display/.test(v)
+            ? 'Archivo Black'
+            : 'Inter'
+  return `${family}, ${family === 'Playfair Display' ? 'serif' : 'sans-serif'}`
 }
 
 /**

@@ -59,7 +59,7 @@ function framePairsPSNR(dirA: string, dirB: string): number[] {
 }
 
 describe('full pipeline (mock provider, draft render)', () => {
-  it('generates a real MP4 from a freestyle prompt and is deterministic on re-render', { timeout: 420_000 }, async () => {
+  it('generates a real MP4 from a freestyle prompt and is deterministic on re-render', { timeout: 600_000 }, async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'vg-e2e-'))
     const store = new ProjectStore(join(workDir, 'projects'))
     const orch = new Orchestrator(store, () => new MockProvider())

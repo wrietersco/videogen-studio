@@ -120,6 +120,28 @@ export class RenderService {
     if (child) child.kill()
   }
 
+  /**
+   * Still frames at exact timeline instants (deterministic software raster) —
+   * what the vision critic looks at. Returns PNG paths in the order of `times`.
+   */
+  snapshot(projectDir: string, times: number[], outDir: string): Promise<string[]> {
+    const args = [...hfArgs(), 'snapshot', projectDir, '--at', times.map((t) => t.toFixed(2)).join(','), '--no-end', '-o', outDir, '--no-browser-gpu']
+    return new Promise((resolvePromise) => {
+      const child = spawn(hfBin(), args, { env: toolEnv(), cwd: projectDir, windowsHide: true, shell: process.platform === 'win32' })
+      child.on('error', () => resolvePromise([]))
+      child.on('close', () => {
+        try {
+          const files = readdirSync(outDir)
+            .filter((f) => /^frame-\d+-at-.*\.png$/.test(f))
+            .sort()
+          resolvePromise(files.map((f) => join(outDir, f)))
+        } catch {
+          resolvePromise([])
+        }
+      })
+    })
+  }
+
   async check(projectDir: string, opts?: { samples?: number }): Promise<CheckReport> {
     const args = [
       ...hfArgs(),
@@ -212,7 +234,8 @@ function normalizeCheckReport(json: unknown): CheckReport {
         selector: (f as { selector?: string }).selector,
         fix: (f as { fix?: string }).fix
       }
-      if (f.level === 'error') errors.push(issue)
+      const level = f.level ?? (f as { severity?: string }).severity
+      if (level === 'error') errors.push(issue)
       else warnings.push(issue)
     }
   }

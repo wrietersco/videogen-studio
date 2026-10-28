@@ -6,6 +6,7 @@ import { KITS, type StyleKit } from './kits'
 import { validateSelectors } from './selectors'
 import { renderScene } from './scenes'
 import { TRANSITIONS } from './anim'
+import { craftTheme, craftedCSS, craftFontCSS, craftFontAssets, plateEngineScript, renderCraftedScene, type PlateJob } from './crafted'
 
 /**
  * compose() — VideoSpec + platform preset → complete HyperFrames project.
@@ -47,14 +48,20 @@ export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string, au
   const threeScripts: string[] = []
   const sceneStart: Record<string, number> = {}
   let needsThree = false
+  // directed mode: every scene with a craft renders through the premium path
+  const theme = spec.design ? craftTheme(spec.design) : null
+  const craftOf = new Map(spec.crafts.map((c) => [c.sceneId, c]))
+  const plates: PlateJob[] = []
 
   spec.scenes.forEach((scene: Scene, i) => {
     const { start, end } = windows[i]
-    const rendered = renderScene(scene, i, start, end, ctx, kit)
+    const craft = theme ? craftOf.get(scene.id) : undefined
+    const rendered = craft && theme ? renderCraftedScene(spec, craft, i, start, end, ctx, theme) : renderScene(scene, i, start, end, ctx, kit)
+    if ('plate' in rendered && rendered.plate) plates.push(rendered.plate)
     sceneHTML.push(rendered.html)
     steps.push(...rendered.steps)
     sceneStart[`scene-${i + 1}`] = start
-    if (rendered.threeScript) {
+    if ('threeScript' in rendered && rendered.threeScript) {
       threeScripts.push(rendered.threeScript)
       needsThree = true
     }
@@ -113,8 +120,12 @@ export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string, au
   for (const f of fontsNeeded(spec)) {
     assets.push({ from: `${fontsDir}/${f}`, to: `assets/fonts/${f}` })
   }
+  if (theme) assets.push(...craftFontAssets(fontsDir))
 
-  const html = buildDocument(spec, ctx, kit, sceneHTML, safeSteps, threeScripts, sceneStart, totalSec, audio)
+  const directed = theme
+    ? { css: craftFontCSS() + '\n' + craftedCSS(ctx, theme), plateScript: plateEngineScript(plates, ctx.width, ctx.height, theme.accent) }
+    : undefined
+  const html = buildDocument(spec, ctx, kit, sceneHTML, safeSteps, threeScripts, sceneStart, totalSec, audio, directed)
   return { html, assets, needsThree }
 }
 
@@ -533,7 +544,9 @@ const INTERPRETER = `
         const local = Math.min(Math.max(t - c.t, 0), c.dur);
         const eased = 1 - Math.pow(1 - local / c.dur, 2);
         const v = c.from + (c.to - c.from) * eased;
-        el.textContent = Number.isInteger(c.to) ? String(Math.round(v)) : (Math.round(v * 10) / 10).toFixed(1);
+        el.textContent = !Number.isInteger(c.to)
+          ? (Math.round(v * 10) / 10).toFixed(1)
+          : c.format === 'thousands' ? Math.round(v).toLocaleString('en-US') : String(Math.round(v));
       }
     });
     tl.seek(0);
@@ -541,15 +554,13 @@ const INTERPRETER = `
   }
 
   function vgBoot() { vgAutofit(); vgBuildTimeline(); }
-  if (document.fonts && document.fonts.ready) {
-    document.fonts.ready.then(vgBoot);
-  } else {
-    vgBoot();
-  }
+  // the timeline registers only once fonts AND page assets (plates) are ready,
+  // so capture can never see a half-loaded frame
+  Promise.all([document.fonts && document.fonts.ready ? document.fonts.ready : null].concat(window.__vgWait || [])).then(vgBoot);
 `
 
 /** bump when presentation changes enough to re-compose old projects */
-export const COMPOSER_VERSION = 4
+export const COMPOSER_VERSION = 5
 
 function buildDocument(
   spec: VideoSpec,
@@ -560,12 +571,13 @@ function buildDocument(
   threeScripts: string[],
   sceneStart: Record<string, number>,
   totalSec: number,
-  audio?: AudioLayer
+  audio?: AudioLayer,
+  directed?: { css: string; plateScript: string }
 ): string {
   const ts = typeScale(ctx)
   const capFit = fitAttrs(ctx.captionBand.maxWidthPx, Math.round(ts.caption * 1.22 * 2 + 24 * ctx.scale), 'box')
   const captionLayer =
-    audio && audio.captions.length > 0
+    audio && audio.captions.length > 0 && !directed
       ? `<div class="caption-layer caption-${spec.captionStyle.position}"><div class="caption-bar" id="caption-text" ${capFit}></div></div>`
       : ''
   const audioClips = (audio?.clips ?? [])
@@ -598,7 +610,11 @@ function buildDocument(
     return w
   })
 
-  const style = [fontFaceCSS(spec), baseCSS(ctx, spec.captionStyle.uppercase), kit.atmosphereCSS(ctx)].join('\n')
+  const style = [fontFaceCSS(spec), baseCSS(ctx, spec.captionStyle.uppercase), kit.atmosphereCSS(ctx), directed?.css ?? ''].join('\n')
+  // directed films carry their own word-lit captions; film grain sits over everything
+  // (a cached noise tile — a full-frame filter + blend mode costs seconds per
+  // frame under software raster)
+  const grain = directed ? `<div class="grain-layer" aria-hidden="true"></div>` : ''
 
   const interpreter = INTERPRETER.replace('__SCENE_START__', JSON.stringify(sceneStart)).replace(
     '__STEPS__',
@@ -630,9 +646,11 @@ ${style}
       <div class="atmo">${kit.atmosphere(ctx)}</div>
 ${sceneHTML.join('\n')}
 ${captionLayer}
+${grain}
 ${audioClips}
     </div>
     <script src="assets/vendor/gsap.min.js"></script>
+${directed?.plateScript ?? ''}
     <script>
 ${interpreter}
     </script>

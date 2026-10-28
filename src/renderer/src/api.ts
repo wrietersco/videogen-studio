@@ -20,6 +20,7 @@ export interface SettingsView {
   models: Record<string, string>
   quality: 'draft' | 'standard' | 'delivery'
   allowGpu: boolean
+  craft: 'directed' | 'classic'
 }
 
 export interface GenerateOptionsView {

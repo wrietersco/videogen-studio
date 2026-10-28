@@ -18,7 +18,11 @@ import { projectsDir, appRoot } from './paths'
  */
 
 const store = new ProjectStore(projectsDir)
-const orchestrator = new Orchestrator(store, () => providerRegistry.active())
+const orchestrator = new Orchestrator(
+  store,
+  () => providerRegistry.active(),
+  () => providerRegistry.imageProvider()
+)
 
 // ---------------- settings (encrypted key storage) ----------------
 
@@ -156,6 +160,7 @@ function registerIpc(): void {
     if (patch.models) settings.models = { ...settings.models, ...patch.models }
     if (patch.quality) settings.quality = patch.quality
     if (typeof patch.allowGpu === 'boolean') settings.allowGpu = patch.allowGpu
+    if (patch.craft === 'directed' || patch.craft === 'classic') settings.craft = patch.craft
     saveSettings()
     providerRegistry.reconfigure(settings)
     return true
@@ -208,7 +213,7 @@ function registerIpc(): void {
     const onEvent = (ev: unknown) => emit('gen:event', ev)
     // run async; UI streams events
     orchestrator
-      .generate({ ...opts, quality: settings.quality, gpu: settings.allowGpu, onEvent })
+      .generate({ ...opts, quality: settings.quality, gpu: settings.allowGpu, craft: settings.craft, onEvent })
       .catch((err) => {
         if (!(err instanceof GenerationCancelled)) {
           emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) })
@@ -249,6 +254,7 @@ function registerIpc(): void {
       .reviseScene(projectId, sceneId, feedback.trim(), {
         quality: settings.quality,
         gpu: settings.allowGpu,
+        craft: settings.craft,
         onEvent: (ev) => emit('gen:event', ev)
       })
       .catch((err) => {
@@ -266,7 +272,7 @@ function registerIpc(): void {
     if (busy) return { ok: false, error: 'Another job is running' }
     busy = true
     orchestrator
-      .resume(projectId, { quality: settings.quality, gpu: settings.allowGpu, onEvent: (ev) => emit('gen:event', ev) })
+      .resume(projectId, { quality: settings.quality, gpu: settings.allowGpu, craft: settings.craft, onEvent: (ev) => emit('gen:event', ev) })
       .catch((err) => {
         if (!(err instanceof GenerationCancelled)) {
           emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) })

@@ -167,6 +167,37 @@ export default function Settings() {
         ))}
       </div>
 
+      {/* scene craft */}
+      {settings && (
+        <div className="mt-8 max-w-4xl rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <div className="text-sm font-bold">Scene craft</div>
+          <div className="mt-1 text-xs text-white/45">
+            Directed: a film director picks a design system, a scene director designs every scene (visual metaphor, widgets, HUD),
+            an image model paints documentary stills that move in 2.5D, and a vision critic reviews the frames.
+            Paintings need an OpenAI or Gemini key; without one, scenes use dark diagram backgrounds.
+          </div>
+          <div className="mt-3 flex gap-2">
+            {([
+              ['directed', 'Directed (premium)'],
+              ['classic', 'Classic templates']
+            ] as const).map(([mode, label]) => (
+              <button
+                key={mode}
+                onClick={async () => {
+                  await api.setSettings({ craft: mode })
+                  refresh()
+                }}
+                className={`rounded-lg border px-4 py-2 text-xs font-bold ${
+                  (settings.craft ?? 'directed') === mode ? 'border-[#00E5FF] bg-[#00E5FF]/10' : 'border-white/10 hover:bg-white/5'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* render quality */}
       {settings && (
         <div className="mt-8 max-w-4xl rounded-2xl border border-white/10 bg-white/[0.03] p-5">

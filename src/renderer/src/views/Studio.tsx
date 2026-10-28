@@ -27,7 +27,7 @@ const EXAMPLES: Array<{ prompt: string; platform: PlatformId; style?: StyleFamil
   { prompt: 'Product intro for a habit tracker app — 30 seconds', platform: 'instagram-reels', style: 'explainer', result: '9:16 problem→solution arc' }
 ]
 
-type SceneCard = { kind: string; label: string; durationSec: number; thumb?: string }
+type SceneCard = { kind: string; label: string; durationSec: number; thumb?: string; plate?: string; score?: number }
 
 export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
   const [prompt, setPrompt] = useState('')
@@ -48,6 +48,25 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
       setEvents((prev) => [...prev.slice(-120), e])
       if (e.stage === 'plan' && e.status === 'done') {
         setBoard({ title: e.title, scenes: e.sceneCards.map((c) => ({ ...c })), captured: 0 })
+      }
+      // the director renames each card as it designs the scene; plates preview before frames exist
+      if (e.stage === 'direct' && e.status === 'scene') {
+        setBoard((b) =>
+          b
+            ? {
+                ...b,
+                scenes: b.scenes.map((s, i) =>
+                  i === e.sceneIndex ? { ...s, label: e.headline, kind: e.widgets.length ? e.widgets.join(' + ') : e.background === 'plate' ? 'plate' : 'hero' } : s
+                )
+              }
+            : b
+        )
+      }
+      if (e.stage === 'plates' && e.status === 'scene') {
+        setBoard((b) => (b ? { ...b, scenes: b.scenes.map((s, i) => (i === e.sceneIndex ? { ...s, plate: e.dataUrl } : s)) } : b))
+      }
+      if (e.stage === 'critic' && e.status === 'scene') {
+        setBoard((b) => (b ? { ...b, scenes: b.scenes.map((s, i) => (i === e.sceneIndex ? { ...s, score: e.score } : s)) } : b))
       }
       if (e.stage === 'thumbs' && e.status === 'progress') {
         setBoard((b) =>
@@ -220,7 +239,7 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
               {progress > 0
                 ? `rendering — ${progress}%`
                 : board
-                  ? 'composing & checking…'
+                  ? 'directing, painting, composing & reviewing…'
                   : 'planning…'}
             </div>
           </div>
@@ -249,8 +268,12 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
                     }`}
                     style={{ aspectRatio: platform === 'youtube' ? '16/9' : '9/16', animationDelay: `${i * 110}ms` }}
                   >
-                    {s.thumb ? (
-                      <img src={s.thumb} alt={`scene ${i + 1}`} className="thumb-in h-full w-full object-cover" />
+                    {s.thumb || s.plate ? (
+                      <img
+                        src={s.thumb ?? s.plate}
+                        alt={`scene ${i + 1}`}
+                        className={`thumb-in h-full w-full object-cover ${s.thumb ? '' : 'opacity-70'}`}
+                      />
                     ) : (
                       <div className={`flex h-full flex-col justify-between p-2 ${running ? 'board-sweep' : ''}`}>
                         <span className="w-fit rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white/60">
@@ -271,6 +294,16 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
                     <span className="absolute left-1.5 top-1.5 rounded bg-black/60 px-1 text-[9px] font-black text-white/70">
                       {i + 1}
                     </span>
+                    {typeof s.score === 'number' && (
+                      <span
+                        className={`absolute right-1.5 top-1.5 rounded px-1 text-[9px] font-black ${
+                          s.score >= 7 ? 'bg-emerald-500/80 text-black' : 'bg-amber-400/90 text-black'
+                        }`}
+                        title="vision critic score"
+                      >
+                        {s.score}/10
+                      </span>
+                    )}
                   </div>
                 )
               })}

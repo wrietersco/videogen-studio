@@ -35,7 +35,10 @@ class ProviderRegistry {
       )
     )
     this.providers.set('anthropic', new AnthropicProvider(() => this.keys.get('anthropic') ?? '', () => this.models.get('anthropic')))
-    this.providers.set('gemini', new GeminiProvider(() => this.keys.get('gemini') ?? '', () => this.models.get('gemini')))
+    this.providers.set(
+      'gemini',
+      new GeminiProvider(() => this.keys.get('gemini') ?? '', () => this.models.get('gemini'), () => this.models.get('gemini-image'))
+    )
   }
 
   /** True when a key is stored for a provider (mock is always ready). */
@@ -66,6 +69,21 @@ class ProviderRegistry {
 
   active(): LLMProvider {
     return this.get(this.activeId)
+  }
+
+  /**
+   * Painted plates need an image model, independent of the chat provider:
+   * the active provider when it paints, else any keyed provider that does.
+   * Null → directed scenes stay on dot-grid backgrounds.
+   */
+  imageProvider(): LLMProvider | null {
+    const order: ProviderId[] = [this.activeId, 'openai', 'gemini']
+    for (const id of order) {
+      if (id === 'mock' || !this.keys.has(id)) continue
+      const p = this.providers.get(id)
+      if (p?.generateImage) return p
+    }
+    return null
   }
 
   async describe(): Promise<ProviderStatus[]> {

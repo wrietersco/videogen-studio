@@ -35,7 +35,7 @@ export interface CountStep {
   to: number
   dur: number
   /** format: "percent" | "plain" | "times" */
-  format?: 'percent' | 'plain' | 'times'
+  format?: 'percent' | 'plain' | 'times' | 'thousands'
   suffix?: string
 }
 

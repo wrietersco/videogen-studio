@@ -10,6 +10,10 @@ import { ProjectStore, type StageName, type StageState } from '../store/projectS
 import { RenderService, type CheckReport, type RenderProgress } from '../rendererService/hyperframes'
 import { vendorDir, fontsDir, musicDir } from '../paths'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { PLATFORM_PRESETS } from '@shared/presets'
+import { SceneDirector } from '../director/director'
+import { makePlate, relocatePlate } from '../director/plates'
+import { reviewScenes } from '../director/critic'
 
 
 function readComposition(dir: string): string {
@@ -58,8 +62,12 @@ export interface GenerateOptions {
   quality?: 'draft' | 'standard' | 'delivery'
   /** opt-in fast mode: GPU rasterization is faster but not pixel-deterministic */
   gpu?: boolean
+  /** 'directed' (default): scene director + plates + widgets · 'classic': template scenes */
+  craft?: 'directed' | 'classic'
   onEvent?: (e: PipelineEvent) => void
 }
+
+type CraftMode = 'directed' | 'classic'
 
 export type PipelineEvent =
   | { stage: 'plan'; status: 'started' }
@@ -71,6 +79,17 @@ export type PipelineEvent =
       durationSec: number
       sceneCards: Array<{ kind: string; label: string; durationSec: number }>
     }
+  | { stage: 'direct'; status: 'started'; total: number }
+  | { stage: 'direct'; status: 'film'; look: string; series: string }
+  | { stage: 'direct'; status: 'scene'; sceneIndex: number; headline: string; widgets: string[]; background: string }
+  | { stage: 'direct'; status: 'done' }
+  | { stage: 'plates'; status: 'started'; total: number }
+  | { stage: 'plates'; status: 'scene'; sceneIndex: number; dataUrl: string }
+  | { stage: 'plates'; status: 'failed'; sceneIndex: number; error: string }
+  | { stage: 'plates'; status: 'done'; made: number }
+  | { stage: 'critic'; status: 'started' }
+  | { stage: 'critic'; status: 'scene'; sceneIndex: number; score: number; notes: string[] }
+  | { stage: 'critic'; status: 'done'; revised: number }
   | { stage: 'compose'; status: 'started' }
   | { stage: 'compose'; status: 'done' }
   | { stage: 'qa'; status: 'started' }
@@ -133,7 +152,9 @@ export class Orchestrator {
   constructor(
     private readonly store: ProjectStore,
     /** resolved per-run so settings changes take effect without restart */
-    private readonly providerFor: () => LLMProvider
+    private readonly providerFor: () => LLMProvider,
+    /** image model for painted plates (null → directed scenes use dot-grid backgrounds) */
+    private readonly imageProviderFor: () => LLMProvider | null = () => null
   ) {}
 
   /** Persist stage progress to state.json — the resume contract. */
@@ -251,7 +272,7 @@ export class Orchestrator {
     projectId: string,
     sceneId: string,
     feedback: string,
-    opts: { quality?: 'draft' | 'standard' | 'delivery'; gpu?: boolean; onEvent?: (e: PipelineEvent) => void } = {}
+    opts: { quality?: 'draft' | 'standard' | 'delivery'; gpu?: boolean; craft?: CraftMode; onEvent?: (e: PipelineEvent) => void } = {}
   ): Promise<void> {
     const emit = (e: PipelineEvent) => opts.onEvent?.(e)
     const spec0 = this.store.readSpec(projectId)
@@ -298,6 +319,16 @@ export class Orchestrator {
       sceneCards: spec.scenes.map((s) => ({ kind: s.kind, label: sceneLabel(s), durationSec: s.durationSec }))
     })
 
+    // ---------- re-direct the revised scene (the feedback steers the director too) ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    if (spec.design && opts.craft !== 'classic') {
+      const meta0 = this.store.readMeta(projectId)
+      spec = await this.runDirect(projectId, spec, meta0?.prompt ?? spec.title, emit, {
+        ids: new Set([sceneId]),
+        notes: new Map([[sceneId, `The user asked: "${feedback}"`]])
+      })
+    }
+
     // ---------- recompose (narration + captions for the revised text) ----------
     if (this.cancelled) return this.abort(projectId, emit)
     const audio = await this.runCompose(projectId, spec, emit)
@@ -340,8 +371,11 @@ export class Orchestrator {
     this.store.writeState(projectId, (s) => {
       s.stages = {
         plan: { status: 'running', startedAt: new Date().toISOString() },
+        direct: { status: 'pending' },
+        plates: { status: 'pending' },
         compose: { status: 'pending' },
         qa: { status: 'pending' },
+        critic: { status: 'pending' },
         thumbs: { status: 'pending' },
         render: { status: 'pending' }
       }
@@ -376,13 +410,25 @@ export class Orchestrator {
       sceneCards: spec.scenes.map((s) => ({ kind: s.kind, label: sceneLabel(s), durationSec: s.durationSec }))
     })
 
+    // ---------- direct: film design, per-scene crafts, painted plates ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    if (opts.craft !== 'classic') spec = await this.runDirect(projectId, spec, opts.prompt, emit)
+
     // ---------- compose ----------
     if (this.cancelled) return this.abort(projectId, emit)
     const audio = await this.runCompose(projectId, spec, emit)
 
     // ---------- QA fix-loop ----------
     if (this.cancelled) return this.abort(projectId, emit)
-    const qa = await this.runQaLoop(projectId, spec, audio, emit)
+    let qa = await this.runQaLoop(projectId, spec, audio, emit)
+
+    // ---------- vision critic: watch the real frames, send weak scenes back ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    const critiqued = await this.runCritic(projectId, spec, opts.prompt, audio, emit)
+    if (critiqued) {
+      spec = critiqued.spec
+      qa = critiqued.qa ?? qa
+    }
 
     // ---------- live storyboard captures ----------
     if (this.cancelled) return this.abort(projectId, emit)
@@ -394,6 +440,165 @@ export class Orchestrator {
   }
 
   // ---------------- shared stage implementations (used by generate + resume) ----------------
+
+  /**
+   * Scene director stage: film design system (once), then one craft per scene
+   * in parallel, then painted plates for documentary scenes. `only` re-directs
+   * a subset (scene revision / critic notes) and keeps every other craft.
+   */
+  private async runDirect(
+    projectId: string,
+    spec: VideoSpec,
+    userPrompt: string,
+    emit: (e: PipelineEvent) => void,
+    only?: { ids: Set<string>; notes?: Map<string, string> }
+  ): Promise<VideoSpec> {
+    const provider = this.providerFor()
+    const imageProvider = this.imageProviderFor()
+    this.track(projectId, 'direct', 'running')
+    emit({ stage: 'direct', status: 'started', total: only ? only.ids.size : spec.scenes.length })
+    const director = new SceneDirector({
+      provider,
+      platesAvailable: imageProvider !== null,
+      userPrompt,
+      onScene: (i, c) =>
+        emit({ stage: 'direct', status: 'scene', sceneIndex: i, headline: c.headline, widgets: c.widgets.map((w) => w.type), background: c.background })
+    })
+    const design = spec.design ?? (await director.directFilm(spec))
+    if (!spec.design) emit({ stage: 'direct', status: 'film', look: design.look, series: design.series })
+    const previous = new Map(spec.crafts.map((c) => [c.sceneId, c]))
+    let next: VideoSpec = { ...spec, design }
+    next = { ...next, crafts: await director.directScenes(next, design, only?.notes, only?.ids) }
+    // an unchanged plate brief keeps its finished files (no second image bill)
+    next.crafts = next.crafts.map((c) => {
+      const old = previous.get(c.sceneId)?.plate
+      if (c.plate && old?.file && old.prompt === c.plate.prompt)
+        return {
+          ...c,
+          // same subject → same anchor; a new subject label is re-located on the same painting
+          plate: { ...c.plate, file: old.file, depthFile: old.depthFile, anchor: old.subjectLabel === c.plate.subjectLabel ? old.anchor : undefined }
+        }
+      return c
+    })
+    this.store.saveSpec(projectId, next)
+    const plates = next.crafts.filter((c) => c.background === 'plate').length
+    this.track(projectId, 'direct', 'done', `${design.look} · ${next.crafts.length} scenes directed · ${plates} plate(s)`)
+    emit({ stage: 'direct', status: 'done' })
+    if (this.cancelled) return next
+    next = await this.runPlates(projectId, next, emit, provider)
+    this.store.saveSpec(projectId, next)
+    return next
+  }
+
+  /** paint every plate the crafts still need (2 in flight); failures fall back to the grid look */
+  private async runPlates(projectId: string, spec: VideoSpec, emit: (e: PipelineEvent) => void, vision: LLMProvider): Promise<VideoSpec> {
+    const preset0 = PLATFORM_PRESETS[spec.platform]
+    for (const c of spec.crafts) {
+      if (c.plate?.file && !c.plate.anchor) {
+        c.plate.anchor = await relocatePlate({ vision: vision.id === 'mock' ? null : vision, plate: c.plate, projectDir: this.store.dir(projectId), width: preset0.width, height: preset0.height }).catch(() => undefined)
+      }
+    }
+    const todo = spec.crafts.filter((c) => c.background === 'plate' && c.plate && !c.plate.file)
+    if (todo.length === 0 || !spec.design) return spec
+    const design = spec.design
+    const imageProvider = this.imageProviderFor()
+    const crafts = new Map(spec.crafts.map((c) => [c.sceneId, structuredClone(c)]))
+    const toGrid = (id: string) => {
+      const c = crafts.get(id)
+      if (!c) return
+      c.background = 'grid'
+      c.plate = undefined
+      c.widgets = c.widgets.filter((w) => w.type !== 'annotation')
+    }
+    if (!imageProvider) {
+      todo.forEach((c) => toGrid(c.sceneId))
+      return { ...spec, crafts: spec.crafts.map((c) => crafts.get(c.sceneId) ?? c) }
+    }
+    this.track(projectId, 'plates', 'running')
+    emit({ stage: 'plates', status: 'started', total: todo.length })
+    const preset = PLATFORM_PRESETS[spec.platform]
+    const indexOf = new Map(spec.scenes.map((s, i) => [s.id, i]))
+    let made = 0
+    let cursor = 0
+    const worker = async () => {
+      while (cursor < todo.length && !this.cancelled) {
+        const job = todo[cursor++]
+        const sceneIndex = indexOf.get(job.sceneId) ?? 0
+        const plate = job.plate
+        if (!plate) continue
+        try {
+          const r = await makePlate({
+            imageProvider,
+            vision: vision.id === 'mock' ? null : vision,
+            plate,
+            design,
+            sceneId: job.sceneId,
+            projectDir: this.store.dir(projectId),
+            width: preset.width,
+            height: preset.height
+          })
+          const c = crafts.get(job.sceneId)
+          if (c) c.plate = { ...plate, file: r.file, depthFile: r.depthFile, anchor: r.anchor }
+          made += 1
+          emit({ stage: 'plates', status: 'scene', sceneIndex, dataUrl: r.previewDataUrl })
+        } catch (err) {
+          toGrid(job.sceneId)
+          emit({ stage: 'plates', status: 'failed', sceneIndex, error: String((err as Error)?.message ?? err).slice(0, 160) })
+        }
+      }
+    }
+    await Promise.all([worker(), worker()])
+    this.track(projectId, 'plates', 'done', `${made}/${todo.length} painted`)
+    emit({ stage: 'plates', status: 'done', made })
+    return { ...spec, crafts: spec.crafts.map((c) => crafts.get(c.sceneId) ?? c) }
+  }
+
+  /**
+   * Vision critic round: grade the real frames; scenes below the bar go back
+   * to the scene director with the notes, then recompose + QA (audio kept).
+   */
+  private async runCritic(
+    projectId: string,
+    spec: VideoSpec,
+    userPrompt: string,
+    audio: Awaited<ReturnType<Orchestrator['runCompose']>>,
+    emit: (e: PipelineEvent) => void
+  ): Promise<{ spec: VideoSpec; qa?: CheckReport } | null> {
+    const provider = this.providerFor()
+    if (!spec.design || spec.crafts.length === 0 || provider.id === 'mock') return null
+    this.track(projectId, 'critic', 'running')
+    emit({ stage: 'critic', status: 'started' })
+    const reviews = await reviewScenes({
+      provider,
+      renders: this.renders,
+      projectDir: this.store.dir(projectId),
+      spec,
+      onReview: (r) => emit({ stage: 'critic', status: 'scene', sceneIndex: r.index, score: r.score, notes: r.notes })
+    })
+    const byId = new Map(reviews.map((r) => [r.sceneId, r]))
+    let next: VideoSpec = {
+      ...spec,
+      crafts: spec.crafts.map((c) => {
+        const r = byId.get(c.sceneId)
+        return r ? { ...c, review: { score: r.score, notes: r.notes } } : c
+      })
+    }
+    const toFix = reviews.filter((r) => r.revise)
+    let qa: CheckReport | undefined
+    if (toFix.length > 0 && !this.cancelled) {
+      next = await this.runDirect(projectId, next, userPrompt, emit, {
+        ids: new Set(toFix.map((r) => r.sceneId)),
+        notes: new Map(toFix.map((r) => [r.sceneId, r.notes.join(' · ')]))
+      })
+      this.store.saveComposition(projectId, compose(next, vendorDir, fontsDir, audio))
+      qa = await this.runQaLoop(projectId, next, audio, emit)
+    }
+    this.store.saveSpec(projectId, next)
+    const avg = reviews.length ? reviews.reduce((a, r) => a + r.score, 0) / reviews.length : 0
+    this.track(projectId, 'critic', 'done', reviews.length ? `avg ${avg.toFixed(1)}/10 · ${toFix.length} revised` : 'no frames reviewed')
+    emit({ stage: 'critic', status: 'done', revised: toFix.length })
+    return { spec: next, qa }
+  }
 
   private async runCompose(projectId: string, spec: VideoSpec, emit: (e: PipelineEvent) => void) {
     this.track(projectId, 'compose', 'running')
@@ -498,7 +703,7 @@ export class Orchestrator {
    */
   async resume(
     projectId: string,
-    opts: { quality?: 'draft' | 'standard' | 'delivery'; gpu?: boolean; onEvent?: (e: PipelineEvent) => void }
+    opts: { quality?: 'draft' | 'standard' | 'delivery'; gpu?: boolean; craft?: CraftMode; onEvent?: (e: PipelineEvent) => void }
   ): Promise<string> {
     const emit = opts.onEvent ?? (() => {})
     const meta = this.store.readMeta(projectId)
@@ -547,11 +752,23 @@ export class Orchestrator {
       this.store.appendEvent(projectId, 'plan: resumed from saved spec (no LLM call)')
     }
 
+    // ---------- direct (only when it never finished) ----------
+    if (this.cancelled) return this.abort(projectId, emit)
+    let directed = false
+    if (opts.craft !== 'classic' && (!spec.design || spec.crafts.length < spec.scenes.length)) {
+      spec = await this.runDirect(projectId, spec, meta.prompt, emit)
+      directed = true
+    } else if (spec.crafts.some((c) => c.background === 'plate' && !c.plate?.file)) {
+      spec = await this.runPlates(projectId, spec, emit, this.providerFor())
+      this.store.saveSpec(projectId, spec)
+      directed = true
+    }
+
     // ---------- compose ----------
     if (this.cancelled) return this.abort(projectId, emit)
     const composition = join(this.store.dir(projectId), 'index.html')
     let audio: Awaited<ReturnType<Orchestrator['runCompose']>> = { clips: [], captions: [], hasNarration: false }
-    if (!existsSync(composition)) {
+    if (!existsSync(composition) || directed) {
       audio = await this.runCompose(projectId, spec, emit)
     } else {
       this.store.appendEvent(projectId, 'compose: resumed (composition intact)')
@@ -562,7 +779,7 @@ export class Orchestrator {
     if (this.cancelled) return this.abort(projectId, emit)
     const state = this.store.readState(projectId)
     let qa: CheckReport
-    if (state.stages.qa.status === 'done' && existsSync(composition)) {
+    if (state.stages.qa.status === 'done' && existsSync(composition) && !directed) {
       qa = { ok: true, errors: [], warnings: [] }
       this.store.appendEvent(projectId, 'qa: resumed (already passed)')
       emit({ stage: 'qa', status: 'done', clean: true, warnings: 0 })

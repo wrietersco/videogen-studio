@@ -1,6 +1,7 @@
 import type {
   GenerateJSONRequest,
   GenerateTextRequest,
+  ImageGenRequest,
   LLMProvider,
   ModelInfo,
   ProviderId
@@ -9,7 +10,7 @@ import { ProviderError } from './types'
 
 /**
  * Gemini adapter — generateContent with responseSchema (structured output),
- * inline_data vision. No image-gen/TTS in this adapter.
+ * inline_data vision, image generation via the Gemini image model. No TTS.
  */
 
 const API = 'https://generativelanguage.googleapis.com/v1beta'
@@ -20,7 +21,11 @@ export class GeminiProvider implements LLMProvider {
   readonly id: ProviderId = 'gemini'
   readonly label = 'Google (Gemini)'
 
-  constructor(private readonly key: KeyFn, private readonly modelOverride?: () => string | undefined) {}
+  constructor(
+    private readonly key: KeyFn,
+    private readonly modelOverride?: () => string | undefined,
+    private readonly imageModelOverride?: () => string | undefined
+  ) {}
 
   async isConfigured(): Promise<boolean> {
     return this.key().length > 0
@@ -86,6 +91,25 @@ export class GeminiProvider implements LLMProvider {
       }
     )
     return json.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? ''
+  }
+
+  /** native image output (aspect ratio is requested; the plate engine crops to the exact canvas) */
+  async generateImage(req: ImageGenRequest): Promise<Buffer> {
+    const model = this.imageModelOverride?.() ?? 'gemini-2.5-flash-image'
+    const r = req.width / req.height
+    const aspectRatio = r > 1.5 ? '16:9' : r > 1.1 ? '4:3' : r > 0.9 ? '1:1' : r > 0.7 ? '4:5' : '9:16'
+    const json = await this.request<{ candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string }; inline_data?: { data?: string } }> } }> }>(
+      'POST',
+      `/models/${model}:generateContent`,
+      {
+        contents: [{ role: 'user', parts: [{ text: req.styleHint ? `${req.prompt} Style: ${req.styleHint}` : req.prompt }] }],
+        generationConfig: { responseModalities: ['IMAGE'], imageConfig: { aspectRatio } }
+      }
+    )
+    const parts = json.candidates?.[0]?.content?.parts ?? []
+    const b64 = parts.map((p) => p.inlineData?.data ?? p.inline_data?.data).find(Boolean)
+    if (!b64) throw new ProviderError('image generation returned no image', this.id, 'server')
+    return Buffer.from(b64, 'base64')
   }
 
   private buildContents(system: string, prompt: string, images?: Array<{ mimeType: string; base64: string }>) {

@@ -54,4 +54,21 @@ for (const [name, family, variant] of FONTS) {
     console.warn(`! could not fetch ${name}: ${e.message} — compositions will fall back to system fonts`)
   }
 }
+// 3. Directed-scene fonts — shipped in npm packages (OFL), copied locally
+const CRAFT_FONTS = [
+  ['Inter-Var', '@fontsource-variable/inter/files/inter-latin-wght-normal.woff2'],
+  ['BarlowCondensed-ExtraBold', '@fontsource/barlow-condensed/files/barlow-condensed-latin-800-normal.woff2'],
+  ['InstrumentSerif-Italic', '@fontsource/instrument-serif/files/instrument-serif-latin-400-italic.woff2'],
+  ['JetBrainsMono-Medium', '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2'],
+  ['JetBrainsMono-Bold', '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-700-normal.woff2']
+]
+for (const [name, pkgPath] of CRAFT_FONTS) {
+  const src = resolve(root, 'node_modules', pkgPath)
+  if (!existsSync(src)) {
+    console.warn(`! ${pkgPath} missing — run npm install`)
+    continue
+  }
+  copyFileSync(src, resolve(vendor, 'fonts', `${name}.woff2`))
+  console.log(`✓ ${name}.woff2`)
+}
 console.log('vendor setup complete')

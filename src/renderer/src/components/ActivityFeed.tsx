@@ -2,6 +2,9 @@ import type { PipelineEvent } from '../api'
 
 const STAGE_META: Record<PipelineEvent['stage'], { label: string; icon: string }> = {
   plan: { label: 'Planner', icon: '🧠' },
+  direct: { label: 'Scene Director', icon: '🎬' },
+  plates: { label: 'Plate Painter', icon: '🖼' },
+  critic: { label: 'Vision Critic', icon: '👁' },
   compose: { label: 'Composer', icon: '🎼' },
   qa: { label: 'QA Agents', icon: '🛡' },
   thumbs: { label: 'Storyboard', icon: '📸' },
@@ -33,6 +36,35 @@ function toRows(events: PipelineEvent[]): Row[] {
           detail: `“${e.title}” — ${e.scenes} scenes · ${e.durationSec}s`,
           state: 'ok'
         })
+    }
+    if (e.stage === 'direct') {
+      if (e.status === 'started') rows.push({ key, ...meta, detail: `directing ${e.total} scene(s)…`, state: 'run' })
+      if (e.status === 'film') rows.push({ key, ...meta, detail: `look: ${e.look} · “${e.series}”`, state: 'info' })
+      if (e.status === 'scene')
+        rows.push({
+          key,
+          ...meta,
+          detail: `scene ${e.sceneIndex + 1}: “${e.headline.slice(0, 48)}” · ${e.background === 'plate' ? 'painted plate' : 'grid'}${e.widgets.length ? ' · ' + e.widgets.join(' + ') : ''}`,
+          state: 'ok'
+        })
+      if (e.status === 'done') rows.push({ key, ...meta, detail: 'every scene directed', state: 'ok' })
+    }
+    if (e.stage === 'plates') {
+      if (e.status === 'started') rows.push({ key, ...meta, detail: `painting ${e.total} still(s) + depth maps…`, state: 'run' })
+      if (e.status === 'scene') rows.push({ key, ...meta, detail: `scene ${e.sceneIndex + 1} painted · depth mapped`, state: 'ok' })
+      if (e.status === 'failed') rows.push({ key, ...meta, detail: `scene ${e.sceneIndex + 1}: ${e.error} — using grid`, state: 'warn' })
+      if (e.status === 'done') rows.push({ key, ...meta, detail: `${e.made} plate(s) ready`, state: 'ok' })
+    }
+    if (e.stage === 'critic') {
+      if (e.status === 'started') rows.push({ key, ...meta, detail: 'watching the rendered frames…', state: 'run' })
+      if (e.status === 'scene')
+        rows.push({
+          key,
+          ...meta,
+          detail: `scene ${e.sceneIndex + 1}: ${e.score}/10${e.notes[0] ? ' — ' + e.notes[0].slice(0, 70) : ''}`,
+          state: e.score >= 7 ? 'ok' : 'warn'
+        })
+      if (e.status === 'done') rows.push({ key, ...meta, detail: e.revised ? `${e.revised} scene(s) sent back and rebuilt` : 'all scenes approved', state: 'ok' })
     }
     if (e.stage === 'compose') {
       if (e.status === 'started') rows.push({ key, ...meta, detail: 'writing the composition…', state: 'run' })
