@@ -47,6 +47,8 @@ export interface TTSRequest {
   voice?: string
   /** delivery direction (tone, pace, emphasis) for steerable voices */
   instructions?: string
+  /** overrides the provider's default speech model */
+  model?: string
   /** provider-specific voice/model overrides */
   options?: Record<string, unknown>
 }
@@ -60,6 +62,8 @@ export interface TTSResult {
 
 export interface ImageGenRequest {
   prompt: string
+  /** overrides the provider's configured image model (Settings → Media models) */
+  model?: string
   width: number
   height: number
   styleHint?: string

@@ -12,6 +12,7 @@ import type { ProviderId } from './providers/types'
 import { DEFAULT_SETTINGS, type Settings } from './settings'
 import { ensureBrowser } from './rendererService/hyperframes'
 import { projectsDir, appRoot } from './paths'
+import { meter, readProjectUsage, type UsageRun } from './usage/meter'
 
 /**
  * Electron main process — owns the pipeline, project store, provider keys
@@ -138,6 +139,37 @@ function emit(channel: string, payload: unknown): void {
   win?.webContents.send(channel, payload)
 }
 
+/** pipeline events also tell the usage meter which stage is spending */
+function pipelineEvent(ev: unknown): void {
+  const e = ev as { stage?: string; status?: string }
+  if (e.stage && (e.status === 'started' || e.status === 'fixing')) meter.setStage(e.stage === 'compose' ? 'voice & compose' : e.stage)
+  emit('gen:event', ev)
+}
+
+/**
+ * One job at a time: opens a usage run, streams priced entries to the UI,
+ * and files the receipt into the project's usage.json when the job ends.
+ */
+function runJob(kind: UsageRun['kind'], projectId: string | null, job: () => Promise<unknown>): { ok: true } {
+  busy = true
+  meter.begin(kind)
+  job()
+    .catch((err) => {
+      if (!(err instanceof GenerationCancelled)) {
+        emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) })
+      }
+    })
+    .finally(() => {
+      const id = projectId ?? orchestrator.activeProjectId
+      const run = meter.end(id ? store.dir(id) : null)
+      if (run && id) emit('usage:run', { projectId: id, run })
+      busy = false
+    })
+  return { ok: true }
+}
+
+meter.onEntry((entry, run) => emit('usage:entry', { entry, totalUsd: run.totalUsd, savedUsd: run.savedUsd }))
+
 // ---------------- ipc ----------------
 
 function registerIpc(): void {
@@ -210,20 +242,9 @@ function registerIpc(): void {
 
   ipcMain.handle('gen:generate', async (_e, opts: GenerateOptions) => {
     if (busy) return { ok: false, error: 'A generation job is already running' }
-    busy = true
-    const onEvent = (ev: unknown) => emit('gen:event', ev)
-    // run async; UI streams events
-    orchestrator
-      .generate({ ...opts, quality: settings.quality, gpu: settings.allowGpu, craft: settings.craft, onEvent })
-      .catch((err) => {
-        if (!(err instanceof GenerationCancelled)) {
-          emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) })
-        }
-      })
-      .finally(() => {
-        busy = false
-      })
-    return { ok: true }
+    return runJob('generate', null, () =>
+      orchestrator.generate({ ...opts, quality: settings.quality, gpu: settings.allowGpu, craft: settings.craft, onEvent: pipelineEvent })
+    )
   })
   ipcMain.handle('gen:cancel', () => {
     orchestrator.cancel()
@@ -233,57 +254,32 @@ function registerIpc(): void {
 
   ipcMain.handle('gen:rerender', async (_e, projectId: string) => {
     if (busy) return { ok: false, error: 'Another job is running' }
-    busy = true
-    orchestrator
-      .rerender(projectId, { quality: settings.quality, gpu: settings.allowGpu, onEvent: (ev) => emit('gen:event', ev) })
-      .catch((err) => {
-        if (!(err instanceof GenerationCancelled)) {
-          emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) })
-        }
-      })
-      .finally(() => {
-        busy = false
-      })
-    return { ok: true }
+    return runJob('rerender', projectId, () =>
+      orchestrator.rerender(projectId, { quality: settings.quality, gpu: settings.allowGpu, onEvent: pipelineEvent })
+    )
   })
 
   ipcMain.handle('gen:revise', async (_e, projectId: string, sceneId: string, feedback: string) => {
     if (busy) return { ok: false, error: 'Another job is running' }
     if (!feedback || !feedback.trim()) return { ok: false, error: 'Feedback is empty' }
-    busy = true
-    orchestrator
-      .reviseScene(projectId, sceneId, feedback.trim(), {
+    return runJob('revise', projectId, () =>
+      orchestrator.reviseScene(projectId, sceneId, feedback.trim(), {
         quality: settings.quality,
         gpu: settings.allowGpu,
         craft: settings.craft,
-        onEvent: (ev) => emit('gen:event', ev)
+        onEvent: pipelineEvent
       })
-      .catch((err) => {
-        if (!(err instanceof GenerationCancelled)) {
-          emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) })
-        }
-      })
-      .finally(() => {
-        busy = false
-      })
-    return { ok: true }
+    )
   })
 
   ipcMain.handle('gen:resume', async (_e, projectId: string) => {
     if (busy) return { ok: false, error: 'Another job is running' }
-    busy = true
-    orchestrator
-      .resume(projectId, { quality: settings.quality, gpu: settings.allowGpu, craft: settings.craft, onEvent: (ev) => emit('gen:event', ev) })
-      .catch((err) => {
-        if (!(err instanceof GenerationCancelled)) {
-          emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) })
-        }
-      })
-      .finally(() => {
-        busy = false
-      })
-    return { ok: true }
+    return runJob('resume', projectId, () =>
+      orchestrator.resume(projectId, { quality: settings.quality, gpu: settings.allowGpu, craft: settings.craft, onEvent: pipelineEvent })
+    )
   })
+
+  ipcMain.handle('project:usage', (_e, id: string) => readProjectUsage(store.dir(id)))
 
   ipcMain.handle('project:state', (_e, id: string) => store.readState(id))
 

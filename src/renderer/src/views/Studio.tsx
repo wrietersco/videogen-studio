@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type PipelineEvent, type PlatformId, type StyleFamily } from '../api'
 import { ActivityFeed } from '../components/ActivityFeed'
+import { CostReceipt } from '../components/CostReceipt'
 
 const PLATFORMS: Array<{ id: PlatformId; label: string; hint: string }> = [
   { id: 'tiktok', label: 'TikTok', hint: '9:16 · punchy' },
@@ -235,12 +236,15 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
                 style={{ width: `${Math.max(4, progress)}%` }}
               />
             </div>
-            <div className="mt-1.5 text-xs text-white/40">
+            <div className="mt-1.5 flex items-center justify-between gap-3 text-xs text-white/40">
+              <span>
               {progress > 0
                 ? `rendering — ${progress}%`
                 : board
                   ? 'directing, painting, composing & reviewing…'
                   : 'planning…'}
+              </span>
+              <CostReceipt live compact />
             </div>
           </div>
         )}
@@ -339,6 +343,9 @@ export default function Studio({ onOpenEditor }: { onOpenEditor: () => void }) {
               >
                 Open in Editor
               </button>
+            </div>
+            <div className="mt-3">
+              <CostReceipt projectId={done.projectId} key={done.projectId} />
             </div>
           </div>
         )}

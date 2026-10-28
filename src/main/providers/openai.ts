@@ -9,6 +9,7 @@ import type {
   TTSResult
 } from './types'
 import { ProviderError } from './types'
+import { meter } from '../usage/meter'
 
 /**
  * OpenAI adapter — Chat Completions with structured outputs (json_schema),
@@ -197,14 +198,14 @@ export class OpenAIProvider implements LLMProvider {
     }
     if (!reasoning) body.temperature = req.temperature ?? 0.8
     try {
-      const json = await this.request<{ choices: Array<{ message: { content: string } }> }>('POST', '/chat/completions', body)
+      const json = await this.chat(model, body)
       const text = json.choices[0]?.message?.content ?? ''
       return this.parseJSON<T>(text)
     } catch (e) {
       if (e instanceof ProviderError && e.kind === 'invalid-request' && /temperature/i.test(e.message)) {
         // future model rejects sampling params — retry without them
         delete body.temperature
-        const json = await this.request<{ choices: Array<{ message: { content: string } }> }>('POST', '/chat/completions', body)
+        const json = await this.chat(model, body)
         const text = json.choices[0]?.message?.content ?? ''
         return this.parseJSON<T>(text)
       }
@@ -229,12 +230,12 @@ export class OpenAIProvider implements LLMProvider {
     }
     if (!reasoning) body.temperature = req.temperature ?? 0.8
     try {
-      const json = await this.request<{ choices: Array<{ message: { content: string } }> }>('POST', '/chat/completions', body)
+      const json = await this.chat(model, body)
       return json.choices[0]?.message?.content ?? ''
     } catch (e) {
       if (e instanceof ProviderError && e.kind === 'invalid-request' && /temperature/i.test(e.message)) {
         delete body.temperature
-        const json = await this.request<{ choices: Array<{ message: { content: string } }> }>('POST', '/chat/completions', body)
+        const json = await this.chat(model, body)
         return json.choices[0]?.message?.content ?? ''
       }
       throw e
@@ -242,11 +243,24 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async generateImage(req: ImageGenRequest): Promise<Buffer> {
-    const json = await this.request<{ data: Array<{ b64_json?: string }> }>('POST', '/images/generations', {
-      model: this.imageModelOverride?.() ?? DEFAULT_IMAGE_MODEL,
+    const model = req.model ?? this.imageModelOverride?.() ?? DEFAULT_IMAGE_MODEL
+    const size = nearestImageSize(req.width, req.height)
+    const json = await this.request<{ data: Array<{ b64_json?: string }>; usage?: { input_tokens?: number; output_tokens?: number } }>('POST', '/images/generations', {
+      model,
       prompt: req.styleHint ? `${req.prompt}. Style: ${req.styleHint}` : req.prompt,
-      size: nearestImageSize(req.width, req.height),
+      size,
       n: 1
+    })
+    // gpt-image reports image tokens; estimate from the size table when it doesn't
+    meter.record({
+      kind: 'image',
+      provider: 'openai',
+      model,
+      usage: {
+        inputTokens: json.usage?.input_tokens ?? Math.ceil(req.prompt.length / 4),
+        outputTokens: json.usage?.output_tokens ?? (size === '1024x1024' ? 4160 : 6240),
+        images: 1
+      }
     })
     const b64 = json.data[0]?.b64_json
     if (!b64) throw new ProviderError('image generation returned no data', this.id, 'server')
@@ -255,19 +269,28 @@ export class OpenAIProvider implements LLMProvider {
 
   /** TTS via /audio/speech, then Whisper word timestamps for caption sync. */
   async tts(req: TTSRequest): Promise<TTSResult> {
+    const model = req.model ?? 'gpt-4o-mini-tts'
     const speech = await this.requestRaw('POST', '/audio/speech', {
-      model: 'gpt-4o-mini-tts',
+      model,
       voice: req.voice ?? 'nova',
       input: req.text,
       ...(req.instructions ? { instructions: req.instructions } : {}),
       response_format: 'mp3'
     })
     const audio = Buffer.from(await speech.arrayBuffer())
-    const words = await this.transcribeWords(audio)
+    const { words, seconds } = await this.transcribeWords(audio)
+    // speech returns no usage: ~4 chars/token in, ~21 audio tokens/s out (OpenAI's $0.015/min estimate)
+    const sec = seconds || audio.length / 16000
+    meter.record({
+      kind: 'voice',
+      provider: 'openai',
+      model,
+      usage: { inputTokens: Math.ceil((req.text.length + (req.instructions?.length ?? 0)) / 4), outputTokens: Math.round(sec * 20.8), seconds: sec }
+    })
     return { audio, mimeType: 'audio/mpeg', words }
   }
 
-  private async transcribeWords(audio: Buffer): Promise<TTSResult['words']> {
+  private async transcribeWords(audio: Buffer): Promise<{ words: TTSResult['words']; seconds: number }> {
     try {
       const form = new FormData()
       form.append('file', new Blob([new Uint8Array(audio)], { type: 'audio/mpeg' }), 'narration.mp3')
@@ -279,12 +302,29 @@ export class OpenAIProvider implements LLMProvider {
         headers: { Authorization: `Bearer ${this.key()}` },
         body: form
       })
-      if (!res.ok) return []
-      const json = (await res.json()) as { words?: Array<{ word: string; start: number; end: number }> }
-      return (json.words ?? []).map((w) => ({ word: w.word, startSec: w.start, endSec: w.end }))
+      if (!res.ok) return { words: [], seconds: 0 }
+      const json = (await res.json()) as { duration?: number; words?: Array<{ word: string; start: number; end: number }> }
+      const seconds = json.duration ?? json.words?.at(-1)?.end ?? 0
+      meter.record({ kind: 'transcribe', provider: 'openai', model: 'whisper-1', usage: { seconds } })
+      return { words: (json.words ?? []).map((w) => ({ word: w.word, startSec: w.start, endSec: w.end })), seconds }
     } catch {
-      return [] // captions degrade to scene-level sync
+      return { words: [], seconds: 0 } // captions degrade to scene-level sync
     }
+  }
+
+  /** one chat-completions call, metered by the usage it reports */
+  private async chat(model: string, body: Record<string, unknown>) {
+    const json = await this.request<{
+      choices: Array<{ message: { content: string } }>
+      usage?: { prompt_tokens?: number; completion_tokens?: number }
+    }>('POST', '/chat/completions', body)
+    meter.record({
+      kind: 'text',
+      provider: 'openai',
+      model,
+      usage: { inputTokens: json.usage?.prompt_tokens ?? 0, outputTokens: json.usage?.completion_tokens ?? 0 }
+    })
+    return json
   }
 
   private parseJSON<T>(text: string): T {

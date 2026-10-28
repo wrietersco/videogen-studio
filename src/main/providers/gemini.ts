@@ -7,6 +7,7 @@ import type {
   ProviderId
 } from './types'
 import { ProviderError } from './types'
+import { meter } from '../usage/meter'
 
 /**
  * Gemini adapter — generateContent with responseSchema (structured output),
@@ -16,6 +17,12 @@ import { ProviderError } from './types'
 const API = 'https://generativelanguage.googleapis.com/v1beta'
 
 type KeyFn = () => string
+
+const DEFAULT_MODEL = 'gemini-3.8-flash'
+// gemini-2.5-flash-image was shut down 2026-10-02
+const DEFAULT_IMAGE_MODEL = 'gemini-3.1-flash-image'
+
+type UsageMeta = { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number } }
 
 export class GeminiProvider implements LLMProvider {
   readonly id: ProviderId = 'gemini'
@@ -53,7 +60,7 @@ export class GeminiProvider implements LLMProvider {
   }
 
   async generateJSON<T>(req: GenerateJSONRequest): Promise<T> {
-    const model = this.modelOverride?.() ?? 'gemini-2.5-flash'
+    const model = this.modelOverride?.() ?? DEFAULT_MODEL
     const { contents, system } = this.buildContents(req.system, req.prompt, req.images)
     const body = {
       contents,
@@ -65,11 +72,12 @@ export class GeminiProvider implements LLMProvider {
         maxOutputTokens: req.maxTokens ?? 8192
       }
     }
-    const json = await this.request<{ candidates: Array<{ content: { parts: Array<{ text?: string }> } }> }>(
+    const json = await this.request<{ candidates: Array<{ content: { parts: Array<{ text?: string }> } }> } & UsageMeta>(
       'POST',
       `/models/${model}:generateContent`,
       body
     )
+    this.meterText(model, json)
     const text = json.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? ''
     try {
       return JSON.parse(text) as T
@@ -79,9 +87,9 @@ export class GeminiProvider implements LLMProvider {
   }
 
   async generateText(req: GenerateTextRequest): Promise<string> {
-    const model = this.modelOverride?.() ?? 'gemini-2.5-flash'
+    const model = this.modelOverride?.() ?? DEFAULT_MODEL
     const { contents, system } = this.buildContents(req.system, req.prompt, req.images)
-    const json = await this.request<{ candidates: Array<{ content: { parts: Array<{ text?: string }> } }> }>(
+    const json = await this.request<{ candidates: Array<{ content: { parts: Array<{ text?: string }> } }> } & UsageMeta>(
       'POST',
       `/models/${model}:generateContent`,
       {
@@ -90,12 +98,13 @@ export class GeminiProvider implements LLMProvider {
         generationConfig: { temperature: req.temperature ?? 0.8, maxOutputTokens: req.maxTokens ?? 4096 }
       }
     )
+    this.meterText(model, json)
     return json.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? ''
   }
 
   /** native image output (aspect ratio is requested; the plate engine crops to the exact canvas) */
   async generateImage(req: ImageGenRequest): Promise<Buffer> {
-    const model = this.imageModelOverride?.() ?? 'gemini-2.5-flash-image'
+    const model = req.model ?? this.imageModelOverride?.() ?? DEFAULT_IMAGE_MODEL
     const r = req.width / req.height
     const aspectRatio = r > 1.5 ? '16:9' : r > 1.1 ? '4:3' : r > 0.9 ? '1:1' : r > 0.7 ? '4:5' : '9:16'
     const json = await this.request<{ candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string }; inline_data?: { data?: string } }> } }> }>(
@@ -106,10 +115,21 @@ export class GeminiProvider implements LLMProvider {
         generationConfig: { responseModalities: ['IMAGE'], imageConfig: { aspectRatio } }
       }
     )
+    meter.record({ kind: 'image', provider: 'gemini', model, usage: { images: 1 } })
     const parts = json.candidates?.[0]?.content?.parts ?? []
     const b64 = parts.map((p) => p.inlineData?.data ?? p.inline_data?.data).find(Boolean)
     if (!b64) throw new ProviderError('image generation returned no image', this.id, 'server')
     return Buffer.from(b64, 'base64')
+  }
+
+  private meterText(model: string, json: UsageMeta): void {
+    const u = json.usageMetadata
+    meter.record({
+      kind: 'text',
+      provider: 'gemini',
+      model,
+      usage: { inputTokens: u?.promptTokenCount ?? 0, outputTokens: (u?.candidatesTokenCount ?? 0) + (u?.thoughtsTokenCount ?? 0) }
+    })
   }
 
   private buildContents(system: string, prompt: string, images?: Array<{ mimeType: string; base64: string }>) {

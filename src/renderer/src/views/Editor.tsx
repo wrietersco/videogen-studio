@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type ProjectView, type VideoSpec } from '../api'
+import { CostReceipt } from '../components/CostReceipt'
 
 /**
  * Editor — project details: generated VideoSpec structure and composition source
@@ -143,6 +144,7 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
                     <span className="rounded bg-white/10 px-2 py-1 font-bold uppercase text-white/60">{spec.pacing}</span>
                     <span className="rounded bg-white/10 px-2 py-1 font-bold uppercase text-white/60">{spec.durationSec}s @ {spec.fps}fps</span>
                   </div>
+                  {activeId && <CostReceipt projectId={activeId} key={`${activeId}-${revising ? 'r' : 'i'}`} />}
                   {reviseError && (
                     <div className="slide-up rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-200">
                       {reviseError}

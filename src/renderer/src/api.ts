@@ -4,7 +4,9 @@ import type { PipelineEvent } from '../../main/pipeline/orchestrator'
 import type { ProjectMeta } from '../../main/store/projectStore'
 import type { ProviderId, ModelInfo } from '../../main/providers/types'
 import type { PlatformId, StyleFamily, VideoSpec } from '@shared/spec'
+import type { UsageEntry, UsageRun, ProjectUsage } from '../../main/usage/meter'
 
+export type { UsageEntry, UsageRun, ProjectUsage }
 export type { PipelineEvent, ProjectMeta, ProviderId, ModelInfo, PlatformId, StyleFamily, VideoSpec }
 
 export interface ProviderStatus {
@@ -51,6 +53,9 @@ declare global {
       cancel: () => Promise<boolean>
       busy: () => Promise<boolean>
       onEvent: (cb: (event: PipelineEvent) => void) => () => void
+      onUsage: (cb: (p: { entry: UsageEntry; totalUsd: number; savedUsd: number }) => void) => () => void
+      onUsageRun: (cb: (p: { projectId: string; run: UsageRun }) => void) => () => void
+      getProjectUsage: (id: string) => Promise<ProjectUsage>
       listProjects: () => Promise<ProjectMeta[]>
       getProject: (id: string) => Promise<ProjectView>
       deleteProject: (id: string) => Promise<{ ok: boolean; error?: string }>

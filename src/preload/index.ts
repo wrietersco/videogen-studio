@@ -19,6 +19,17 @@ const api = {
     ipcRenderer.on('gen:event', listener)
     return () => ipcRenderer.removeListener('gen:event', listener)
   },
+  onUsage: (cb: (payload: unknown) => void) => {
+    const listener = (_e: unknown, payload: unknown) => cb(payload)
+    ipcRenderer.on('usage:entry', listener)
+    return () => ipcRenderer.removeListener('usage:entry', listener)
+  },
+  onUsageRun: (cb: (payload: unknown) => void) => {
+    const listener = (_e: unknown, payload: unknown) => cb(payload)
+    ipcRenderer.on('usage:run', listener)
+    return () => ipcRenderer.removeListener('usage:run', listener)
+  },
+  getProjectUsage: (id: string) => ipcRenderer.invoke('project:usage', id),
   listProjects: () => ipcRenderer.invoke('projects:list'),
   getProject: (id: string) => ipcRenderer.invoke('project:get', id),
   deleteProject: (id: string) => ipcRenderer.invoke('project:delete', id),
