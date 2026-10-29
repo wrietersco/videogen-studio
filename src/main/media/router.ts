@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { extname, join } from 'node:path'
-import type { VideoSpec } from '@shared/spec'
+import type { FilmDesign, VideoSpec } from '@shared/spec'
 import { tokenize, type AssetMeta } from '@shared/assets'
 import { priceUsage, type UsageNumbers } from '@shared/pricing'
 import { orientationOf, type AssetLibrary } from '../assets/library'
@@ -15,7 +15,8 @@ import { beatGrid } from '../audio/score'
 import { musicBrief } from '../audio/cue'
 import { meter } from '../usage/meter'
 import type { KeyId, Settings } from '../settings'
-import { downloadStock, searchStock } from './stock'
+import { platePrompt } from '../director/plates'
+import { downloadStock, searchStock, stockQuery } from './stock'
 
 /**
  * Media router — the one place that decides where each asset comes from:
@@ -113,18 +114,27 @@ export class MediaRouter {
     return { provider: p.provider.id, model, usd: priceUsage(model, usage).usd, usage }
   }
 
-  /** library match for a plate: exact prompt first, then a close brief, then the user's own tagged uploads */
+  /** library match for a plate: exact prompt first, then a close brief, then a subject-matched stock photo, then the user's own tagged uploads */
   findPlate(req: Omit<PaintRequest, 'projectId'>): AssetMeta | null {
     const lib = this.d.library
     const key = plateKey(req.fullPrompt, req.width, req.height)
     const exact = lib.findByKey('image', key)
     if (exact) return exact
     const orientation = orientationOf(req.width, req.height)
+    const subject = tokenize(req.subjectLabel ?? '')
     const query = `${req.subjectLabel ?? ''} ${req.brief}`
     const close = lib.search(query, { kind: 'image', orientation, sources: ['generated', 'stock', 'builtin'], limit: 1 })[0]
     if (close && close.score >= 0.75) return close.asset
+    // stock photos can't honor the brief's art direction, so match them on the
+    // subject alone: every subject word in the photo's title/tags (prefetched
+    // downloads carry the subject as tags for exactly this lookup)
+    if (subject.length) {
+      for (const hit of lib.search(req.subjectLabel ?? '', { kind: 'image', orientation, sources: ['stock'], tags: ['plate'], limit: 5 })) {
+        const words = new Set([...tokenize(hit.asset.title), ...hit.asset.tags.flatMap(tokenize)])
+        if (subject.every((w) => words.has(w))) return hit.asset
+      }
+    }
     // uploads: every word of the subject is one of the user's tags/title words
-    const subject = tokenize(req.subjectLabel ?? '')
     if (subject.length) {
       for (const hit of lib.search(req.subjectLabel ?? '', { kind: 'image', sources: ['uploaded'], limit: 5 })) {
         const words = new Set([...tokenize(hit.asset.title), ...hit.asset.tags.flatMap(tokenize)])
@@ -139,7 +149,9 @@ export class MediaRouter {
     if (this.reuse && !opts.fresh) {
       const hit = this.findPlate(req)
       const path = hit ? lib.path(hit.id) : null
-      if (hit && path) {
+      // a stocked photo only stands in for a plate when stock is what's asked for —
+      // never let yesterday's free download shadow the painter the user chose
+      if (hit && path && (hit.source !== 'stock' || this.useStock())) {
         lib.markUsed(hit.id, req.projectId)
         const est = this.imageCostEstimate()
         if (est.usd > 0)
@@ -149,10 +161,11 @@ export class MediaRouter {
     }
     const tags = [...tokenize(req.subjectLabel ?? ''), ...(req.look ? [req.look] : []), 'plate']
     if (this.useStock() && !(opts.fresh && this.painter())) {
-      const query = req.subjectLabel?.trim() || tokenize(req.brief).slice(0, 4).join(' ')
+      const query = stockQuery(req.subjectLabel, req.brief)
       const { results } = await searchStock('image', query, { orientation: orientationOf(req.width, req.height), pexelsKey: this.d.key('pexels'), pixabayKey: this.d.key('pixabay') })
       if (!results.length) throw new Error(`no free stock photo found for "${query}"`)
-      const asset = await downloadStock(lib, results[0], tags)
+      // stamped with the plate's reuse key: the same brief next time is a library hit, not a re-download
+      const asset = await downloadStock(lib, results[0], tags, { key: plateKey(req.fullPrompt, req.width, req.height) })
       lib.markUsed(asset.id, req.projectId)
       const path = lib.path(asset.id)
       if (!path) throw new Error('stock download vanished')
@@ -397,6 +410,12 @@ export class MediaRouter {
         if (exact.source === 'generated') meter.record({ kind: 'video', provider: 'gemini', model, usage: { outputTokens: (exact.durationSec ?? 8) * 5792 }, saved: true, note: `reused ${exact.id}` })
         return use(exact)
       }
+      // prefetched stock clips carry the subject as tags — matching on the full
+      // motion prompt would dilute the score below the reuse bar
+      const ready = lib
+        .search(req.subjectLabel ?? '', { kind: 'video', orientation, sources: ['stock'], tags: ['motion'], minDurationSec: req.durationSec * 0.6, limit: 5 })
+        .find((h) => h.score >= 0.75)
+      if (ready) return use(ready.asset)
       const close = lib.search(`${req.subjectLabel ?? ''} ${req.prompt}`, { kind: 'video', orientation, minDurationSec: req.durationSec * 0.6, limit: 1 })[0]
       if (close && close.score >= 0.75) return use(close.asset)
     }
@@ -418,11 +437,13 @@ export class MediaRouter {
       return use(a)
     }
     if (p === 'stock' && (this.d.key('pexels') || this.d.key('pixabay'))) {
-      const query = req.subjectLabel?.trim() || tokenize(req.prompt).slice(0, 4).join(' ')
-      const { results } = await searchStock('video', query, { orientation, pexelsKey: this.d.key('pexels'), pixabayKey: this.d.key('pixabay') })
-      const pick = results.find((r) => (r.durationSec ?? 0) >= req.durationSec * 0.8)
+      const query = stockQuery(req.subjectLabel, req.prompt)
+      const minSec = req.durationSec * 0.8
+      const { results } = await searchStock('video', query, { orientation, minDurationSec: minSec, pexelsKey: this.d.key('pexels'), pixabayKey: this.d.key('pixabay') })
+      const pick = results.find((r) => (r.durationSec ?? 0) >= minSec)
       if (!pick) return null
-      return use(await downloadStock(lib, pick, [...tokenize(query), 'motion']))
+      // stamped with the motion-prompt key: the same scene next time is an exact library hit
+      return use(await downloadStock(lib, pick, [...tokenize(query), 'motion'], { key }))
     }
     return null
   }
@@ -432,6 +453,91 @@ export class MediaRouter {
     const [p, model] = split(this.d.settings().media.video || 'stock')
     return p === 'gemini' && model ? model : GEMINI_VIDEO_MODEL
   }
+
+  // ---------------- stock prefetch (on-the-go downloads) ----------------
+
+  /**
+   * While the directors are still talking to the model, fetch the best free
+   * stock match for every scene that still needs a still (plus a matching
+   * clip for motion scenes when clips come from stock) straight into the
+   * library: ranked first pick, tagged with the subject, stamped with the
+   * plate's reuse key — so the plate workers find them instantly instead of
+   * each searching and downloading on its own. Best-effort: a failure or a
+   * slow network just means the worker falls back to a live search.
+   */
+  async prefetchForSpec(req: {
+    spec: VideoSpec
+    design: FilmDesign
+    width: number
+    height: number
+    projectId: string
+    onNote?: (msg: string) => void
+  }): Promise<{ images: number; clips: number }> {
+    const lib = this.d.library
+    if (!this.reuse) return { images: 0, clips: 0 } // 'fresh' ignores the library — prefetch would be wasted bytes
+    const wantImages = this.useStock()
+    const wantClips =
+      split(this.d.settings().media.video || 'stock')[0] === 'stock' && Boolean(this.d.key('pexels') || this.d.key('pixabay'))
+    if (!wantImages && !wantClips) return { images: 0, clips: 0 }
+    const stockOpts = { orientation: orientationOf(req.width, req.height), pexelsKey: this.d.key('pexels'), pixabayKey: this.d.key('pixabay') }
+    const craftOf = new Map(req.spec.crafts.map((c) => [c.sceneId, c]))
+    const imagesPending = new Set<string>()
+    const clipsPending = new Set<string>()
+    const jobs: Array<() => Promise<'image' | 'video' | null>> = []
+    for (const scene of req.spec.scenes) {
+      const c = craftOf.get(scene.id)
+      const plate = c?.plate
+      if (!c || c.background !== 'plate' || !plate || plate.file) continue
+      if (wantImages && imagesPending.size < 6) {
+        const fullPrompt = platePrompt(plate, req.design, req.width, req.height)
+        const key = plateKey(fullPrompt, req.width, req.height)
+        // the library can already serve this scene (previous video, earlier run) — nothing to fetch
+        const have =
+          lib.findByKey('image', key) ??
+          this.findPlate({ brief: plate.prompt, fullPrompt, subjectLabel: plate.subjectLabel, look: req.design.look, width: req.width, height: req.height })
+        if (!have) {
+          imagesPending.add(key)
+          jobs.push(async () => {
+            if (lib.findByKey('image', key)) return null // a sibling job just filed it
+            const { results } = await searchStock('image', stockQuery(plate.subjectLabel, plate.prompt), stockOpts)
+            if (!results[0]) return null
+            await downloadStock(lib, results[0], [...tokenize(plate.subjectLabel), 'plate'], { key })
+            return 'image'
+          })
+        }
+      }
+      if (wantClips && plate.motion && clipsPending.size < 3) {
+        clipsPending.add(plate.subjectLabel || plate.prompt)
+        jobs.push(async () => {
+          const minSec = scene.durationSec * 0.8
+          const { results } = await searchStock('video', stockQuery(plate.subjectLabel, plate.prompt), { ...stockOpts, minDurationSec: minSec })
+          const pick = results.find((r) => (r.durationSec ?? 0) >= minSec)
+          if (!pick) return null
+          await downloadStock(lib, pick, [...tokenize(plate.subjectLabel), 'motion'])
+          return 'video'
+        })
+      }
+    }
+    const deadline = Date.now() + 20_000
+    let cursor = 0
+    let images = 0
+    let clips = 0
+    const worker = async () => {
+      while (cursor < jobs.length && Date.now() < deadline) {
+        try {
+          const kind = await jobs[cursor++]()
+          if (kind === 'image') images += 1
+          if (kind === 'video') clips += 1
+        } catch {
+          /* prefetch is best-effort — the plate worker will search live instead */
+        }
+      }
+    }
+    await Promise.all([worker(), worker()])
+    if ((images || clips) && req.onNote) req.onNote(`stock prefetch: ${images} photo(s)${clips ? ` + ${clips} clip(s)` : ''} ready in the library`)
+    return { images, clips }
+  }
+
 
   /** generate a clip with Gemini (reusing an identical earlier one) and file it */
   async clipToLibrary(

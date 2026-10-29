@@ -155,6 +155,8 @@ export class Orchestrator {
   private cancelled = false
   private lookHint: GenerateOptions['lookHint']
   private activeJobId: string | null = null
+  /** on-the-go stock downloads fired at the end of direction (see MediaRouter.prefetchForSpec) */
+  private prefetch: Promise<{ images: number; clips: number } | null> | null = null
 
   constructor(
     private readonly store: ProjectStore,
@@ -573,6 +575,21 @@ export class Orchestrator {
     this.track(projectId, 'direct', 'done', `${design.look} · ${next.crafts.length} scenes directed · ${plates} plate(s)${clips ? ` · ${clips} moving` : ''}`)
     emit({ stage: 'direct', status: 'done' })
     if (this.cancelled) return next
+    // on-the-go stock: rank + download the best free matches into the library
+    // while the plate stage spins up; it waits briefly, then searches live
+    const canvas = PLATFORM_PRESETS[next.platform]
+    this.prefetch = this.media
+      ? this.media
+          .prefetchForSpec({
+            spec: next,
+            design,
+            width: canvas.width,
+            height: canvas.height,
+            projectId,
+            onNote: (msg) => this.store.appendEvent(projectId, msg)
+          })
+          .catch(() => null)
+      : null
     next = await this.runPlates(projectId, next, emit, provider)
     this.store.saveSpec(projectId, next)
     return next
@@ -610,6 +627,10 @@ export class Orchestrator {
     emit({ stage: 'plates', status: 'started', total: todo.length })
     const preset = PLATFORM_PRESETS[spec.platform]
     const indexOf = new Map(spec.scenes.map((s, i) => [s.id, i]))
+    // the prefetch fired at the end of direction — give its downloads a moment to land
+    const pre = this.prefetch
+    this.prefetch = null
+    if (pre) await Promise.race([pre, new Promise<null>((r) => setTimeout(() => r(null), 45_000))])
     let made = 0
     let cursor = 0
     const worker = async () => {

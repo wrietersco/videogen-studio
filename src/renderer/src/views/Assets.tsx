@@ -414,7 +414,7 @@ function StockPanel({ initialKind, onClose, onAdded }: { initialKind: AssetKind;
   }
 
   return (
-    <Modal title="🌐 Free stock" subtitle="Openverse (CC0 / CC BY), Pexels and Pixabay — licence and credit are saved with every download." onClose={onClose}>
+    <Modal title="🌐 Free stock" subtitle="Openverse, Wikimedia Commons (no key needed), Pexels and Pixabay — best matches first, licence and credit saved with every download." onClose={onClose}>
       <div className="flex flex-wrap items-center gap-2">
         {(['image', 'video', 'music'] as AssetKind[]).map((k) => (
           <Chip key={k} active={kind === k} onClick={() => setKind(k)}>

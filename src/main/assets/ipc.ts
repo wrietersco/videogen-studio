@@ -125,7 +125,7 @@ export function registerAssetIpc(deps: { library: AssetLibrary; router: MediaRou
   })
   ipcMain.handle('stock:download', async (_e, r: StockResult, tags: string[] = []) => {
     // only results shaped by our own connectors, over https
-    if (!['openverse', 'pexels', 'pixabay'].includes(r?.provider) || !/^https:\/\//.test(r?.downloadUrl ?? '')) throw new Error('not a stock result')
+    if (!['openverse', 'wikimedia', 'pexels', 'pixabay'].includes(r?.provider) || !/^https:\/\//.test(r?.downloadUrl ?? '')) throw new Error('not a stock result')
     return downloadStock(library, r, tags)
   })
 
