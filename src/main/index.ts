@@ -14,6 +14,7 @@ import { DEFAULT_MEDIA, DEFAULT_SETTINGS, type KeyId, type Settings } from './se
 import { AssetLibrary } from './assets/library'
 import { registerAssetIpc, registerAssetScheme } from './assets/ipc'
 import { MediaRouter } from './media/router'
+import { applyAutopilot, decide } from './autopilot'
 import { ensureBrowser } from './rendererService/hyperframes'
 import { projectsDir, appRoot, libraryDir, builtinPackDir } from './paths'
 import { meter, readProjectUsage, type UsageRun } from './usage/meter'
@@ -37,7 +38,7 @@ const keyOf = (id: KeyId): string => {
 }
 const media = new MediaRouter({
   library,
-  settings: () => settings,
+  settings: () => runSettings ?? settings,
   key: keyOf,
   provider: (id) => providerRegistry.get(id),
   autoImageProvider: () => providerRegistry.imageProvider()
@@ -53,6 +54,8 @@ const orchestrator = new Orchestrator(
 
 const settingsPath = join(app.getPath('userData'), 'settings.json')
 let settings: Settings = { ...DEFAULT_SETTINGS }
+/** autopilot's per-video settings; null outside a generate run (then the user's own settings apply) */
+let runSettings: Settings | null = null
 
 function loadSettings(): void {
   if (!existsSync(settingsPath)) return
@@ -253,6 +256,7 @@ function registerIpc(): void {
     if (patch.media) settings.media = { ...settings.media, ...patch.media }
     if (patch.reuse === 'smart' || patch.reuse === 'fresh') settings.reuse = patch.reuse
     if (patch.sharing === 'local' || patch.sharing === 'shareable') settings.sharing = patch.sharing
+    if (typeof patch.autopilot === 'boolean') settings.autopilot = patch.autopilot
     saveSettings()
     providerRegistry.reconfigure(settings)
     return true
@@ -311,9 +315,26 @@ function registerIpc(): void {
 
   ipcMain.handle('gen:generate', async (_e, opts: GenerateOptions) => {
     if (busy) return { ok: false, error: 'A generation job is already running' }
-    return runJob('generate', null, () =>
-      orchestrator.generate({ ...opts, quality: settings.quality, gpu: settings.allowGpu, craft: settings.craft, onEvent: pipelineEvent })
-    )
+    let pilot: ReturnType<typeof decide> | null = null
+    if (settings.autopilot) {
+      pilot = decide({ prompt: opts.prompt, durationHintSec: opts.durationHintSec, settings, imageAvailable: media.imageAvailable() })
+      runSettings = applyAutopilot(settings, pilot)
+    }
+    try {
+      return await runJob('generate', null, () =>
+        orchestrator.generate({
+          ...opts,
+          quality: settings.quality,
+          gpu: settings.allowGpu,
+          craft: settings.craft,
+          lookHint: pilot?.look,
+          autopilotNotes: pilot?.reasons,
+          onEvent: pipelineEvent
+        })
+      )
+    } finally {
+      runSettings = null
+    }
   })
   ipcMain.handle('gen:cancel', () => {
     orchestrator.cancel()

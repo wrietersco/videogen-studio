@@ -87,6 +87,7 @@ export default function Settings() {
   const [keyDrafts, setKeyDrafts] = useState<Partial<Record<KeyId, string>>>({})
   const [models, setModels] = useState<Partial<Record<ProviderId, ModelInfo[]>>>({})
   const [saved, setSaved] = useState<string | null>(null)
+  const [confirmPilot, setConfirmPilot] = useState(false)
 
   const refresh = async () => {
     setProviders(await api.listProviders())
@@ -144,6 +145,29 @@ export default function Settings() {
             </div>
           </div>
         )}
+
+        <Section icon="🤖" title="Full autonomous agent" hint="Let the app tune the options for each video, so you only write the idea." tone="violet">
+          <label className="flex cursor-pointer items-center gap-3 text-sm font-bold">
+            <input
+              type="checkbox"
+              checked={settings.autopilot || confirmPilot}
+              onChange={(e) => (e.target.checked ? setConfirmPilot(true) : (setConfirmPilot(false), patch({ autopilot: false })))}
+              className="h-4 w-4 accent-grape"
+            />
+            Full autonomous agent
+          </label>
+          <div className="mt-2 text-[11px] text-ink/60">
+            For each video it picks the look (pictures or diagrams), whether moving clips are worth it, and reuses your library to save money.
+            <b> It never changes your AI provider or models, never picks a costlier engine than the one you chose, and never touches your keys.</b> Every decision is written to the video's activity log.
+          </div>
+          {confirmPilot && !settings.autopilot && (
+            <div className="pop-in mt-3 flex items-center gap-3 rounded-2xl border-2 border-sunny/60 bg-sunny-soft p-3 text-xs text-ink/80">
+              <span>Hand these options to the agent?</span>
+              <button className="btn-primary" onClick={() => (patch({ autopilot: true }), setConfirmPilot(false))}>Yes, take control</button>
+              <button className="btn-ghost" onClick={() => setConfirmPilot(false)}>Cancel</button>
+            </div>
+          )}
+        </Section>
 
         <Section icon="🔄" title="App updates" hint="Get the newest version straight from GitHub — one click, and your videos and keys stay put." tone="cyan">
           <Updater mode="card" />

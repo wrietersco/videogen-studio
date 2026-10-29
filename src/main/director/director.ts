@@ -145,6 +145,8 @@ export interface DirectorOptions {
   platesAvailable: boolean
   /** moving clips can be made for plate scenes (the engine still caps how many) */
   clipsAvailable?: boolean
+  /** the autopilot's pick of look; the film director follows it when images allow */
+  lookHint?: 'documentary' | 'infographic'
   userPrompt: string
   concurrency?: number
   onScene?: (index: number, craft: SceneCraft) => void
@@ -169,12 +171,20 @@ export class SceneDirector {
       scenes: spec.scenes.map((s, i) => `${i + 1}. [${s.kind}] ${sceneText(s)}`),
       narration: spec.narration.map((n) => n.text).join(' '),
       platesAvailable: this.opts.platesAvailable,
-      note: this.opts.platesAvailable ? '' : 'No image model is configured: choose "infographic" unless the film truly needs documentary chrome (it will run on dark backgrounds).'
+      note: this.opts.platesAvailable ? '' : 'No image model is configured: choose "infographic" unless the film truly needs documentary chrome (it will run on dark backgrounds).',
+      ...(this.opts.lookHint && (this.opts.lookHint === 'infographic' || this.opts.platesAvailable)
+        ? { requiredLook: this.opts.lookHint, requiredLookNote: `The studio has already decided: use look "${this.opts.lookHint}".` }
+        : {})
     }
     try {
       const raw = await this.opts.provider.generateJSON<unknown>({ system: FILM_SYSTEM, prompt: JSON.stringify(payload), schemaName: 'FilmDesign', jsonSchema: filmSchema, temperature: 0.7, maxTokens: 1500 })
       const r = repair(FilmDesign, raw)
-      if (r.ok) return { ...r.data, imageStyle: r.data.look === 'documentary' ? r.data.imageStyle : '' }
+      if (r.ok) {
+        const hint = this.opts.lookHint && (this.opts.lookHint === 'infographic' || this.opts.platesAvailable) ? this.opts.lookHint : undefined
+        const look = hint ?? r.data.look
+        const imageStyle = r.data.imageStyle || 'cinematic painterly still, natural light, 35mm lens, muted palette with one warm accent'
+        return { ...r.data, look, imageStyle: look === 'documentary' ? imageStyle : '' }
+      }
     } catch {
       /* fall through */
     }

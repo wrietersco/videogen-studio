@@ -31,6 +31,8 @@ export interface Settings {
   reuse: 'smart' | 'fresh'
   /** default sharing for newly generated assets — nothing is uploaded unless this is 'shareable' */
   sharing: 'local' | 'shareable'
+  /** full autonomous agent: tunes look, clips and reuse per video — never the LLM provider/model, never to a costlier engine */
+  autopilot: boolean
 }
 
 export const DEFAULT_MEDIA: MediaSettings = {
@@ -49,5 +51,6 @@ export const DEFAULT_SETTINGS: Settings = {
   craft: 'directed',
   media: { ...DEFAULT_MEDIA },
   reuse: 'smart',
-  sharing: 'local'
+  sharing: 'local',
+  autopilot: false
 }

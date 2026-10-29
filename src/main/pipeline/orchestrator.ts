@@ -66,6 +66,10 @@ export interface GenerateOptions {
   gpu?: boolean
   /** 'directed' (default): scene director + plates + widgets · 'classic': template scenes */
   craft?: 'directed' | 'classic'
+  /** autopilot's pick of look for the film director (documentary only takes effect with an image engine) */
+  lookHint?: 'documentary' | 'infographic'
+  /** autopilot's reasons, written to the project's activity log */
+  autopilotNotes?: string[]
   onEvent?: (e: PipelineEvent) => void
 }
 
@@ -149,6 +153,7 @@ function compositionSize(projectDir: string): { width: number; height: number } 
 export class Orchestrator {
   private readonly renders = new RenderService()
   private cancelled = false
+  private lookHint: GenerateOptions['lookHint']
   private activeJobId: string | null = null
 
   constructor(
@@ -446,8 +451,12 @@ export class Orchestrator {
         thumbs: { status: 'pending' },
         render: { status: 'pending' }
       }
-      s.events = [{ at: new Date().toISOString(), text: `started: "${opts.prompt.slice(0, 60)}"` }]
+      s.events = [
+        { at: new Date().toISOString(), text: `started: "${opts.prompt.slice(0, 60)}"` },
+        ...(opts.autopilotNotes ?? []).map((text) => ({ at: new Date().toISOString(), text: `autopilot · ${text}` }))
+      ]
     })
+    this.lookHint = opts.lookHint
     let spec: VideoSpec
     try {
       spec = await planner.plan({
@@ -529,6 +538,7 @@ export class Orchestrator {
       // a clip can stand in for a still, so moving clips alone make plate scenes possible
       platesAvailable: this.media ? this.media.imageAvailable() || this.media.clipsAvailable() : imageProvider !== null,
       clipsAvailable: this.media?.clipsAvailable() ?? false,
+      lookHint: this.lookHint,
       userPrompt,
       onScene: (i, c) =>
         emit({ stage: 'direct', status: 'scene', sceneIndex: i, headline: c.headline, widgets: c.widgets.map((w) => w.type), background: c.background })

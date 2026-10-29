@@ -32,6 +32,7 @@ export interface SettingsView {
   media: MediaSettings
   reuse: 'smart' | 'fresh'
   sharing: 'local' | 'shareable'
+  autopilot: boolean
 }
 
 export type Orientation = 'portrait' | 'landscape' | 'square'
