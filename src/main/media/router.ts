@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { extname } from 'node:path'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { extname, join } from 'node:path'
 import type { VideoSpec } from '@shared/spec'
 import { tokenize, type AssetMeta } from '@shared/assets'
 import { priceUsage, type UsageNumbers } from '@shared/pricing'
 import { orientationOf, type AssetLibrary } from '../assets/library'
+import { joinClips, lastFrame, probe } from '../assets/probe'
 import type { LLMProvider, ProviderId, SpeechProvider, VoiceCache } from '../providers/types'
 import { ElevenLabsClient, ELEVEN_VOICES } from '../providers/elevenlabs'
 import { GeminiVideoClient, GEMINI_VIDEO_MODEL } from '../providers/geminiVideo'
@@ -432,19 +434,24 @@ export class MediaRouter {
   }
 
   /** generate a clip with Gemini (reusing an identical earlier one) and file it */
-  async clipToLibrary(prompt: string, orientation: 'portrait' | 'landscape' | 'square' = 'landscape', opts: { fresh?: boolean; projectId?: string } = {}): Promise<AssetMeta> {
+  async clipToLibrary(
+    prompt: string,
+    orientation: 'portrait' | 'landscape' | 'square' = 'landscape',
+    opts: { fresh?: boolean; projectId?: string; /** JPEG of the frame this shot starts from */ image?: Buffer } = {}
+  ): Promise<AssetMeta> {
     if (!this.omni.configured()) throw new Error('Add a Gemini key in Settings to make video clips')
     const lib = this.d.library
     const aspect = orientation === 'portrait' ? '9:16' : '16:9'
     const model = this.clipModel()
-    const key = createHash('sha1').update(`${model}|${aspect}|${prompt}`).digest('hex').slice(0, 16)
+    const from = opts.image ? createHash('sha1').update(opts.image).digest('hex').slice(0, 8) : ''
+    const key = createHash('sha1').update(`${model}|${aspect}|${prompt}|${from}`).digest('hex').slice(0, 16)
     const hit = this.reuse && !opts.fresh ? lib.findByKey('video', key) : null
     if (hit) {
       if (opts.projectId) lib.markUsed(hit.id, opts.projectId)
       meter.record({ kind: 'video', provider: 'gemini', model, usage: { outputTokens: (hit.durationSec ?? 8) * 5792 }, saved: true, note: `reused ${hit.id}` })
       return hit
     }
-    const { video, usd } = await this.omni.clip({ prompt, aspect, model })
+    const { video, usd } = await this.omni.clip({ prompt, aspect, model, image: opts.image && { mimeType: 'image/jpeg', base64: opts.image.toString('base64') } })
     const a = lib.add(video, '.mp4', {
       kind: 'video',
       source: 'generated',
@@ -459,6 +466,48 @@ export class MediaRouter {
     })
     if (opts.projectId) lib.markUsed(a.id, opts.projectId)
     return a
+  }
+
+  /**
+   * a multi-shot sequence: each shot starts from the last frame of the one before
+   * (so the camera flows through), then all shots are joined into one clip.
+   * Every shot is also filed on its own.
+   */
+  async sequenceToLibrary(shots: string[], orientation: 'portrait' | 'landscape' | 'square' = 'landscape', onShot?: (n: number, total: number) => void): Promise<AssetMeta> {
+    const lib = this.d.library
+    const dir = mkdtempSync(join(tmpdir(), 'videogen-seq-'))
+    try {
+      const files: string[] = []
+      let frame: Buffer | undefined
+      let cost = 0
+      for (let i = 0; i < shots.length; i++) {
+        onShot?.(i + 1, shots.length)
+        const clip = await this.clipToLibrary(shots[i], orientation, { fresh: true, image: frame })
+        cost += clip.costUsd ?? 0
+        const file = lib.path(clip.id)
+        if (!file) throw new Error(`shot ${i + 1} went missing from the library`)
+        files.push(file)
+        frame = lastFrame(file) ?? undefined
+      }
+      const out = join(dir, 'sequence.mp4')
+      joinClips(files, out)
+      const info = probe(out)
+      const title = `Sequence · ${shots[0].slice(0, 60)}`
+      return lib.add(readFileSync(out), '.mp4', {
+        kind: 'video',
+        source: 'generated',
+        title,
+        tags: [...tokenize(shots.join(' ')).slice(0, 10), 'clip', 'omni', 'sequence'],
+        prompt: shots.map((s, i) => `Shot ${i + 1}: ${s}`).join('\n'),
+        provider: 'gemini',
+        model: this.clipModel(),
+        durationSec: info.durationSec,
+        costUsd: cost,
+        license: { name: 'Generated with your API key (SynthID watermarked)', requiresAttribution: false }
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   }
 
   /** speak a line with the chosen narrator and file it */

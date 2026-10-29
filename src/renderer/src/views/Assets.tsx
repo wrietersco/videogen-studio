@@ -482,6 +482,18 @@ function StockPanel({ initialKind, onClose, onAdded }: { initialKind: AssetKind;
   )
 }
 
+/** “Shot 1 (…): text  Shot 2 (…): text” → one prompt per shot; fewer than two markers means a plain single prompt */
+function splitShots(text: string): string[] {
+  const marker = /^[\s\-*•○]*\**\s*shot\s*\d+[^\n:]*:?\**[ \t]*/gim
+  if ((text.match(marker) ?? []).length < 2) return []
+  return text
+    .split(marker)
+    .slice(1)
+    .map((s) => s.replace(/[`*]/g, '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, 8)
+}
+
 function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: (a: AssetMeta) => void; onError: (m: string) => void }) {
   const [kind, setKind] = useState<'image' | 'video' | 'voice' | 'music'>('image')
   const [prompt, setPrompt] = useState('')
@@ -492,17 +504,18 @@ function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: 
     () =>
       ({
         image: 'A detailed picture — e.g. “a cosy reading nook at golden hour, film photo”',
-        video: 'A short shot with motion — e.g. “slow drone push over misty pine forest at dawn” (Gemini Omni, ≈ $0.80, takes a minute or two)',
+        video: 'A short shot with motion — e.g. “slow drone push over misty pine forest at dawn” (Gemini Omni, ≈ $0.80, takes a minute or two). Paste “Shot 1: … Shot 2: …” to chain several shots into one clip.',
         voice: 'The exact line to speak — uses your narrator from Settings → Media',
         music: 'Mood + vibe — e.g. “upbeat lo-fi beat for a cooking video” (needs ElevenLabs)'
       })[kind],
     [kind]
   )
+  const shots = useMemo(() => (kind === 'video' ? splitShots(prompt) : []), [kind, prompt])
   const go = async () => {
     setBusy(true)
     setMade(null)
     try {
-      const a = await api.assets.generate({ kind, prompt, orientation })
+      const a = await api.assets.generate({ kind, prompt, orientation, shots: kind === 'video' ? shots : undefined })
       if (a) {
         setMade(a)
         onMade(a)
@@ -538,8 +551,13 @@ function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: 
           ))}
         </div>
       )}
+      {shots.length > 1 && (
+        <div className="mt-2 rounded-xl border border-ink/10 bg-ink/5 p-3 text-xs text-ink/70">
+          🎞️ Found {shots.length} shots — each one starts from the last frame of the one before, then they’re joined into one clip. About {fmtUsd(shots.length * 0.8)} and {shots.length * 2}+ minutes.
+        </div>
+      )}
       <button onClick={go} disabled={busy || !prompt.trim()} className="btn-primary mt-4 w-full !py-3">
-        {busy ? <span className="pulse-dot">✨ Making it…</span> : '✨ Make it'}
+        {busy ? <span className="pulse-dot">✨ Making it…</span> : shots.length > 1 ? `✨ Make ${shots.length}-shot sequence` : '✨ Make it'}
       </button>
       {made && (
         <div className="pop-in mt-4 flex items-center gap-3 rounded-xl border border-mint/40 bg-mint-soft p-3">

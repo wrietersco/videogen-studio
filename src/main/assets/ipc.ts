@@ -130,8 +130,18 @@ export function registerAssetIpc(deps: { library: AssetLibrary; router: MediaRou
   })
 
   /** make a single asset on demand from the library screen (metered like any job) */
-  ipcMain.handle('assets:generate', async (_e, req: { kind: 'image' | 'video' | 'voice' | 'music'; prompt: string; orientation?: Orientation }) => {
+  ipcMain.handle('assets:generate', async (_e, req: { kind: 'image' | 'video' | 'voice' | 'music'; prompt: string; orientation?: Orientation; shots?: string[] }) => {
     if (deps.isBusy()) throw new Error('A video is generating — try again when it finishes')
+    const shots = (req.shots ?? []).map((s) => s.trim()).filter(Boolean)
+    if (req.kind === 'video' && shots.length > 1) {
+      if (shots.length > 8) throw new Error('A sequence can have up to 8 shots')
+      meter.begin('library')
+      try {
+        return await router.sequenceToLibrary(shots, req.orientation, (n, total) => meter.setStage(`library video · shot ${n} of ${total}`))
+      } finally {
+        meter.end(null)
+      }
+    }
     const prompt = req.prompt?.trim()
     if (!prompt) throw new Error('Describe what to make first')
     meter.begin('library')
