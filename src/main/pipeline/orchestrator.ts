@@ -13,7 +13,7 @@ import { RenderService, type CheckReport, type RenderProgress } from '../rendere
 import { vendorDir, fontsDir, musicDir } from '../paths'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { PLATFORM_PRESETS } from '@shared/presets'
-import { SceneDirector, pickClipScenes } from '../director/director'
+import { SceneDirector, pickClipScenes, preserveFinishedPlates } from '../director/director'
 import { makePlate, relocatePlate } from '../director/plates'
 import { reviewScenes } from '../director/critic'
 
@@ -157,6 +157,8 @@ export class Orchestrator {
   private activeJobId: string | null = null
   /** on-the-go stock downloads fired at the end of direction (see MediaRouter.prefetchForSpec) */
   private prefetch: Promise<{ images: number; clips: number } | null> | null = null
+  /** paid plates/clips this run revised away before the final cut (money-guard report) */
+  private readonly wastedPaid = { plates: 0, clips: 0 }
 
   constructor(
     private readonly store: ProjectStore,
@@ -429,6 +431,8 @@ export class Orchestrator {
   async generate(opts: GenerateOptions): Promise<GenerateResult> {
     const emit = (e: PipelineEvent) => opts.onEvent?.(e)
     this.cancelled = false
+    this.wastedPaid.plates = 0
+    this.wastedPaid.clips = 0
     const planner = new Planner(this.providerFor())
 
     // ---------- plan ----------
@@ -514,7 +518,13 @@ export class Orchestrator {
 
     // ---------- render ----------
     if (this.cancelled) return this.abort(projectId, emit)
-    return this.runRender(projectId, spec, opts.platform, opts, emit, qa)
+    const result = await this.runRender(projectId, spec, opts.platform, opts, emit, qa)
+    // money guard: say it plainly when paid work didn't make the final cut
+    if (this.wastedPaid.plates || this.wastedPaid.clips) {
+      const parts = [this.wastedPaid.plates ? `${this.wastedPaid.plates} plate(s)` : '', this.wastedPaid.clips ? `${this.wastedPaid.clips} clip(s)` : ''].filter(Boolean).join(' + ')
+      this.store.appendEvent(projectId, `money guard: ${parts} generated earlier were revised out of the final cut — they're in your library and future videos reuse them for free`)
+    }
+    return result
   }
 
   // ---------------- shared stage implementations (used by generate + resume) ----------------
@@ -529,7 +539,7 @@ export class Orchestrator {
     spec: VideoSpec,
     userPrompt: string,
     emit: (e: PipelineEvent) => void,
-    only?: { ids: Set<string>; notes?: Map<string, string> }
+    only?: { ids: Set<string>; notes?: Map<string, string>; /** 'subject' keeps paid plates whose brief was only reworded (critic pass); 'exact' repaints on any change (user feedback) */ keep?: 'exact' | 'subject' }
   ): Promise<VideoSpec> {
     const provider = this.providerFor()
     const imageProvider = this.imageProviderFor()
@@ -552,23 +562,14 @@ export class Orchestrator {
     next = { ...next, crafts: await director.directScenes(next, design, only?.notes, only?.ids) }
     // the engine's call: which motion requests become moving clips (budgeted per film)
     next.crafts = pickClipScenes(next.crafts, next.scenes.reduce((t, s) => t + s.durationSec, 0))
-    // an unchanged plate brief keeps its finished files (no second image bill)
-    next.crafts = next.crafts.map((c) => {
-      const old = previous.get(c.sceneId)?.plate
-      if (c.plate && old?.file && old.prompt === c.plate.prompt)
-        return {
-          ...c,
-          // same subject → same anchor; a new subject label is re-located on the same painting
-          plate: {
-            ...c.plate,
-            file: old.file,
-            depthFile: old.depthFile,
-            anchor: old.subjectLabel === c.plate.subjectLabel ? old.anchor : undefined,
-            clipFile: c.plate.motion ? old.clipFile : undefined
-          }
-        }
-      return c
-    })
+    // money guard: finished plates survive re-direction — an unchanged (or, on
+    // the critic's pass, merely reworded) brief keeps its painted files, and a
+    // finished clip stays whatever the new motion pick says. No second bill.
+    const kept = preserveFinishedPlates(next.crafts, previous, only?.keep ?? 'exact')
+    next.crafts = kept.crafts
+    if (kept.keptReworded) this.store.appendEvent(projectId, `plates: kept ${kept.keptReworded} finished plate(s) through re-direction — no re-bill`)
+    this.wastedPaid.plates += kept.droppedPlates
+    this.wastedPaid.clips += kept.droppedClips
     this.store.saveSpec(projectId, next)
     const plates = next.crafts.filter((c) => c.background === 'plate').length
     const clips = next.crafts.filter((c) => c.plate?.motion).length
@@ -768,7 +769,9 @@ export class Orchestrator {
     if (toFix.length > 0 && !this.cancelled) {
       next = await this.runDirect(projectId, next, userPrompt, emit, {
         ids: new Set(toFix.map((r) => r.sceneId)),
-        notes: new Map(toFix.map((r) => [r.sceneId, r.notes.join(' · ')]))
+        notes: new Map(toFix.map((r) => [r.sceneId, r.notes.join(' · ')])),
+        // the critic judges frames, not wording: keep paid plates whose brief was only reworded
+        keep: 'subject'
       })
       this.store.saveComposition(projectId, compose(next, vendorDir, fontsDir, audio))
       qa = await this.runQaLoop(projectId, next, audio, emit)

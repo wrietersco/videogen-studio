@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { FilmDesign, Plate, SceneCraft, Widget, type VideoSpec } from '@shared/spec'
 import { PLATFORM_PRESETS } from '@shared/presets'
+import { tokenize } from '@shared/assets'
 import type { LLMProvider } from '../providers/types'
 
 /**
@@ -258,12 +259,86 @@ export function clipBudget(totalSec: number): number {
 /**
  * The engine's call on which motion requests become clips: the opening scene
  * first (it is the hook), then the scenes the directors flagged, in film order,
- * up to the budget. Everything else keeps its painted still.
+ * up to the budget. Everything else keeps its painted still. A scene that
+ * already holds a finished clip is never demoted — the clip is paid for, and
+ * showing it again costs nothing.
  */
 export function pickClipScenes(crafts: SceneCraft[], totalSec: number): SceneCraft[] {
   const want = crafts.filter((c) => c.background === 'plate' && c.plate?.motion)
   const keep = new Set(want.slice(0, clipBudget(totalSec)).map((c) => c.sceneId))
-  return crafts.map((c) => (c.plate?.motion && !keep.has(c.sceneId) ? { ...c, plate: { ...c.plate, motion: false, clipFile: undefined } } : c))
+  return crafts.map((c) =>
+    c.plate?.motion && !keep.has(c.sceneId) && !c.plate.clipFile ? { ...c, plate: { ...c.plate, motion: false, clipFile: undefined } } : c
+  )
+}
+
+/** same subject, reworded — a repaint would bill the same picture twice */
+export function sameShot(a: string, b: string): boolean {
+  const ta = new Set(tokenize(a))
+  const tb = new Set(tokenize(b))
+  if (!ta.size || !tb.size) return false
+  let hit = 0
+  for (const w of ta) if (tb.has(w)) hit++
+  return hit / Math.min(ta.size, tb.size) >= 0.6
+}
+
+export interface PreserveResult {
+  crafts: SceneCraft[]
+  /** finished plates kept although the brief was reworded (would have re-billed) */
+  keptReworded: number
+  /** finished plates dropped — a genuinely different shot, repainted by choice */
+  droppedPlates: number
+  /** finished clips dropped with them */
+  droppedClips: number
+}
+
+/**
+ * Finished plates survive re-direction — paid work is never thrown away on a
+ * technicality. An identical brief always keeps its files; on the critic's
+ * quality pass ('subject') a reworded brief for the same subject keeps them
+ * too (the painting is fine, the director just phrased it differently), and a
+ * finished clip stays in the film whatever the new motion pick says — it is
+ * already paid for. 'exact' (scene revision from user feedback) repaints on
+ * any brief change, so what the user asked for is what they get.
+ */
+export function preserveFinishedPlates(
+  crafts: SceneCraft[],
+  previous: Map<string, SceneCraft>,
+  mode: 'exact' | 'subject' = 'exact'
+): PreserveResult {
+  let keptReworded = 0
+  let droppedPlates = 0
+  let droppedClips = 0
+  const out = crafts.map((c): SceneCraft => {
+    const old = previous.get(c.sceneId)?.plate
+    if (!old?.file) return c
+    if (!c.plate || c.background !== 'plate') {
+      // the re-directed scene dropped its plate entirely — count the loss, the director's call stands
+      droppedPlates += 1
+      if (old.clipFile) droppedClips += 1
+      return c
+    }
+    const keep = c.plate.prompt === old.prompt || (mode === 'subject' && sameShot(old.prompt, c.plate.prompt))
+    if (!keep) {
+      droppedPlates += 1
+      if (old.clipFile) droppedClips += 1
+      return c
+    }
+    if (c.plate.prompt !== old.prompt) keptReworded += 1
+    return {
+      ...c,
+      // same subject → same anchor; a new subject label is re-located on the same painting
+      plate: {
+        ...c.plate,
+        file: old.file,
+        depthFile: old.depthFile,
+        anchor: old.subjectLabel === c.plate.subjectLabel ? old.anchor : undefined,
+        // a finished clip is already paid for — it stays in the film
+        motion: c.plate.motion || Boolean(old.clipFile),
+        clipFile: old.clipFile
+      }
+    }
+  })
+  return { crafts: out, keptReworded, droppedPlates, droppedClips }
 }
 
 // ---------------------------------------------------------------- heuristics (mock + fallback)
