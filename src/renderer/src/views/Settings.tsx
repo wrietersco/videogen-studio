@@ -127,7 +127,7 @@ export default function Settings() {
 
   return (
     <div className="page-bg h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl space-y-5 p-8">
+      <div className="space-y-5 p-8">
         <div className="flex items-end justify-between">
           <div>
             <h1 className="text-3xl font-black tracking-tight">⚙️ Settings</h1>

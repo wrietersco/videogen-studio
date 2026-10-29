@@ -174,7 +174,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
     <div className="page-bg flex h-full">
       {/* main surface */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-3xl px-8 pb-16 pt-8">
+        <div className="px-8 pb-16 pt-8">
           <h1 className="text-3xl font-black tracking-tight">
             <span className="float inline-block">✨</span> What should we make today?
           </h1>

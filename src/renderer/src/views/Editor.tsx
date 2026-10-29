@@ -9,7 +9,7 @@ import { SceneEditor } from '../components/SceneEditor'
  * (full structured/conversational editing lands in P5 on this surface).
  */
 export default function Editor({ initialProjectId, onBack }: { initialProjectId?: string | null; onBack: () => void }) {
-  const [projects, setProjects] = useState<Array<{ id: string; title: string }>>([])
+  const [projects, setProjects] = useState<Array<{ id: string; title: string; prompt: string }>>([])
   const [activeId, setActiveId] = useState<string | null>(initialProjectId ?? null)
   const [project, setProject] = useState<ProjectView | null>(null)
   const [view, setView] = useState<'edit' | 'spec' | 'code'>('edit')
@@ -21,7 +21,7 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
 
   useEffect(() => {
     api.listProjects().then((all) => {
-      setProjects(all.map((p) => ({ id: p.id, title: p.title })))
+      setProjects(all.map((p) => ({ id: p.id, title: p.title, prompt: p.prompt })))
       if (all.length > 0) setActiveId((cur) => cur ?? all[0].id)
     })
   }, [])
@@ -97,11 +97,13 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
             <button
               key={p.id}
               onClick={() => setActiveId(p.id)}
-              className={`mb-1 w-full truncate rounded-xl px-3 py-2 text-left text-sm font-semibold transition-colors ${
+              title={p.prompt}
+              className={`mb-1 w-full rounded-xl px-3 py-2 text-left text-sm font-semibold transition-colors ${
                 activeId === p.id ? 'bg-grape text-white shadow-[0_2px_0_#5b21b6]' : 'text-ink/80 hover:bg-grape-soft'
               }`}
             >
-              {p.title}
+              <span className="line-clamp-2 leading-snug">{p.prompt}</span>
+              <span className={`mt-0.5 block truncate text-[11px] font-medium ${activeId === p.id ? 'text-white/70' : 'text-ink/45'}`}>🎬 {p.title}</span>
             </button>
           ))}
         </div>
@@ -117,7 +119,12 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
         {spec && (
           <>
             <div className="flex items-center justify-between border-b-2 border-ink/5 bg-white/60 px-6 py-3.5">
-              <div className="text-xl font-black">{spec.title}</div>
+              <div className="min-w-0">
+                <div className="truncate text-sm text-ink/55" title={project?.meta?.prompt}>
+                  {project?.meta?.prompt}
+                </div>
+                <div className="truncate text-xl font-black">{spec.title}</div>
+              </div>
               <div className="flex items-center gap-1">
                 {project?.meta?.renders[0] && (
                   <button

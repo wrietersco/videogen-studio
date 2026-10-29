@@ -85,7 +85,7 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
 
   return (
     <div className="page-bg relative h-full overflow-y-auto">
-      <div className="mx-auto max-w-6xl p-8">
+      <div className="p-8">
         <div className="mb-6 flex items-end justify-between gap-4">
           <div>
             <h1 className="text-3xl font-black tracking-tight">🎞️ My videos</h1>
@@ -108,7 +108,7 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
           </EmptyState>
         )}
 
-        <div className="grid grid-cols-3 gap-5">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-5">
           {projects.map((p, idx) => {
             const busyHere = rerendering?.id === p.id
             const st = statusInfo(p)
@@ -121,11 +121,12 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
               >
                 <Poster id={p.id} title={p.title} onPlay={play} />
                 <div className="p-4">
-                  <div className="truncate text-[15px] font-black" title={p.title}>
-                    {p.title}
-                  </div>
-                  <div className="mt-0.5 truncate text-xs text-ink/55" title={p.prompt}>
+                  {/* the user's own words identify the video; the film's title comes second */}
+                  <div className="line-clamp-2 min-h-[2.6em] text-[15px] font-bold leading-snug" title={p.prompt}>
                     {p.prompt}
+                  </div>
+                  <div className="mt-1 truncate text-xs text-ink/55" title={p.title}>
+                    🎬 {p.title}
                   </div>
                   <div className="mt-2.5 flex items-center gap-2 text-[11px] text-ink/55">
                     <span className={`rounded-full px-2 py-0.5 font-bold ${st.cls}`}>{st.text}</span>
