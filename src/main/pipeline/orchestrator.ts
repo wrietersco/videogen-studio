@@ -23,6 +23,11 @@ import { randomUUID } from 'node:crypto'
 import sharp from 'sharp'
 
 
+/** Explicit whole-film isometric briefs use a code-only visual pipeline. */
+export function isIsometricOnlyBrief(prompt: string): boolean {
+  return /\bisometric\b/i.test(prompt) && !/\b(?:no|avoid|without|not)\s+(?:any\s+)?isometric\b/i.test(prompt) && !/\b(?:some|one|single|one of|a few)\s+(?:scenes?|shots?)\s+(?:in|with|as)\s+(?:an?\s+)?isometric\b/i.test(prompt) && !/\b(?:mix|combine|intercut|alternate|blend)\b.{0,80}\b(?:footage|photos?|photographs?|live.action)\b/i.test(prompt)
+}
+
 function readComposition(dir: string): string {
   const p = join(dir, 'index.html')
   return existsSync(p) ? readFileSync(p, 'utf8') : ''
@@ -366,7 +371,9 @@ export class Orchestrator {
 
     // ---------- re-direct the revised scene (the feedback steers the director too) ----------
     if (this.cancelled) return this.abort(projectId, emit)
-    if (spec.design && opts.craft !== 'classic') {
+    const originalPrompt = this.store.readMeta(projectId)?.prompt ?? spec.title
+    const isometricOnly = isIsometricOnlyBrief(originalPrompt)
+    if (!isometricOnly && spec.design && opts.craft !== 'classic') {
       const meta0 = this.store.readMeta(projectId)
       spec = await this.runDirect(projectId, spec, meta0?.prompt ?? spec.title, emit, {
         ids: new Set([sceneId]),
@@ -377,11 +384,14 @@ export class Orchestrator {
     // ---------- recompose (narration + captions for the revised text) ----------
     if (this.cancelled) return this.abort(projectId, emit)
     const audio = await this.runCompose(projectId, spec, emit)
-    const qa = await this.runQaLoop(projectId, spec, audio, emit)
+    let qa = isometricOnly ? { ok: true, errors: [], warnings: [] } : await this.runQaLoop(projectId, spec, audio, emit)
     const wasCustom = spec.customScenes?.some(c => c.sceneId === sceneId) || spec.customVideos?.some(c => c.sceneId === sceneId)
-    if (wasCustom && !this.cancelled) {
-      const originalPrompt = this.store.readMeta(projectId)?.prompt ?? spec.title
-      spec = await this.runCustomScenes(projectId, spec, `${originalPrompt}\nUser revision: ${feedback}`, audio, emit, new Map([[sceneId, feedback]]))
+    if ((isometricOnly || wasCustom) && !this.cancelled) {
+      spec = await this.runCustomScenes(projectId, spec, `${originalPrompt}\nUser revision: ${feedback}`, audio, emit, new Map([[sceneId, feedback]]), isometricOnly)
+      if (isometricOnly && !this.cancelled) {
+        qa = await this.runQaLoop(projectId, spec, audio, emit)
+        if (!qa.ok) throw new Error(`Isometric film failed final render checks: ${qa.errors.map(e => e.message).join('; ') || 'no diagnostics returned'}`)
+      }
     }
 
     // ---------- fresh storyboard captures ----------
@@ -430,14 +440,19 @@ export class Orchestrator {
     this.store.appendEvent(projectId, `edited by hand: ${spec.scenes.length} scenes`)
     emit({ stage: 'revise', status: 'started', sceneId: '', sceneIndex: 0, feedback: 'manual edit' })
 
+    const originalPrompt = this.store.readMeta(projectId)?.prompt ?? spec.title
+    const isometricOnly = isIsometricOnlyBrief(originalPrompt)
+    if (isometricOnly) { spec.crafts = []; spec.customScenes = [] }
     // repaint pictures the user changed (their file was cleared by the editor)
-    if (spec.design && spec.crafts.some((c) => c.background === 'plate' && c.plate && !c.plate.file)) {
+    if (!isometricOnly && spec.design && spec.crafts.some((c) => c.background === 'plate' && c.plate && !c.plate.file)) {
       spec = await this.runPlates(projectId, spec, emit, this.providerFor())
       this.store.saveSpec(projectId, spec)
     }
     if (this.cancelled) return this.abort(projectId, emit)
     const audio = await this.runCompose(projectId, spec, emit)
+    if (isometricOnly && !this.cancelled) spec = await this.runCustomScenes(projectId, spec, originalPrompt, audio, emit, undefined, true)
     const qa = await this.runQaLoop(projectId, spec, audio, emit)
+    if (isometricOnly && !qa.ok) throw new Error(`Isometric film failed final render checks: ${qa.errors.map(e => e.message).join('; ') || 'no diagnostics returned'}`)
     if (this.cancelled) return this.abort(projectId, emit)
     await this.captureThumbs(projectId, spec, emit)
     if (this.cancelled) return this.abort(projectId, emit)
@@ -517,9 +532,12 @@ export class Orchestrator {
       sceneCards: spec.scenes.map((s) => ({ kind: s.kind, label: sceneLabel(s), durationSec: s.durationSec }))
     })
 
+    const isometricOnly = isIsometricOnlyBrief(opts.prompt)
+    if (isometricOnly) this.store.appendEvent(projectId, 'Isometric motion graphics: code-only visuals; image and video generation disabled')
+
     // ---------- direct: film design, per-scene crafts, painted plates ----------
     if (this.cancelled) return this.abort(projectId, emit)
-    if (opts.craft !== 'classic') spec = await this.runDirect(projectId, spec, opts.prompt, emit)
+    if (!isometricOnly && opts.craft !== 'classic') spec = await this.runDirect(projectId, spec, opts.prompt, emit)
 
     // ---------- compose ----------
     if (this.cancelled) return this.abort(projectId, emit)
@@ -529,17 +547,26 @@ export class Orchestrator {
 
     // ---------- QA fix-loop ----------
     if (this.cancelled) return this.abort(projectId, emit)
-    let qa = await this.runQaLoop(projectId, spec, audio, emit)
+    let qa: CheckReport = isometricOnly ? { ok: true, errors: [], warnings: [] } : await this.runQaLoop(projectId, spec, audio, emit)
 
     // Bespoke vector scenes are trialled against the existing composition;
     // failures leave the original scene and its paid media intact.
-    if (!this.cancelled && opts.craft !== 'classic') {
-      spec = await this.runCustomScenes(projectId, spec, opts.prompt, audio, emit)
+    if (!this.cancelled && (isometricOnly || opts.craft !== 'classic')) {
+      try {
+        spec = await this.runCustomScenes(projectId, spec, opts.prompt, audio, emit, undefined, isometricOnly)
+        if (isometricOnly && !this.cancelled) {
+          qa = await this.runQaLoop(projectId, spec, audio, emit)
+          if (!qa.ok) throw new Error(`Isometric film failed final render checks: ${qa.errors.map(e => e.message).join('; ') || 'no diagnostics returned'}`)
+        }
+      } catch (err) {
+        if (isometricOnly) this.store.setStatus(projectId, 'error', String(err))
+        throw err
+      }
     }
 
     // ---------- vision critic: watch the real frames, send weak scenes back ----------
     if (this.cancelled) return this.abort(projectId, emit)
-    const critiqued = await this.runCritic(projectId, spec, opts.prompt, audio, emit)
+    const critiqued = isometricOnly ? null : await this.runCritic(projectId, spec, opts.prompt, audio, emit)
     if (critiqued) {
       spec = critiqued.spec
       qa = critiqued.qa ?? qa
@@ -568,11 +595,15 @@ export class Orchestrator {
     prompt: string,
     audio: Awaited<ReturnType<Orchestrator['runCompose']>>,
     emit: (e: PipelineEvent) => void = () => {},
-    targeted?: Map<string, string>
+    targeted?: Map<string, string>,
+    isometricOnly = false
   ): Promise<VideoSpec> {
     const provider = this.providerFor()
-    if (provider.id === 'mock') return spec
-    const ids = targeted ? [...targeted.keys()] : await chooseCustomScenes(provider, spec, prompt)
+    if (provider.id === 'mock') {
+      if (isometricOnly) throw new Error('Isometric animation requires a configured writing model')
+      return spec
+    }
+    const ids = isometricOnly && targeted ? [...targeted.keys()] : isometricOnly ? spec.scenes.filter(s => !spec.customVideos?.some(c => c.sceneId === s.id && /^assets\/custom\/[A-Za-z0-9._-]+\.mp4$/.test(c.file) && existsSync(join(this.store.dir(projectId), c.file)))).map(s => s.id) : targeted ? [...targeted.keys()] : await chooseCustomScenes(provider, spec, prompt)
     if (!ids.length) return spec
     emit({ stage: 'custom', status: 'started', total: ids.length })
     const dir = this.store.dir(projectId)
@@ -620,6 +651,7 @@ export class Orchestrator {
         if (!usable) throw new Error('Original scene capture was blank or unavailable')
         beforeImages = usable
       } catch (err) {
+        if (isometricOnly) throw new Error(`Could not review isometric scene ${index + 1}: ${String((err as Error)?.message ?? err)}`)
         this.store.appendEvent(projectId, `custom scene ${index + 1}: skipped comparison (${String((err as Error)?.message ?? err).slice(0, 120)})`)
         continue
       }
@@ -633,10 +665,11 @@ export class Orchestrator {
         this.store.appendEvent(projectId, `custom scene ${index + 1}: kept moving footage because the source could not be loaded safely`)
         continue
       }
-      const useCode = Boolean(backgroundVideo) || previousCode !== undefined || await needsCanvasCode(provider, current, sceneId, prompt)
+      const useCode = isometricOnly || Boolean(backgroundVideo) || previousCode !== undefined || await needsCanvasCode(provider, current, sceneId, prompt)
       let accepted = false
       let best: { spec: VideoSpec; score: number; file?: string; reason: string; attempt: number; frame: Buffer } | undefined
-      for (let attempt = 1; attempt <= 3 && !this.cancelled; attempt++) {
+      const maxAttempts = isometricOnly ? 5 : 3
+      for (let attempt = 1; attempt <= maxAttempts && !this.cancelled; attempt++) {
         let trialFile: string | undefined
         emit({ stage: 'custom', status: 'attempt', sceneIndex: index, attempt, phase: 'authoring' })
         try {
@@ -649,7 +682,7 @@ export class Orchestrator {
               if (existsSync(platePath)) backgroundJpeg = await sharp(readFileSync(platePath)).resize({ width: 1080, height: 1920, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer()
             }
             if (backgroundVideo) backgroundJpeg = beforeImages[1]
-            const code = await authorCanvasCode(provider, current, prompt, sceneId, feedback, previousCode, backgroundJpeg, previousFrame, Boolean(backgroundVideo), continuityFrame)
+            const code = await authorCanvasCode(provider, current, isometricOnly ? `${prompt}\nAll scenes must be fully animated original 2D isometric motion graphics, with consistent perspective and visual identity. Draw all visuals using canvas shapes. Do not use photos, footage or generated imagery.` : prompt, sceneId, feedback, previousCode, backgroundJpeg, previousFrame, Boolean(backgroundVideo), continuityFrame)
             previousCode = code
             const file = `assets/custom/${randomUUID()}.mp4`
             trialFile = join(dir, file)
@@ -663,7 +696,14 @@ export class Orchestrator {
           }
           this.store.saveComposition(projectId, compose(candidate, vendorDir, fontsDir, audio))
           const check = await this.renders.check(dir)
-          if (!check.ok) throw new Error(`Render check: ${(check.errors.map(e => e.message).join('; ') || check.raw || 'check failed without diagnostics').slice(0, 500)}`)
+          // Unfinished placeholder scenes are replaced later in this mode;
+          // their text contrast must not prevent reviewing the current scene.
+          const unfinished = new Set(current.scenes.map((s, i) => ({ s, i })).filter(({ s }) => s.id !== sceneId && !candidate.customVideos?.some(c => c.sceneId === s.id)).map(({ i }) => i + 1))
+          const remainingErrors = isometricOnly ? check.errors.filter(e => {
+            const match = e.category === 'contrast' && e.selector?.match(/^#scene-(\d+)-/)
+            return !match || !unfinished.has(Number(match[1]))
+          }) : check.errors
+          if (!check.ok && (!isometricOnly || remainingErrors.length || !check.errors.length)) throw new Error(`Render check: ${(remainingErrors.map(e => e.message).join('; ') || check.raw || 'check failed without diagnostics').slice(0, 500)}`)
           const candidateDir = join(dir, `.custom-candidate-${attempt}`)
           rmSync(candidateDir, { recursive: true, force: true })
           const frames = await this.renders.snapshot(dir, times, candidateDir)
@@ -672,7 +712,7 @@ export class Orchestrator {
           previousFrame = afterImages[1]
           emit({ stage: 'custom', status: 'attempt', sceneIndex: index, attempt, phase: 'reviewing' })
           const verdict = await provider.generateJSON<{ useCandidate: boolean; score: number; originalScore: number; blockingIssue: boolean; reason: string }>({
-            system: 'You are the video editor. Images 1, 2 and 3 are the existing scene at early, middle and late times; images 4, 5 and 6 are the new custom illustration or coded animation at those same times. If image 7 is provided, it is the preceding approved scene and is the authoritative visual reference for any recurring emblem, character or product. The original scene in images 1-3 may be the inconsistent scene being repaired: do not treat its conflicting design as the established identity. Judge both original and candidate against image 7, and reject a candidate that changes that identity contrary to the brief. Preserve relevant moving footage and its subject; reject the candidate if footage or its motion is lost. The brief describes the whole film; assess the intended beat of this scene in the context of the surrounding scene plan rather than demanding that every scene contain every film-wide action. Compare them against the brief and narration. Rate both the original and candidate out of 10 using the same criteria; put the original rating in originalScore. Reserve 8 or above for professional, accurate and legible motion that communicates the scene. Set blockingIssue true for any inconsistent recurring identity when continuity is required, factual or scientific error, wrong subject, missing required content, clipped or overlapping labels, or illegible text, even when the candidate looks better than the original. Accept only if it scores at least 8, has no blocking issue, and is clearly better than the original. Do not prefer a generic diagram over relevant photos or footage. Give concrete improvement notes.',
+            system: `${isometricOnly ? 'This is a code-only 2D isometric film: the candidate must clearly show animated isometric objects and processes, match the scene and maintain continuity. Ignore the generic original when evaluating the candidate; useCandidate should be true when the candidate is professional and meets the brief, even if the original looks better. ' : ''}You are the video editor. Images 1, 2 and 3 are the existing scene at early, middle and late times; images 4, 5 and 6 are the new custom illustration or coded animation at those same times. If image 7 is provided, it is the preceding approved scene and is the authoritative visual reference for any recurring emblem, character or product. The original scene in images 1-3 may be the inconsistent scene being repaired: do not treat its conflicting design as the established identity. Judge both original and candidate against image 7, and reject a candidate that changes that identity contrary to the brief. Preserve relevant moving footage and its subject; reject the candidate if footage or its motion is lost. The brief describes the whole film; assess the intended beat of this scene in the context of the surrounding scene plan rather than demanding that every scene contain every film-wide action. Compare them against the brief and narration. Rate both the original and candidate out of 10 using the same criteria; put the original rating in originalScore. Reserve 8 or above for professional, accurate and legible motion that communicates the scene. Set blockingIssue true for any inconsistent recurring identity when continuity is required, factual or scientific error, wrong subject, missing required content, clipped or overlapping labels, or illegible text, even when the candidate looks better than the original. ${isometricOnly ? 'Accept if it scores at least 8 and has no blocking issue, irrespective of the generic original.' : 'Accept only if it scores at least 8, has no blocking issue, and is clearly better than the original. Do not prefer a generic diagram over relevant photos or footage.'} Give concrete improvement notes.`,
             prompt: JSON.stringify({ brief: prompt, scene, filmScenes: current.scenes, narration: current.narration.find(n => n.sceneId === sceneId)?.text, hasContinuityReference: Boolean(continuityFrame) }),
             schemaName: 'CustomSceneReview', jsonSchema: { type: 'object', properties: { useCandidate: { type: 'boolean' }, score: { type: 'number' }, originalScore: { type: 'number' }, blockingIssue: { type: 'boolean' }, reason: { type: 'string' } }, required: ['useCandidate', 'score', 'originalScore', 'blockingIssue', 'reason'], additionalProperties: false },
             images: [...beforeImages, ...afterImages, ...(continuityFrame ? [continuityFrame] : [])].map(image => ({ mimeType: 'image/jpeg', base64: image.toString('base64') })), temperature: 0.1, maxTokens: 500
@@ -699,7 +739,7 @@ export class Orchestrator {
         try { if (trialFile && trialFile !== best?.file && existsSync(trialFile)) unlinkSync(trialFile) } catch { /* a retained trial is harmless */ }
         this.store.appendEvent(projectId, `custom scene ${index + 1}: candidate ${attempt} rejected — ${feedback}`)
       }
-      if (!accepted && best && !this.cancelled) {
+      if (!accepted && best && !this.cancelled && !isometricOnly) {
         current = best.spec
         this.store.saveComposition(projectId, compose(current, vendorDir, fontsDir, audio))
         this.store.saveSpec(projectId, current)
@@ -707,6 +747,11 @@ export class Orchestrator {
         continuityFrame = best.frame
         this.store.appendEvent(projectId, `custom scene ${index + 1}: selected candidate ${best.attempt}, the best safe improvement after retries`)
         accepted = true
+      }
+      if (!accepted && isometricOnly && !this.cancelled) {
+        if (best?.file) { try { unlinkSync(best.file) } catch {} }
+        writeComposition(dir, originalHtml)
+        throw new Error(`Could not produce a reviewed isometric animation for scene ${index + 1}: ${feedback ?? 'no usable candidate'}`)
       }
       if (!accepted) {
         if (best?.file) { try { unlinkSync(best.file) } catch {} }
@@ -1182,10 +1227,15 @@ export class Orchestrator {
     // ---------- direct (only when it never finished) ----------
     if (this.cancelled) return this.abort(projectId, emit)
     let directed = false
-    if (opts.craft !== 'classic' && (!spec.design || spec.crafts.length < spec.scenes.length)) {
+    const isometricOnly = isIsometricOnlyBrief(meta.prompt)
+    if (isometricOnly && (spec.crafts.length || spec.customScenes?.length)) {
+      spec = { ...spec, crafts: [], customScenes: [], customVideos: [] }
+      this.store.saveSpec(projectId, spec)
+    }
+    if (!isometricOnly && opts.craft !== 'classic' && (!spec.design || spec.crafts.length < spec.scenes.length)) {
       spec = await this.runDirect(projectId, spec, meta.prompt, emit)
       directed = true
-    } else if (spec.crafts.some((c) => c.background === 'plate' && !c.plate?.file)) {
+    } else if (!isometricOnly && spec.crafts.some((c) => c.background === 'plate' && !c.plate?.file)) {
       spec = await this.runPlates(projectId, spec, emit, this.providerFor())
       this.store.saveSpec(projectId, spec)
       directed = true
@@ -1195,7 +1245,7 @@ export class Orchestrator {
     if (this.cancelled) return this.abort(projectId, emit)
     const composition = join(this.store.dir(projectId), 'index.html')
     let audio: Awaited<ReturnType<Orchestrator['runCompose']>> = { clips: [], captions: [], hasNarration: false }
-    if (!existsSync(composition) || directed) {
+    if (!existsSync(composition) || directed || isometricOnly) {
       audio = await this.runCompose(projectId, spec, emit)
     } else {
       this.store.appendEvent(projectId, 'compose: resumed (composition intact)')
@@ -1206,12 +1256,27 @@ export class Orchestrator {
     if (this.cancelled) return this.abort(projectId, emit)
     const state = this.store.readState(projectId)
     let qa: CheckReport
-    if (state.stages.qa.status === 'done' && existsSync(composition) && !directed) {
+    if (isometricOnly) {
+      qa = { ok: true, errors: [], warnings: [] }
+    } else if (state.stages.qa.status === 'done' && existsSync(composition) && !directed) {
       qa = { ok: true, errors: [], warnings: [] }
       this.store.appendEvent(projectId, 'qa: resumed (already passed)')
       emit({ stage: 'qa', status: 'done', clean: true, warnings: 0 })
     } else {
       qa = await this.runQaLoop(projectId, spec, audio, emit)
+    }
+
+    if (isometricOnly) {
+      try {
+        spec = await this.runCustomScenes(projectId, spec, meta.prompt, audio, emit, undefined, true)
+        if (!this.cancelled) {
+          qa = await this.runQaLoop(projectId, spec, audio, emit)
+          if (!qa.ok) throw new Error(`Isometric film failed final render checks: ${qa.errors.map(e => e.message).join('; ') || 'no diagnostics returned'}`)
+        }
+      } catch (err) {
+        this.store.setStatus(projectId, 'error', String(err))
+        throw err
+      }
     }
 
     // ---------- live storyboard captures ----------

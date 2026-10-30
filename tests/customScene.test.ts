@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { validateSceneSvg, chooseCustomScenes, authorCustomScene } from '../src/main/director/customScene'
 import { authorCanvasCode } from '../src/main/director/canvasCode'
 import { MockProvider } from '../src/main/providers/mock'
@@ -6,7 +6,7 @@ import { Planner } from '../src/main/pipeline/planner'
 import { compose } from '../src/main/composer'
 import { resolve } from 'node:path'
 import type { LLMProvider } from '../src/main/providers/types'
-import { Orchestrator, isBlankReviewFrame } from '../src/main/pipeline/orchestrator'
+import { Orchestrator, isBlankReviewFrame, isIsometricOnlyBrief } from '../src/main/pipeline/orchestrator'
 import { ProjectStore } from '../src/main/store/projectStore'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -16,6 +16,74 @@ import sharp from 'sharp'
 const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#123456"/><g id="motion1"><circle cx="50" cy="50" r="20" fill="#fff"/></g></svg>'
 
 describe('custom scene authoring', () => {
+  it('routes whole-film isometric briefs without capturing mixed-media briefs', () => {
+    expect(isIsometricOnlyBrief('Make a full 2D isometric video, no AI images or video')).toBe(true)
+    expect(isIsometricOnlyBrief('An isometric animated factory explainer')).toBe(true)
+    expect(isIsometricOnlyBrief('Use one scene in isometric style and show real coffee')).toBe(false)
+    expect(isIsometricOnlyBrief('Mix isometric animation with live-action footage')).toBe(false)
+    expect(isIsometricOnlyBrief('Alternate real footage and isometric animation')).toBe(false)
+    expect(isIsometricOnlyBrief('Show a coffee process with footage')).toBe(false)
+    expect(isIsometricOnlyBrief('No isometric scenes, use real footage')).toBe(false)
+  })
+
+  it('routes an isometric film around media acquisition and the mixed-media critic', async () => {
+    const provider = new MockProvider()
+    const store = new ProjectStore(mkdtempSync(join(tmpdir(), 'isometric-route-')))
+    const orchestrator = new Orchestrator(store, () => provider)
+    const internal = orchestrator as any
+    internal.runDirect = vi.fn(() => { throw new Error('media stage must not run') })
+    internal.runCritic = vi.fn(() => { throw new Error('mixed-media critic must not run') })
+    internal.runCompose = vi.fn(async () => ({ clips: [], captions: [], hasNarration: false }))
+    internal.runQaLoop = vi.fn(async () => ({ ok: true, errors: [], warnings: [] }))
+    internal.runCustomScenes = vi.fn(async (_id: string, spec: unknown, _prompt: string, _audio: unknown, _emit: unknown, _target: unknown, required: boolean) => {
+      expect(required).toBe(true)
+      return spec
+    })
+    internal.captureThumbs = vi.fn(async () => {})
+    internal.runRender = vi.fn(async () => ({ output: 'test.mp4' }))
+    await orchestrator.generate({ prompt: 'A full isometric coffee video with no AI images or video', platform: 'tiktok', craft: 'classic', quality: 'draft' })
+    expect(internal.runDirect).not.toHaveBeenCalled()
+    expect(internal.runCritic).not.toHaveBeenCalled()
+    expect(internal.runCustomScenes).toHaveBeenCalledOnce()
+  })
+  it('rebuilds missing custom animation after an isometric project is edited', async () => {
+    const provider = new MockProvider()
+    const spec = await new Planner(provider).plan({ userPrompt: 'full isometric factory', platform: 'tiktok' })
+    const store = new ProjectStore(mkdtempSync(join(tmpdir(), 'isometric-edit-')))
+    const project = store.create('full isometric factory', 'test')
+    store.saveSpec(project.id, spec)
+    const internal = new Orchestrator(store, () => provider) as any
+    internal.runPlates = vi.fn(() => { throw new Error('media stage must not run') })
+    internal.runCompose = vi.fn(async () => ({ clips: [], captions: [], hasNarration: false }))
+    internal.runQaLoop = vi.fn(async () => ({ ok: true, errors: [], warnings: [] }))
+    internal.runCustomScenes = vi.fn(async (_id: string, edited: unknown, _prompt: string, _audio: unknown, _emit: unknown, _target: unknown, required: boolean) => { expect(required).toBe(true); return edited })
+    internal.captureThumbs = vi.fn(async () => {})
+    internal.runRender = vi.fn(async () => ({ output: 'test.mp4' }))
+    await internal.applyEdit(project.id, spec, { quality: 'draft' })
+    expect(internal.runCustomScenes).toHaveBeenCalledOnce()
+    expect(internal.runPlates).not.toHaveBeenCalled()
+  })
+  it('fails explicitly when a code-only isometric film has no writing model', async () => {
+    const provider = new MockProvider()
+    const spec = await new Planner(provider).plan({ userPrompt: 'isometric factory', platform: 'tiktok' })
+    const store = new ProjectStore(mkdtempSync(join(tmpdir(), 'isometric-fail-')))
+    const project = store.create('isometric factory', 'test')
+    const orchestrator = new Orchestrator(store, () => provider)
+    await expect((orchestrator as any).runCustomScenes(project.id, spec, 'isometric factory', { clips: [], captions: [] }, () => {}, undefined, true)).rejects.toThrow('configured writing model')
+  })
+  it('never silently falls back to placeholder scenes when isometric code cannot render', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'isometric factory', platform: 'tiktok' })
+    const store = new ProjectStore(mkdtempSync(join(tmpdir(), 'isometric-required-')))
+    const project = store.create('isometric factory', 'test')
+    store.saveComposition(project.id, compose(spec, resolve('vendor'), resolve('vendor/fonts')))
+    const frame = join(project.dir, 'frame.png')
+    writeFileSync(frame, await sharp({ create: { width: 16, height: 16, channels: 3, background: '#ffffff' } }).png().toBuffer())
+    const provider = { id: 'openai', generateJSON: async () => ({ beginning: 'a', middle: 'b', end: 'c', photoUse: 'none' }), generateText: async () => 'ctx.fillRect(0,0,w,h)' } as unknown as LLMProvider
+    const orchestrator = new Orchestrator(store, () => provider)
+    ;(orchestrator as any).renders = { snapshot: async (_dir: string, times: number[]) => times.map(() => frame), check: async () => ({ ok: true, errors: [], warnings: [] }) }
+    await expect((orchestrator as any).runCustomScenes(project.id, spec, 'isometric factory', { clips: [], captions: [] }, () => {}, undefined, true)).rejects.toThrow('Could not produce a reviewed isometric animation')
+    expect(store.readSpec(project.id)?.customVideos).toBeUndefined()
+  })
   it('detects a failed near-black capture before comparing scenes', async () => {
     const blank = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#101216' } }).png().toBuffer()
     const visible = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#d9a45b' } }).png().toBuffer()

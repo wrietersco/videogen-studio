@@ -14,6 +14,8 @@ const PROVIDERS: Array<[RegExp, string]> = [
 ]
 
 export function friendlyError(raw: string): FriendlyError {
+  if (/isometric (?:animation|film|scene)|reviewed isometric animation/i.test(raw))
+    return { title: 'The isometric animation could not be completed', fix: 'The app could not produce or verify every animated scene. Try again or simplify the visual action; your selected models and providers remain unchanged.', settings: false, raw }
   if (/Planner produced an invalid VideoSpec/i.test(raw))
     return { title: 'The video plan could not be completed', fix: 'The planner returned an invalid plan after retrying. Try again; your selected models and providers do not need to be changed.', settings: false, raw }
   const who = PROVIDERS.find(([re]) => re.test(raw))?.[1]

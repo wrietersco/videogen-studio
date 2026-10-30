@@ -17,6 +17,7 @@ with a single JSON object conforming exactly to the provided VideoSpec schema.
 
 Creative guidance:
 - Think like a director: strong hook first, one idea per scene, satisfying close.
+- For a whole-film isometric animation, use several concise scenes of at most 12 seconds each so the motion can be authored and reviewed scene by scene. Every scene must advance to a different action or stage; do not repeat the same process in the opening and following scene. Specify the subjects and actions, not generic title cards.
 - For a process, plan visually distinct steps that can each be shown; do not cram several physical actions into one scene and assume a single still will show them. Condense narration or omit nonessential setup to fit the requested length.
 - Respect the platform preset given in the prompt (duration range, aspect, pacing bias).
 - Pick palette/typography that serve the topic and mood; be intentional, never random.

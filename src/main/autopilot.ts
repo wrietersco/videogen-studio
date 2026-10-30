@@ -58,7 +58,7 @@ export async function decideCreative(prompt: string, provider: LLMProvider): Pro
   if (provider.id === 'mock') return fallback()
   try {
     const result = await provider.generateJSON<CreativeDecision>({
-      system: 'Choose the best video format, style and duration for the user’s brief. Honor explicit platform and duration requests. Choose a suitable platform if unspecified. Look controls visual styling, not the availability of photographs, footage or graphics: explainers often need a rich mix of all three. Explain the choice briefly. Do not choose or change any AI provider or model.',
+      system: 'Choose the best video format, style and duration for the user’s brief. Honor explicit platform and duration requests. Choose a suitable platform if unspecified. Look controls visual styling, not the availability of photographs, footage or graphics: explainers often need a rich mix of all three. Honor an explicit all-isometric, no-photos or no-video brief; describe its code-drawn motion graphics without suggesting footage or generated imagery. Explain the choice briefly. Do not choose or change any AI provider or model.',
       prompt,
       schemaName: 'CreativeDecision',
       jsonSchema: { type: 'object', properties: { platform: { type: 'string', enum: PlatformId.options }, styleHint: { type: 'string', enum: StyleFamily.options }, durationHintSec: { type: 'number' }, look: { type: 'string', enum: ['documentary', 'infographic'] }, reason: { type: 'string' } }, required: ['platform', 'styleHint', 'durationHintSec', 'look', 'reason'], additionalProperties: false },

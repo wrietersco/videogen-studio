@@ -197,17 +197,10 @@ export class RenderService {
         })
       )
       child.on('close', (code) => {
-        const jsonLine = stdout
-          .split('\n')
-          .reverse()
-          .find((l) => l.trim().startsWith('{'))
-        if (jsonLine) {
-          try {
-            resolvePromise(normalizeCheckReport(JSON.parse(jsonLine)))
-            return
-          } catch {
-            /* fall through */
-          }
+        const report = parseCheckOutput(stdout)
+        if (report) {
+          resolvePromise(report)
+          return
         }
         // non-JSON fallback: parse the human summary
         const errors: CheckIssue[] = []
@@ -240,6 +233,17 @@ export interface CheckReport {
   errors: CheckIssue[]
   warnings: CheckIssue[]
   raw?: string
+}
+
+/** Accept compact and pretty-printed CLI output, with optional log lines. */
+export function parseCheckOutput(stdout: string): CheckReport | null {
+  const jsonLine = stdout.split('\n').reverse().find(line => line.trim().startsWith('{'))
+  const first = stdout.indexOf('{'), last = stdout.lastIndexOf('}')
+  for (const candidate of [stdout.trim(), first >= 0 && last >= first ? stdout.slice(first, last + 1) : '', jsonLine]) {
+    if (!candidate) continue
+    try { return normalizeCheckReport(JSON.parse(candidate)) } catch { /* try next form */ }
+  }
+  return null
 }
 
 /** Defensive normalization — the CLI's JSON shape may evolve. */

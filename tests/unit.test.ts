@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeCheckReport } from '../src/main/rendererService/hyperframes'
+import { normalizeCheckReport, parseCheckOutput } from '../src/main/rendererService/hyperframes'
 
 describe('HyperFrames diagnostics', () => {
   it('surfaces errors from current top-level check sections', () => {
+    const pretty = JSON.stringify({ ok: false, contrast: { findings: [{ severity: 'error', message: 'low contrast' }] } }, null, 2)
+    expect(parseCheckOutput(`check starting\n${pretty}\nfinished`)?.errors[0].message).toBe('low contrast')
     const report = normalizeCheckReport({ ok: false, contrast: { findings: [{ severity: 'error', message: 'Contrast is too low', selector: '#title', fixHint: 'darken background' }] }, layout: { findings: [{ severity: 'info', message: 'intentional edge' }] } })
     expect(report.ok).toBe(false)
     expect(report.errors.map(e => e.message)).toEqual(['Contrast is too low'])
