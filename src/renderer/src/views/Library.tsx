@@ -157,7 +157,7 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
                       <button
                         onClick={() => resume(p.id)}
                         disabled={Boolean(rerendering)}
-                        title="Pick up where it stopped — finished parts are reused, so it costs nothing extra"
+                        title="Pick up where it stopped — finished parts are reused; remaining work may incur provider charges"
                         className="btn-primary"
                       >
                         ▶ Finish it

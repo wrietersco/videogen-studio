@@ -25,7 +25,7 @@ export async function needsCanvasCode(provider: LLMProvider, spec: VideoSpec, sc
 }
 
 /** The configured writing model authors the draw function; time is supplied by the renderer. */
-export async function authorCanvasCode(provider: LLMProvider, spec: VideoSpec, prompt: string, sceneId: string, feedback?: string, previousCode?: string, backgroundJpeg?: Buffer, previousFrame?: Buffer, backgroundIsVideo = false, continuityFrame?: Buffer): Promise<string> {
+export async function authorCanvasCode(provider: LLMProvider, spec: VideoSpec, prompt: string, sceneId: string, feedback?: string, previousCode?: string, backgroundJpeg?: Buffer, previousFrame?: Buffer, backgroundIsVideo = false, continuityFrame?: Buffer, continuityCode?: string): Promise<string> {
   const scene = spec.scenes.find(s => s.id === sceneId)
   if (!scene) throw new Error('Unknown scene')
   const hasBackground = Boolean(backgroundJpeg)
@@ -41,8 +41,8 @@ export async function authorCanvasCode(provider: LLMProvider, spec: VideoSpec, p
     })
   } catch { /* write from the brief and reviewer notes if planning is unavailable */ }
   const request = {
-    system: 'Write the BODY of a JavaScript function draw(ctx,t,w,h,assets) for a bespoke professional animated video scene. ctx is a CanvasRenderingContext2D; t is seconds since this scene starts; w and h are canvas dimensions. If assets.background exists it is the preloaded photo or current frame of the moving footage chosen for this scene. Always draw it as the full-frame background when backgroundIsVideo is true, preserving its movement and keeping its subject unobstructed; place custom motion on top. Draw the entire frame every call. Make the requested action visibly change at the beginning, middle and end: do not substitute a static diagram or tiny decorative particles for meaningful motion. Everything must be a deterministic function of t: no random, clocks, timers, animation frame, mutable state carried between calls, network, storage, DOM access or loading assets. Make the important motion large and obvious across the frame, with visibly different beginning, middle and end, not just tiny moving dots. Do not use external packages or load images or video. Use canvas 2D shapes, gradients, paths and text. Use scene-specific visual storytelling, not a generic title slide. When a previous approved scene is supplied, preserve the identity and appearance of its recurring emblem, character or product while advancing the action. Keep important content inside the frame. Return only JavaScript statements, no function wrapper or markdown.',
-    prompt: JSON.stringify({ brief: prompt, scene, narration: spec.narration.find(n => n.sceneId === sceneId)?.text, palette: spec.palette, hasBackground, backgroundIsVideo, imageOrder: references.map(x => x.label), motionPlan, feedback, previousCode }),
+    system: 'Write the BODY of a JavaScript function draw(ctx,t,w,h,assets) for a bespoke professional animated video scene. ctx is a CanvasRenderingContext2D; t is seconds since this scene starts; w and h are canvas dimensions. If assets.background exists it is the preloaded photo or current frame of the moving footage chosen for this scene. Always draw it as the full-frame background when backgroundIsVideo is true, preserving its movement and keeping its subject unobstructed; place custom motion on top. Draw the entire frame every call. Make the requested action visibly change at the beginning, middle and end: do not substitute a static diagram or tiny decorative particles for meaningful motion. Everything must be a deterministic function of t: no random, clocks, timers, animation frame, mutable state carried between calls, network, storage, DOM access or loading assets. Make the important motion large and obvious across the frame, with visibly different beginning, middle and end, not just tiny moving dots. Do not use external packages or load images or video. Use canvas 2D shapes, gradients, paths and text. Use scene-specific visual storytelling, not a generic title slide. When a previous approved scene is supplied, preserve the identity and appearance of its recurring emblem, character or product while advancing the action. If approvedPreviousSceneCode is supplied, reuse its static geometry, object placement, perspective and palette as the authoritative design; adapt the motion to this scene instead of inventing replacement equipment. Keep important content inside the frame. Return only JavaScript statements, no function wrapper or markdown.',
+    prompt: JSON.stringify({ brief: prompt, scene, narration: spec.narration.find(n => n.sceneId === sceneId)?.text, palette: spec.palette, hasBackground, backgroundIsVideo, imageOrder: references.map(x => x.label), motionPlan, feedback, previousCode, approvedPreviousSceneCode: continuityCode }),
     images, maxTokens: 7000, temperature: 0.6
   }
   let result: string
@@ -53,6 +53,23 @@ export async function authorCanvasCode(provider: LLMProvider, spec: VideoSpec, p
   const code = result.replace(/^```(?:javascript|js)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
   if (!code || code.length > 50000) throw new Error('Invalid custom code size')
   return code
+}
+
+/** Detect meaningful local motion as well as whole-frame changes. RGB samples must have identical dimensions. */
+export function hasVisibleMotion(samples: Buffer[]): boolean {
+  if (samples.length < 2 || samples[0].length === 0 || samples[0].length % 3 !== 0 || samples.some(s => s.length !== samples[0].length)) return false
+  const pixels = samples[0].length / 3
+  for (let i = 1; i < samples.length; i++) {
+    const a = samples[i - 1], b = samples[i]
+    let total = 0, changed = 0
+    for (let p = 0; p < a.length; p += 3) {
+      const delta = (Math.abs(a[p] - b[p]) + Math.abs(a[p + 1] - b[p + 1]) + Math.abs(a[p + 2] - b[p + 2])) / 3
+      total += delta
+      if (delta >= 24) changed++
+    }
+    if (total / pixels >= 0.3 || (total / pixels >= 0.04 && changed / pixels >= 0.0017)) return true
+  }
+  return false
 }
 
 function timeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -131,13 +148,12 @@ window.isReady=()=>ready;window.render=(time,background)=>new Promise((resolve,r
       if (typeof first !== 'string' || first !== second) throw new Error('Custom scene is not deterministic at the same timeline time')
     }
     const samples: Buffer[] = []
-    for (const fraction of [0.2, 0.55, 0.9]) {
+    for (const fraction of [0, 0.12, 0.25, 0.4, 0.55, 0.7, 0.85, 0.98]) {
       const frame = await timeout(win.webContents.executeJavaScript(renderAt(durationSec * fraction)), 5000, 'Custom frame')
       if (typeof frame !== 'string' || !frame.startsWith('data:image/png;base64,') || frame.length > 30000000) throw new Error('Invalid custom frame')
       samples.push(await sharp(Buffer.from(frame.slice('data:image/png;base64,'.length), 'base64')).resize(96, 96, { fit: 'fill' }).removeAlpha().raw().toBuffer())
     }
-    const difference = (a: Buffer, b: Buffer) => { let total = 0; for (let i = 0; i < a.length; i++) total += Math.abs(a[i] - b[i]); return total / a.length }
-    if (Math.max(difference(samples[0], samples[1]), difference(samples[1], samples[2])) < 0.3) throw new Error('The custom animation shows too little visible change; make the requested process move clearly through the scene')
+    if (!hasVisibleMotion(samples)) throw new Error('The custom animation shows too little visible change; make the requested process move clearly through the scene')
     for (let i = 0; i < frames; i++) {
       if (opts.cancelled?.()) throw new Error('Custom scene cancelled')
       if (Date.now() > deadline) throw new Error('Custom scene render exceeded time limit')

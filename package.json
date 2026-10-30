@@ -1,6 +1,6 @@
 {
   "name": "videogen-studio",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "Dynamic, editable AI video generator — prompt in, platform-ready video out",
   "main": "out/main/index.js",
   "type": "module",

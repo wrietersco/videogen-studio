@@ -28,6 +28,12 @@ export function isIsometricOnlyBrief(prompt: string): boolean {
   return /\bisometric\b/i.test(prompt) && !/\b(?:no|avoid|without|not)\s+(?:any\s+)?isometric\b/i.test(prompt) && !/\b(?:some|one|single|one of|a few)\s+(?:scenes?|shots?)\s+(?:in|with|as)\s+(?:an?\s+)?isometric\b/i.test(prompt) && !/\b(?:mix|combine|intercut|alternate|blend)\b.{0,80}\b(?:footage|photos?|photographs?|live.action)\b/i.test(prompt)
 }
 
+/** Recompose an interrupted project without refitting already-recorded narration. */
+export function canReuseNarrationTiming(spec: VideoSpec, projectDir: string): boolean {
+  if (!spec.narration.some(n => n.text.trim())) return true
+  return spec.narration.filter(n => n.text.trim()).every(n => spec.voiceover.some(t => t.sceneId === n.sceneId && /^assets\/audio\/[A-Za-z0-9._-]+$/.test(t.file) && existsSync(join(projectDir, t.file))))
+}
+
 function readComposition(dir: string): string {
   const p = join(dir, 'index.html')
   return existsSync(p) ? readFileSync(p, 'utf8') : ''
@@ -682,7 +688,7 @@ export class Orchestrator {
               if (existsSync(platePath)) backgroundJpeg = await sharp(readFileSync(platePath)).resize({ width: 1080, height: 1920, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer()
             }
             if (backgroundVideo) backgroundJpeg = beforeImages[1]
-            const code = await authorCanvasCode(provider, current, isometricOnly ? `${prompt}\nAll scenes must be fully animated original 2D isometric motion graphics, with consistent perspective and visual identity. Draw all visuals using canvas shapes. Do not use photos, footage or generated imagery.` : prompt, sceneId, feedback, previousCode, backgroundJpeg, previousFrame, Boolean(backgroundVideo), continuityFrame)
+            const code = await authorCanvasCode(provider, current, isometricOnly ? `${prompt}\nAll scenes must be fully animated original 2D isometric motion graphics, with consistent perspective and visual identity. Draw all visuals using canvas shapes. Do not use photos, footage or generated imagery.` : prompt, sceneId, feedback, previousCode, backgroundJpeg, previousFrame, Boolean(backgroundVideo), continuityFrame, isometricOnly && index > 0 ? current.customVideos?.find(c => c.sceneId === current.scenes[index - 1].id)?.source : undefined)
             previousCode = code
             const file = `assets/custom/${randomUUID()}.mp4`
             trialFile = join(dir, file)
@@ -1052,7 +1058,7 @@ export class Orchestrator {
     return { spec: next, qa }
   }
 
-  private async runCompose(projectId: string, spec: VideoSpec, emit: (e: PipelineEvent) => void, targetSec?: number) {
+  private async runCompose(projectId: string, spec: VideoSpec, emit: (e: PipelineEvent) => void, targetSec?: number, preserveTiming = false) {
     this.track(projectId, 'compose', 'running')
     emit({ stage: 'compose', status: 'started' })
     // voice-first: narration is synthesized (or reused) and measured, and scene
@@ -1060,7 +1066,11 @@ export class Orchestrator {
     try {
       const speech = this.speech()
       const before = spec.durationSec
-      await narrate(spec, speech, this.store.dir(projectId), speech && this.media ? this.media.voiceCache(projectId, speech) : undefined, targetSec)
+      if (!preserveTiming || !canReuseNarrationTiming(spec, this.store.dir(projectId))) {
+        await narrate(spec, speech, this.store.dir(projectId), speech && this.media ? this.media.voiceCache(projectId, speech) : undefined, targetSec)
+      } else {
+        this.store.appendEvent(projectId, 'voice: reused saved narration and scene timings')
+      }
       this.store.saveSpec(projectId, spec)
       if (spec.voiceover.length) {
         this.store.appendEvent(projectId, `voice: ${spec.voiceover.length} takes (${spec.voice?.id}) · ${before}s → ${spec.durationSec}s`)
@@ -1246,7 +1256,7 @@ export class Orchestrator {
     const composition = join(this.store.dir(projectId), 'index.html')
     let audio: Awaited<ReturnType<Orchestrator['runCompose']>> = { clips: [], captions: [], hasNarration: false }
     if (!existsSync(composition) || directed || isometricOnly) {
-      audio = await this.runCompose(projectId, spec, emit)
+      audio = await this.runCompose(projectId, spec, emit, isometricOnly ? spec.durationSec : undefined, isometricOnly)
     } else {
       this.store.appendEvent(projectId, 'compose: resumed (composition intact)')
       emit({ stage: 'compose', status: 'done' })

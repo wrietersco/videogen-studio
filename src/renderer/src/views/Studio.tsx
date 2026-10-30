@@ -371,7 +371,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
 
           {error && (
             <div className="mt-6">
-              <ErrorCard error={error} onOpenSettings={onOpenSettings} onRetry={prompt.trim() && cfg ? generate : undefined} />
+              <ErrorCard error={error} onOpenSettings={onOpenSettings} onRetry={prompt.trim() && cfg && !/isometric (?:animation|film|scene)|reviewed isometric animation/i.test(error) ? generate : undefined} />
             </div>
           )}
           {notice && <div className="slide-up mt-4 rounded-2xl border-2 border-sky/30 bg-sky-soft p-4 text-sm font-semibold text-ink/80">✋ {notice}</div>}

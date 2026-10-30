@@ -1,14 +1,14 @@
 import { describe, it, expect, vi } from 'vitest'
 import { validateSceneSvg, chooseCustomScenes, authorCustomScene } from '../src/main/director/customScene'
-import { authorCanvasCode } from '../src/main/director/canvasCode'
+import { authorCanvasCode, hasVisibleMotion } from '../src/main/director/canvasCode'
 import { MockProvider } from '../src/main/providers/mock'
 import { Planner } from '../src/main/pipeline/planner'
 import { compose } from '../src/main/composer'
 import { resolve } from 'node:path'
 import type { LLMProvider } from '../src/main/providers/types'
-import { Orchestrator, isBlankReviewFrame, isIsometricOnlyBrief } from '../src/main/pipeline/orchestrator'
+import { Orchestrator, isBlankReviewFrame, isIsometricOnlyBrief, canReuseNarrationTiming } from '../src/main/pipeline/orchestrator'
 import { ProjectStore } from '../src/main/store/projectStore'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import sharp from 'sharp'
@@ -83,6 +83,35 @@ describe('custom scene authoring', () => {
     ;(orchestrator as any).renders = { snapshot: async (_dir: string, times: number[]) => times.map(() => frame), check: async () => ({ ok: true, errors: [], warnings: [] }) }
     await expect((orchestrator as any).runCustomScenes(project.id, spec, 'isometric factory', { clips: [], captions: [] }, () => {}, undefined, true)).rejects.toThrow('Could not produce a reviewed isometric animation')
     expect(store.readSpec(project.id)?.customVideos).toBeUndefined()
+  })
+  it('reuses timing only when all saved narration files are present', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'isometric shop', platform: 'tiktok' })
+    const dir = mkdtempSync(join(tmpdir(), 'narration-resume-'))
+    spec.narration = [{ sceneId: spec.scenes[0].id, text: 'A cup of coffee' }]
+    spec.voiceover = [{ sceneId: spec.scenes[0].id, key: 'k', file: 'assets/audio/voice.mp3', durationSec: 2, speechStartSec: 0, leadSec: 0, words: [] }]
+    expect(canReuseNarrationTiming(spec, dir)).toBe(false)
+    mkdirSync(join(dir, 'assets', 'audio'), { recursive: true })
+    writeFileSync(join(dir, 'assets', 'audio', 'voice.mp3'), 'saved')
+    expect(canReuseNarrationTiming(spec, dir)).toBe(true)
+    spec.voiceover[0].file = '../../outside.mp3'
+    expect(canReuseNarrationTiming(spec, dir)).toBe(false)
+  })
+  it('detects localized visible motion without accepting a static frame', () => {
+    const still = Buffer.alloc(96 * 96 * 3, 100)
+    const moving = Buffer.from(still)
+    for (let pixel = 0; pixel < 24; pixel++) moving.fill(200, pixel * 3, pixel * 3 + 3)
+    expect(hasVisibleMotion([still, still, still])).toBe(false)
+    expect(hasVisibleMotion([still, moving, still])).toBe(true)
+    const noise = Buffer.from(still)
+    for (let pixel = 0; pixel < 10; pixel++) noise.fill(101, pixel * 3, pixel * 3 + 3)
+    expect(hasVisibleMotion([still, noise])).toBe(false)
+  })
+  it('gives the author the previous approved scene code for exact design continuity', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'isometric shop', platform: 'tiktok' })
+    let authorPrompt = ''
+    const provider = { id: 'openai', generateJSON: async () => ({ beginning: 'a', middle: 'b', end: 'c', photoUse: 'none' }), generateText: async (req: { prompt: string }) => { authorPrompt = req.prompt; return 'ctx.fillRect(0,0,w,h)' } } as unknown as LLMProvider
+    await authorCanvasCode(provider, spec, 'isometric shop', spec.scenes[0].id, undefined, undefined, undefined, undefined, false, undefined, 'approved grinder geometry')
+    expect(JSON.parse(authorPrompt).approvedPreviousSceneCode).toBe('approved grinder geometry')
   })
   it('detects a failed near-black capture before comparing scenes', async () => {
     const blank = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#101216' } }).png().toBuffer()
