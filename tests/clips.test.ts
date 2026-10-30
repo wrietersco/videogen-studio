@@ -1,4 +1,5 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -12,6 +13,7 @@ import { Planner } from '../src/main/pipeline/planner'
 import { compose } from '../src/main/composer'
 import { estimateVideoCost } from '../src/shared/pricing'
 import type { SceneCraft } from '../src/shared/spec'
+import { ffmpegBin } from '../src/main/audio/pcm'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -62,6 +64,95 @@ describe('engine-chosen clip scenes', () => {
 })
 
 describe('motion clips via the media router', () => {
+  it('reassigns an unavailable motion beat to a suitable library clip without another paid request', async () => {
+    const { Orchestrator } = await import('../src/main/pipeline/orchestrator')
+    const { ProjectStore } = await import('../src/main/store/projectStore')
+    const root = mkdtempSync(join(tmpdir(), 'vg-motion-reassign-'))
+    const store = new ProjectStore(join(root, 'projects'))
+    const project = store.create('coffee', 'Coffee')
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'coffee', platform: 'tiktok' })
+    spec.design = { look: 'documentary', series: 'COFFEE', imageStyle: '', accent: '#fff', accent2: '#aaa' }
+    spec.crafts = spec.scenes.map((scene, i) => craft(scene.id, i === 0))
+    const calls: Array<{ subjectLabel?: string; libraryOnly?: boolean }> = []
+    const media = { clipsAvailable: () => true, motionClip: async (req: { subjectLabel?: string; libraryOnly?: boolean }) => { calls.push(req); return req.libraryOnly && req.subjectLabel === spec.scenes[1].id ? { buffer: Buffer.from('existing clip'), assetId: 'old', source: 'generated' } : null } } as unknown as MediaRouter
+    const orch = new Orchestrator(store, () => new MockProvider(), () => null, media)
+    const crafts = new Map(spec.crafts.map(c => [c.sceneId, c]))
+    const made = await (orch as any).runClips(project.id, spec, crafts, () => {})
+    expect(made).toBe(1)
+    expect(calls[0].libraryOnly).toBeUndefined()
+    expect(calls.slice(1).every(c => c.libraryOnly)).toBe(true)
+    expect(crafts.get(spec.scenes[1].id)?.plate?.clipFile).toBe(`assets/plates/${spec.scenes[1].id}.mp4`)
+  })
+
+  it('probes older library videos without metadata before deciding whether to reuse them', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vg-legacy-clip-'))
+    const file = join(dir, 'sample.mp4')
+    execFileSync(ffmpegBin(), ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=blue:s=64x96:r=10:d=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', file])
+    const lib = new AssetLibrary(join(dir, 'library'), null)
+    const saved = lib.add(readFileSync(file), '.mp4', { kind: 'video', source: 'generated', title: 'coffee brewing', tags: ['coffee', 'brewing'], prompt: 'coffee brewing', provider: 'gemini', model: 'user-chosen-model', license: { name: 'Generated', requiresAttribution: false } })
+    const router = new MediaRouter({ library: lib, settings: () => ({ ...DEFAULT_SETTINGS, autopilot: true, media: { ...DEFAULT_SETTINGS.media, video: 'stock' } }), key: () => '', provider: () => new MockProvider(), autoImageProvider: () => null })
+    ;(router as unknown as { scoreVideo: () => Promise<number> }).scoreVideo = async () => 9
+    const result = await router.motionClip({ prompt: 'coffee brewing', subjectLabel: 'coffee brewing', width: 64, height: 96, durationSec: 2, projectId: 'p1' })
+    expect(result?.assetId).toBe(saved.id)
+  }, 60_000)
+  it('rejects a loosely matched library clip when visual review says it is unsuitable', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vg-loose-clip-')), file = join(dir, 'sample.mp4')
+    execFileSync(ffmpegBin(), ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=red:s=64x96:r=10:d=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', file])
+    const lib = new AssetLibrary(join(dir, 'library'), null)
+    lib.add(readFileSync(file), '.mp4', { kind: 'video', source: 'generated', title: 'coffee roasting', tags: ['coffee', 'roasting'], prompt: 'coffee roasting', license: { name: 'Generated', requiresAttribution: false } })
+    const router = new MediaRouter({ library: lib, settings: () => ({ ...DEFAULT_SETTINGS, autopilot: true, media: { ...DEFAULT_SETTINGS.media, video: 'stock' } }), key: () => '', provider: () => new MockProvider(), autoImageProvider: () => null })
+    ;(router as unknown as { scoreVideo: () => Promise<number> }).scoreVideo = async () => 4
+    const result = await router.motionClip({ prompt: 'coffee brewing', subjectLabel: 'coffee brewing', width: 64, height: 96, durationSec: 2, projectId: 'p1' })
+    expect(result).toBeNull()
+  }, 60_000)
+  it('records generated video dimensions and duration for later library matching', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vg-clip-meta-'))
+    const file = join(dir, 'sample.mp4')
+    execFileSync(ffmpegBin(), ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=black:s=64x48:r=10:d=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', file])
+    const clip = readFileSync(file)
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({ status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'video', data: clip.toString('base64') }] }] })))
+    const lib = new AssetLibrary(join(dir, 'library'), null)
+    const router = new MediaRouter({ library: lib, settings: () => ({ ...DEFAULT_SETTINGS, media: { ...DEFAULT_SETTINGS.media, video: 'gemini:gemini-omni-1.1-flash' } }), key: (id) => id === 'gemini' ? 'k' : '', provider: () => new MockProvider(), autoImageProvider: () => null })
+    const result = await router.motionClip({ prompt: 'coffee roasting', subjectLabel: 'coffee', width: 64, height: 48, durationSec: 2, projectId: 'p1' })
+    expect(lib.get(result!.assetId)).toMatchObject({ width: 64, height: 48, durationSec: 2 })
+    expect(lib.search('coffee', { kind: 'video', minDurationSec: 1.5 })).toHaveLength(1)
+  }, 60_000)
+  it('enforces a shared clip count and four-second request in bounded tests', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({ status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'video', data: Buffer.from(`clip-${bodies.length}`).toString('base64') }] }] }))
+    })
+    const router = new MediaRouter({ library: new AssetLibrary(mkdtempSync(join(tmpdir(), 'vg-bounded-')), null), settings: () => ({ ...DEFAULT_SETTINGS, autopilot: true, reuse: 'fresh', media: { ...DEFAULT_SETTINGS.media, video: 'gemini:gemini-omni-1.1-flash' } }), key: (id) => id === 'gemini' ? 'k' : '', provider: () => new MockProvider(), autoImageProvider: () => null, testVideoLimits: { maxClips: 3, maxDurationSec: 4 } })
+    ;(router as unknown as { scoreVideo: () => Promise<number> }).scoreVideo = async () => 8
+    const req = { prompt: 'coffee brewing', width: 1280, height: 720, durationSec: 4, projectId: 'test' }
+    await router.motionClip(req)
+    await router.motionClip({ ...req, prompt: 'coffee roasting' })
+    await expect(router.motionClip({ ...req, prompt: 'coffee grinding' })).rejects.toThrow(/test clip limit/)
+    expect(bodies).toHaveLength(3)
+    expect(bodies.every((body) => (body.response_format as { duration: string }).duration === '4s')).toBe(true)
+  })
+  it('tries three unsuitable stock clips, then selects the better of two generated clips', async () => {
+    const lib = new AssetLibrary(mkdtempSync(join(tmpdir(), 'vg-clip-choice-')), null)
+    let downloads = 0
+    let generated = 0
+    vi.stubGlobal('fetch', async (url: string) => {
+      const u = String(url)
+      if (u.includes('api.pexels.com/videos/search')) return new Response(JSON.stringify({ videos: [1, 2, 3].map((id) => ({ id, width: 1280, height: 720, duration: 5, url: `https://pexels.com/${id}`, image: 'https://i/v.jpg', user: { name: 'A' }, video_files: [{ link: `https://dl/video-${id}`, width: 1280, height: 720, file_type: 'video/mp4' }] })) }))
+      if (u.includes('dl/video-')) { downloads++; return new Response(`stock-${downloads}`) }
+      if (u.includes('/interactions')) return new Response(JSON.stringify({ status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'video', data: Buffer.from(`generated-${++generated}`).toString('base64') }] }] }))
+      return new Response(JSON.stringify({ hits: [] }))
+    })
+    const router = new MediaRouter({ library: lib, settings: () => ({ ...DEFAULT_SETTINGS, autopilot: true, media: { ...DEFAULT_SETTINGS.media, video: 'gemini:gemini-omni-1.1-flash' } }), key: (id) => id === 'pexels' || id === 'gemini' ? 'test-key' : '', provider: () => new MockProvider(), autoImageProvider: () => null })
+    const ratings = [2, 3, 4, 6, 9]
+    ;(router as unknown as { scoreVideo: () => Promise<number | null> }).scoreVideo = async () => ratings.shift() ?? null
+    const result = await router.motionClip({ prompt: 'rain on a workbench', subjectLabel: 'workbench', width: 1280, height: 720, durationSec: 4, projectId: 'p1' })
+    expect(downloads).toBe(3)
+    expect(generated).toBe(2)
+    expect(result?.buffer.toString()).toBe('generated-2')
+    expect(lib.all().filter((asset) => asset.source === 'generated')).toHaveLength(2)
+    expect(lib.all().find((asset) => asset.tags.includes('candidate-alternate'))?.id).not.toBe(result?.assetId)
+  }, 60_000)
   it('animates the still with Gemini Omni, files it, and reuses it next time', async () => {
     const lib = new AssetLibrary(mkdtempSync(join(tmpdir(), 'vg-clip-')), null)
     const bodies: Array<Record<string, unknown>> = []
@@ -106,6 +197,13 @@ describe('motion clips via the media router', () => {
       autoImageProvider: () => null
     })
     expect(router.clipsAvailable()).toBe(false)
+  })
+
+  it('can reuse an existing clip without a stock-provider key', () => {
+    const lib = new AssetLibrary(mkdtempSync(join(tmpdir(), 'vg-existing-clip-')), null)
+    lib.add(Buffer.from('existing clip'), '.mp4', { kind: 'video', source: 'uploaded', title: 'Coffee roasting', tags: ['coffee'], license: { name: 'User provided', requiresAttribution: false } })
+    const router = new MediaRouter({ library: lib, settings: () => ({ ...DEFAULT_SETTINGS, media: { ...DEFAULT_SETTINGS.media, video: 'stock' } }), key: () => '', provider: () => new MockProvider(), autoImageProvider: () => null })
+    expect(router.clipsAvailable()).toBe(true)
   })
 })
 

@@ -19,6 +19,7 @@ export interface SceneReview {
   score: number
   notes: string[]
   revise: boolean
+  needsManualRevision?: boolean
 }
 
 const REVIEW_SCHEMA = {
@@ -32,10 +33,12 @@ const REVIEW_SCHEMA = {
 }
 
 const CRITIC_SYSTEM = `You are the motion-design lead reviewing one frame of a short-form explainer video before it ships.
+The brief describes the whole film; judge the intended beat of this scene in context, and do not require every scene to contain every film-wide action.
 Judge: Is every word legible and fully inside the frame? Does text collide with other text, widgets or the busy part of the picture?
-Is the hierarchy clear (headline first, then the widget, then the caption)? Does the visual metaphor actually explain the beat?
+Does the scene show the actual subject or process described in the narration? Would a viewer learn from the visual without reading all the text? Penalize generic diagrams, repeated widgets, empty space and slide-like treatments when concrete imagery or footage would communicate better.
+Is the hierarchy clear, and does the visual actually explain the beat? A visual-led scene intentionally has no headline, deck or HUD; do not demand them if the image communicates the beat. The series title is shared across the whole film and any number in it can identify the film, not the current scene; do not infer a scene-number mismatch from it. Captions are timed short phrases: this is one frame, so do not assume a missing part of the narration is absent from the full video. Respect deliberate quiet space around the subject.
 Is anything empty, broken, cut off or ugly? Are numbers plausible and consistent with the script?
-Score 1-10. Set revise=true only for problems a different headline, widget choice, widget data or layout choice would fix.
+Score 1-10. Set revise=true for fixable problems including missing or irrelevant imagery, weak scene direction, text, widgets or layout.
 Notes must be specific and actionable ("headline wraps into 4 lines — cut to 6 words", "gauge value 78 contradicts caption's 60%").`
 
 export async function reviewScenes(opts: {
@@ -43,13 +46,14 @@ export async function reviewScenes(opts: {
   renders: RenderService
   projectDir: string
   spec: VideoSpec
+  userPrompt?: string
   onReview?: (r: SceneReview) => void
 }): Promise<SceneReview[]> {
   const { provider, renders, projectDir, spec } = opts
   if (provider.id === 'mock') return []
   let acc = 0
   const times = spec.scenes.map((s) => {
-    const t = acc + Math.max(s.durationSec * 0.82, s.durationSec - 0.6)
+    const t = acc + s.durationSec - Math.min(0.55, s.durationSec * 0.5)
     acc += s.durationSec
     return Math.round(t * 100) / 100
   })
@@ -62,13 +66,15 @@ export async function reviewScenes(opts: {
   const reviews = await Promise.all(
     spec.scenes.map(async (scene, index): Promise<SceneReview | null> => {
       const craft = craftOf.get(scene.id)
-      if (!craft) return null
+      const native3D = spec.style === 'motion3d' && (scene.kind === 'showcase3d' || scene.kind === 'particles')
+      const custom = Boolean(spec.customScenes?.some(c => c.sceneId === scene.id) || spec.customVideos?.some(c => c.sceneId === scene.id))
+      if (!craft && !native3D) return null
       try {
         const jpeg = await sharp(readFileSync(frames[index])).resize({ width: 720 }).jpeg({ quality: 82 }).toBuffer()
         const narration = spec.narration.find((n) => n.sceneId === scene.id)?.text ?? ''
         const r = await provider.generateJSON<{ score: number; notes: string[]; revise: boolean }>({
           system: CRITIC_SYSTEM,
-          prompt: JSON.stringify({ scene: `${index + 1} of ${spec.scenes.length}`, narration, craft: summarize(craft) }),
+          prompt: JSON.stringify({ filmBrief: opts.userPrompt ?? spec.title, scene: `${index + 1} of ${spec.scenes.length}`, filmScenes: spec.scenes, narration, craft: custom ? { kind: 'custom-code', details: scene } : native3D ? { kind: scene.kind, details: scene } : craft ? summarize(craft) : null }),
           schemaName: 'SceneReview',
           jsonSchema: REVIEW_SCHEMA,
           images: [{ mimeType: 'image/jpeg', base64: jpeg.toString('base64') }],
@@ -78,7 +84,8 @@ export async function reviewScenes(opts: {
         const score = Math.max(1, Math.min(10, Number(r.score) || 0))
         const notes = (Array.isArray(r.notes) ? r.notes : []).map(String).slice(0, 4)
         // a 7 with concrete notes still has fixable problems; 8+ ships as is
-        const review = { sceneId: scene.id, index, score, notes, revise: score < 8 && notes.length > 0 && (Boolean(r.revise) || score <= 7) }
+        const needsFix = score < 8 && notes.length > 0 && (Boolean(r.revise) || score <= 7)
+        const review = { sceneId: scene.id, index, score, notes, revise: !native3D && !custom && needsFix, ...((native3D || custom) && needsFix ? { needsManualRevision: true } : {}) }
         opts.onReview?.(review)
         return review
       } catch {
@@ -90,5 +97,5 @@ export async function reviewScenes(opts: {
 }
 
 function summarize(c: SceneCraft): Record<string, unknown> {
-  return { headline: c.headline, accentWord: c.accentWord, deck: c.deck, background: c.background, widgets: c.widgets, caption: c.caption, hud: c.hud }
+  return { headlineTreatment: c.headlineTreatment, headline: c.headline, accentWord: c.accentWord, deck: c.deck, background: c.background, widgets: c.widgets, caption: c.caption, hud: c.hud }
 }

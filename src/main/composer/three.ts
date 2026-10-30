@@ -1,4 +1,7 @@
 import type { Scene } from '@shared/spec'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { appRoot } from '../paths'
 
 /**
  * Three.js composition scripts — generated as self-contained module script
@@ -33,6 +36,21 @@ const GEOMETRY_SNIPPETS: Record<ShowcaseSpec['objectStyle'], string> = {
   productBox: `new THREE.BoxGeometry(1.7, 2.4, 0.42, 2, 2, 2)`,
   logoText: `new THREE.TorusKnotGeometry(1.15, 0.16, 140, 16, 2, 3)`,
   sphereGrid: `new THREE.IcosahedronGeometry(1.45, 2)`
+}
+
+let cachedFont: { raw: string; glyphs: Record<string, unknown> } | null | undefined
+function logoFont(): { raw: string; glyphs: Record<string, unknown> } | null {
+  if (cachedFont !== undefined) return cachedFont
+  try {
+    const raw = readFileSync(resolve(appRoot, 'node_modules/three/examples/fonts/helvetiker_bold.typeface.json'), 'utf8')
+    const parsed = JSON.parse(raw) as { glyphs: Record<string, unknown> }
+    return (cachedFont = { raw: JSON.stringify(parsed).replace(/</g, '\\u003c'), glyphs: parsed.glyphs })
+  } catch { return (cachedFont = null) }
+}
+
+export function supportsExtrudedLogo(text?: string): boolean {
+  const font = logoFont()
+  return Boolean(text?.trim() && font && [...text].every((character) => Boolean(font.glyphs[character])))
 }
 
 function materialSnippet(material: ShowcaseSpec['material'], accentHex: string, accent2Hex: string): string {
@@ -102,14 +120,22 @@ export function buildThreeShowcase(
   sceneId: string,
   seed: number,
   accent: string,
-  accent2: string
+  accent2: string,
+  logoText?: string
 ): string {
   const accentHex = hexToLiteral(accent)
   const accent2Hex = hexToLiteral(accent2)
   const needsShards = motion === 'explodeAssemble'
   const needsShell = objectStyle === 'sphereGrid'
+  let fontData = ''
+  let extrudedText = ''
+  if (objectStyle === 'logoText' && supportsExtrudedLogo(logoText)) {
+    fontData = logoFont()!.raw
+    extrudedText = logoText!
+  }
   return `<script type="module">
   import * as THREE from './assets/vendor/three.module.js'
+  ${extrudedText ? "import { FontLoader } from './assets/vendor/FontLoader.js'; import { TextGeometry } from './assets/vendor/TextGeometry.js'" : ''}
   const SCENE_ID = '${sceneId}'
   ${mulberry32()}
   ;(() => {
@@ -182,9 +208,25 @@ export function buildThreeShowcase(
     // the hero object sits in the lower half of the frame — text owns the top
     const rig = new THREE.Group()
     rig.position.y = -0.5
+    // Portrait cameras have a narrow horizontal field of view. Scale the
+    // non-logo rig to fit rather than letting a rotating object fill and crop
+    // the entire frame. The extruded logo is fitted separately below.
+    ${extrudedText ? '' : 'rig.scale.setScalar(Math.min(1, (W / H) * 0.95))'}
     scene.add(rig)
 
-    const geometry = ${GEOMETRY_SNIPPETS[objectStyle]}
+    ${extrudedText ? `
+    const font = new FontLoader().parse(${fontData})
+    const geometry = new TextGeometry(${JSON.stringify(extrudedText).replace(/</g, '\\u003c')}, { font, size: 0.8, depth: 0.18, curveSegments: 5, bevelEnabled: true, bevelThickness: 0.025, bevelSize: 0.015, bevelSegments: 2 })
+    geometry.computeBoundingBox()
+    const bounds = geometry.boundingBox
+    const geometryWidth = Math.max(0.01, bounds.max.x - bounds.min.x)
+    geometry.center()
+    // Fit the wordmark to the narrowest part of the camera's view, including
+    // portrait canvases and camera moves, with room for the safety margins.
+    const safeWidth = 2 * Math.tan(THREE.MathUtils.degToRad(20)) * 3.6 * (W / H) * 0.8
+    const logoScale = Math.min(1, safeWidth / geometryWidth)
+    geometry.scale(logoScale, logoScale, logoScale)
+    ` : `const geometry = ${GEOMETRY_SNIPPETS[objectStyle]}`}
     const mat = ${materialSnippet(material, accentHex, accent2Hex)}
     const mesh = new THREE.Mesh(geometry, mat)
     rig.add(mesh)
@@ -201,13 +243,14 @@ export function buildThreeShowcase(
       new THREE.MeshBasicMaterial({ color: ${accent2Hex}, transparent: true, opacity: 0.55 })
     )
     orbit.rotation.x = 1.32
+    ${extrudedText ? 'orbit.scale.setScalar(Math.min(1, (W / H) * 0.95))' : ''}
     rig.add(orbit)
     ${needsShell ? `
     const shell = new THREE.Mesh(
       new THREE.IcosahedronGeometry(1.56, 1),
       new THREE.MeshBasicMaterial({ color: ${accent2Hex}, wireframe: true, transparent: true, opacity: 0.1 })
     )
-    rig.add(shell)` : 'const shell = mesh'}
+    rig.add(shell)` : `const shell = new THREE.Group(); shell.material = { opacity: 0 }; rig.add(shell)`}
     ${needsShards ? `
     const rand = mulberry32(${seed} * 7919 + 13)
     const shardDirs = [0, 1, 2, 3].map(() => {
@@ -223,10 +266,18 @@ export function buildThreeShowcase(
     const START = Number(window.__sceneStart?.[SCENE_ID] ?? 0)
     const DUR = ${durSec.toFixed(2)}
     function update(globalT) {
+      if (globalT < START || globalT > START + DUR) return
       const t = Math.min(Math.max(globalT - START, 0), DUR)
       stars.rotation.y = t * 0.02
       orbit.rotation.z = t * 0.22
       ${motionSnippet(motion)}
+      ${extrudedText ? `
+      // A logo reveal must land readable: settle the wordmark front-on and
+      // clear transient shards before the final hold.
+      const settle = THREE.MathUtils.smoothstep(t, DUR * 0.45, DUR * 0.8)
+      mesh.rotation.y *= 1 - settle
+      shards.forEach((s) => { s.visible = t < DUR * 0.55 })
+      ` : ''}
       camera.lookAt(0, -0.5, 0)
       renderer.render(scene, camera)
     }
@@ -321,6 +372,7 @@ export function buildThreeParticles(
     const START = Number(window.__sceneStart?.[SCENE_ID] ?? 0)
     const DUR = ${durSec.toFixed(2)}
     function update(globalT) {
+      if (globalT < START || globalT > START + DUR) return
       const t = Math.min(Math.max(globalT - START, 0), DUR)
       points.rotation.y = t * 0.10
       dust.rotation.y = -t * 0.055

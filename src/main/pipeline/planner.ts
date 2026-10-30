@@ -17,11 +17,12 @@ with a single JSON object conforming exactly to the provided VideoSpec schema.
 
 Creative guidance:
 - Think like a director: strong hook first, one idea per scene, satisfying close.
+- For a process, plan visually distinct steps that can each be shown; do not cram several physical actions into one scene and assume a single still will show them. Condense narration or omit nonessential setup to fit the requested length.
 - Respect the platform preset given in the prompt (duration range, aspect, pacing bias).
 - Pick palette/typography that serve the topic and mood; be intentional, never random.
 - Scene kinds must match the chosen style family (3D scenes for motion3d, punchy text for social, structured flow for explainer).
 - Visual rhythm: vary scene kinds — never use the same kind more than twice in a row; alternate hero moments with informational ones.
-- Narration lines must be speakable and synchronized with their scene's duration (roughly 2.5 words per second).
+- Narration must fit naturally with breathing room and scene transitions. Aim for no more than 1.6 words per second of the requested total duration, and write fewer, concise lines instead of increasing the requested runtime.
 - Durations across scenes must sum to durationSec.
 - Output ONLY the JSON object. No markdown, no commentary.`
 
@@ -32,7 +33,7 @@ function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {
 let cachedSpecSchema: Record<string, unknown> | null = null
 export function videoSpecJsonSchema(): Record<string, unknown> {
   // design + crafts belong to the scene director, never the planner
-  cachedSpecSchema ??= zodToJsonSchema(VideoSpec.omit({ design: true, crafts: true, voice: true, voiceover: true }))
+  cachedSpecSchema ??= zodToJsonSchema(VideoSpec.omit({ design: true, crafts: true, voice: true, voiceover: true, customScenes: true, customVideos: true }))
   return cachedSpecSchema
 }
 
@@ -74,13 +75,31 @@ export class Planner {
     }
 
     const raw = await this.provider.generateJSON<unknown>(req)
-    const spec = this.validate(raw)
-    return this.clampToPlatform(spec)
+    const enforceChoices = (value: VideoSpecT): VideoSpecT => ({ ...value, platform: input.platform, ...(input.styleHint ? { style: input.styleHint } : {}) })
+    const first = this.clampToPlatform(enforceChoices(this.validate(raw)))
+    // Do not silently accept an overlong plan: ask the same
+    // selected model to simplify the story rather than making text unreadable.
+    if (input.durationHintSec && Number.isFinite(input.durationHintSec)) {
+      const target = Math.max(preset.durationRange[0], Math.min(preset.durationRange[1], input.durationHintSec))
+      if (first.durationSec > target + 0.25 && this.provider.id !== 'mock') {
+        try {
+          const retry = await this.provider.generateJSON<unknown>({ ...req, prompt: JSON.stringify({ ...payload, correction: `The prior plan became ${first.durationSec}s, exceeding the ${target}s request. Replan for at most ${target} seconds with at most ${Math.max(2, Math.floor(target / 3))} concise scenes. Condense the narration to at most ${Math.floor(target * 1.8)} words total. Show the essential visual steps; omit anything that does not fit. Keep the scene durations and text readable.` }), temperature: 0.3 })
+          const revised = this.clampToPlatform(enforceChoices(this.validate(retry)))
+          if (Math.abs(revised.durationSec - target) < Math.abs(first.durationSec - target)) return revised
+        } catch { /* keep the valid original plan */ }
+      }
+    }
+    return first
   }
 
   /** Validation failure here is what triggers the fixer loop upstream. */
   private validate(raw: unknown): VideoSpecT {
-    const result = VideoSpec.safeParse(raw)
+    // These fields are created only by later engine stages. Never accept
+    // planner-supplied code, file paths, paid-media references or voice takes.
+    const candidate = raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? { ...raw, design: undefined, crafts: undefined, voice: undefined, voiceover: undefined, customScenes: undefined, customVideos: undefined }
+      : raw
+    const result = VideoSpec.safeParse(candidate)
     if (!result.success) {
       const issues = result.error.issues
         .slice(0, 8)

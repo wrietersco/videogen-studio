@@ -7,11 +7,17 @@ import { compose } from '../src/main/composer'
 import { renderCraftedScene, craftTheme, balancedLines } from '../src/main/composer/crafted'
 import { designContext } from '../src/main/composer/layout'
 import { validateSelectors } from '../src/main/composer/selectors'
-import { SceneDirector, guardCraft, type SceneCraftDraft } from '../src/main/director/director'
+import { SceneDirector, guardCraft, heuristicCraft, type SceneCraftDraft } from '../src/main/director/director'
 import { platePrompt } from '../src/main/director/plates'
 import { PLATFORM_PRESETS } from '../src/shared/presets'
 import { SceneCraft, type FilmDesign, type VideoSpec, type Widget } from '../src/shared/spec'
 import type { GenerateJSONRequest, LLMProvider } from '../src/main/providers/types'
+import { reviewScenes } from '../src/main/director/critic'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import sharp from 'sharp'
+import type { RenderService } from '../src/main/rendererService/hyperframes'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const vendorDir = resolve(appRoot, 'vendor')
@@ -42,6 +48,15 @@ function craftFor(sceneId: string, widgets: Widget[], extra: Partial<SceneCraft>
 }
 
 describe('scene director (mock heuristics)', () => {
+  it('can leave a plate scene image-led without repeating the headline', async () => {
+    const spec = await plannedSpec()
+    const ctx = designContext(spec, PLATFORM_PRESETS[spec.platform])
+    const craft = craftFor(spec.scenes[0].id, [], { headlineTreatment: 'visual', background: 'plate', plate: { prompt: 'coffee being brewed', subjectLabel: 'coffee', subject: 'center', camera: 'push', motion: false, file: 'assets/coffee.jpg', depthFile: 'assets/depth.png' } })
+    const result = renderCraftedScene({ ...spec, design: DOC }, craft, 0, 0, 4, ctx, craftTheme(DOC))
+    expect(result.html).toContain('scene-1-plate')
+    expect(result.html).not.toContain('id="scene-1-hl"')
+    expect(result.steps.some(s => 'sel' in s && s.sel.includes('scene-1-hl'))).toBe(false)
+  })
   it('directs every scene with a valid, deterministic craft', async () => {
     const spec = await plannedSpec()
     const director = new SceneDirector({ provider: new MockProvider(), platesAvailable: false, userPrompt: 'x' })
@@ -83,6 +98,100 @@ describe('scene director (mock heuristics)', () => {
     expect(craft.accentWord).toBe('') // not in the headline → dropped
     expect(craft.background).toBe('plate')
     expect(craft.widgets.map((w) => w.type)).toEqual(['annotation', 'counter']) // plate: annotation + one compact
+  })
+
+  it('allows real imagery and motion in an infographic explainer', async () => {
+    const spec = await plannedSpec()
+    let request: GenerateJSONRequest | undefined
+    const provider: LLMProvider = {
+      id: 'openai', label: 'test', isConfigured: async () => true, listModels: async () => [], generateText: async () => '',
+      generateJSON: async <T,>(req: GenerateJSONRequest) => {
+        request = req
+        return { background: 'plate', plate: { prompt: 'Coffee cherries being picked', camera: 'drift', subject: 'center', subjectLabel: 'coffee cherries', motion: true }, headline: 'Coffee begins as fruit', accentWord: 'fruit', widgets: [], caption: 'Coffee begins as a cherry.' } as T
+      }
+    }
+    const craft = await new SceneDirector({ provider, platesAvailable: true, clipsAvailable: true, userPrompt: 'Explain how coffee is made' }).directScene(spec, INFO, 0)
+    expect(craft.background).toBe('plate')
+    expect(craft.plate?.motion).toBe(true)
+    expect(JSON.parse(request!.prompt).platesAvailable).toBe(true)
+  })
+
+  it('reviews text treatments across the complete film', async () => {
+    const spec = await plannedSpec()
+    const calls: string[] = []
+    const provider: LLMProvider = {
+      id: 'openai', label: 'test', isConfigured: async () => true, listModels: async () => [], generateText: async () => '',
+      generateJSON: async <T,>(req: GenerateJSONRequest) => {
+        calls.push(req.schemaName)
+        if (req.schemaName === 'VisualTreatmentPlan') return { treatments: spec.scenes.map((s, i) => ({ sceneId: s.id, treatment: i === 1 ? 'visual' : 'headline' })) } as T
+        return { background: 'plate', plate: { prompt: 'coffee being brewed', camera: 'drift', subject: 'center', subjectLabel: 'coffee' }, headline: 'Coffee is brewed', accentWord: 'coffee', widgets: [], caption: 'Coffee is brewed.' } as T
+      }
+    }
+    const crafts = await new SceneDirector({ provider, platesAvailable: true, userPrompt: 'Coffee explainer' }).directScenes({ ...spec, design: DOC }, DOC)
+    expect(calls).toContain('VisualTreatmentPlan')
+    expect(crafts[1].headlineTreatment).toBe('visual')
+    expect(crafts[0].headlineTreatment).toBe('headline')
+  })
+
+  it('leaves planned 3D and particle scenes to their native renderer', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: '3D logo reveal with particles', platform: 'instagram-reels', styleHint: 'motion3d' })
+    const design = await new SceneDirector({ provider: new MockProvider(), platesAvailable: true, userPrompt: '3D logo reveal' }).directFilm(spec)
+    const crafts = await new SceneDirector({ provider: new MockProvider(), platesAvailable: true, userPrompt: '3D logo reveal' }).directScenes({ ...spec, design }, design)
+    const native = spec.scenes.filter((s) => s.kind === 'showcase3d' || s.kind === 'particles')
+    expect(native.length).toBeGreaterThan(0)
+    expect(crafts.some((craft) => native.some((scene) => scene.id === craft.sceneId))).toBe(false)
+  })
+
+  it('tells the visual critic when a scene intentionally omits its headline', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'coffee explainer', platform: 'tiktok' })
+    spec.scenes = [spec.scenes[0]]
+    spec.design = { look: 'documentary', series: 'COFFEE', imageStyle: '', accent: '#fff', accent2: '#aaa' }
+    const draft = heuristicCraft(spec, spec.design, 0)
+    spec.crafts = [{ ...guardCraft(draft, spec.scenes[0].id, { platesAvailable: true, narration: '' }), headlineTreatment: 'visual' }]
+    const dir = mkdtempSync(join(tmpdir(), 'vg-visual-review-'))
+    const frame = join(dir, 'frame.png')
+    writeFileSync(frame, await sharp({ create: { width: 32, height: 32, channels: 3, background: '#c08040' } }).png().toBuffer())
+    let system = '', prompt = ''
+    const provider: LLMProvider = { id: 'openai', label: 'test', isConfigured: async () => true, listModels: async () => [], generateText: async () => '', generateJSON: async <T,>(req: { system: string; prompt: string }) => { system = req.system; prompt = req.prompt; return { score: 9, notes: [], revise: false } as T } }
+    await reviewScenes({ provider, renders: { snapshot: async () => [frame] } as unknown as RenderService, projectDir: dir, spec })
+    expect(prompt).toContain('\"headlineTreatment\":\"visual\"')
+    expect(prompt).toContain('filmScenes')
+    expect(system).toContain('whole film')
+    expect(system).toContain('Captions are timed short phrases')
+    expect(system).toContain('intentionally has no headline')
+  })
+
+  it('sends weak native 3D scenes to the bespoke revision path', async () => {
+    const { Orchestrator } = await import('../src/main/pipeline/orchestrator')
+    const { ProjectStore } = await import('../src/main/store/projectStore')
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: '3D logo reveal', platform: 'instagram-reels', styleHint: 'motion3d' })
+    spec.scenes = [spec.scenes.find(s => s.kind === 'showcase3d' || s.kind === 'particles')!]
+    spec.crafts = []
+    spec.design = { look: 'documentary', series: 'BRAND', imageStyle: '', accent: '#fff', accent2: '#aaa' }
+    const store = new ProjectStore(mkdtempSync(join(tmpdir(), 'vg-3d-repair-'))), project = store.create('3d logo', 'Logo')
+    const frame = join(project.dir, 'frame.png')
+    writeFileSync(frame, await sharp({ create: { width: 32, height: 32, channels: 3, background: '#ddd' } }).png().toBuffer())
+    const provider: LLMProvider = { id: 'openai', label: 'test', isConfigured: async () => true, listModels: async () => [], generateText: async () => '', generateJSON: async <T,>() => ({ score: 4, notes: ['The brand emblem is missing'], revise: true }) as T }
+    const orch = new Orchestrator(store, () => provider)
+    ;(orch as any).renders = { snapshot: async () => [frame] }
+    let targeted: Map<string, string> | undefined
+    ;(orch as any).runCustomScenes = async (_id: string, current: VideoSpec, _prompt: string, _audio: unknown, _emit: unknown, notes: Map<string, string>) => { targeted = notes; return current }
+    await (orch as any).runCritic(project.id, spec, '3d logo', { clips: [], captions: [] }, () => {})
+    expect(targeted?.get(spec.scenes[0].id)).toContain('brand emblem is missing')
+  })
+
+  it('reviews a native 3D scene and reports when it needs a separate revision', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: '3D logo reveal', platform: 'instagram-reels', styleHint: 'motion3d' })
+    const native = spec.scenes.find((s) => s.kind === 'showcase3d' || s.kind === 'particles')!
+    spec.scenes = [native]
+    spec.crafts = []
+    const dir = mkdtempSync(join(tmpdir(), 'vg-3d-review-'))
+    const frame = join(dir, 'frame.png')
+    writeFileSync(frame, await sharp({ create: { width: 32, height: 32, channels: 3, background: '#111' } }).png().toBuffer())
+    const provider: LLMProvider = { id: 'openai', label: 'test', isConfigured: async () => true, listModels: async () => [], generateText: async () => '', generateJSON: async <T,>() => ({ score: 5, notes: ['The logo is unreadable'], revise: true }) as T }
+    const renders = { snapshot: async () => [frame] } as unknown as RenderService
+    const reviews = await reviewScenes({ provider, renders, projectDir: dir, spec, userPrompt: '3D logo reveal' })
+    expect(reviews[0]).toMatchObject({ sceneId: native.id, score: 5, revise: false, needsManualRevision: true })
   })
 })
 

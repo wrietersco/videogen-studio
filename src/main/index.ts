@@ -14,7 +14,7 @@ import { DEFAULT_MEDIA, DEFAULT_SETTINGS, type KeyId, type Settings } from './se
 import { AssetLibrary } from './assets/library'
 import { registerAssetIpc, registerAssetScheme } from './assets/ipc'
 import { MediaRouter } from './media/router'
-import { applyAutopilot, decide } from './autopilot'
+import { applyAutopilot, decide, decideCreative } from './autopilot'
 import { ensureBrowser } from './rendererService/hyperframes'
 import { projectsDir, appRoot, libraryDir, builtinPackDir } from './paths'
 import { meter, readProjectUsage, type UsageRun } from './usage/meter'
@@ -41,7 +41,8 @@ const media = new MediaRouter({
   settings: () => runSettings ?? settings,
   key: keyOf,
   provider: (id) => providerRegistry.get(id),
-  autoImageProvider: () => providerRegistry.imageProvider()
+  autoImageProvider: () => providerRegistry.imageProvider(),
+  onDecision: (projectId, message) => { if (store.readMeta(projectId)) store.appendEvent(projectId, `media · ${message}`) }
 })
 const orchestrator = new Orchestrator(
   store,
@@ -315,26 +316,26 @@ function registerIpc(): void {
 
   ipcMain.handle('gen:generate', async (_e, opts: GenerateOptions) => {
     if (busy) return { ok: false, error: 'A generation job is already running' }
-    let pilot: ReturnType<typeof decide> | null = null
-    if (settings.autopilot) {
-      pilot = decide({ prompt: opts.prompt, durationHintSec: opts.durationHintSec, settings, imageAvailable: media.imageAvailable() })
-      runSettings = applyAutopilot(settings, pilot)
-    }
-    try {
-      return await runJob('generate', null, () =>
-        orchestrator.generate({
+    return runJob('generate', null, async () => {
+      try {
+        const creative = settings.autopilot ? await decideCreative(opts.prompt, providerRegistry.active()) : null
+        if (creative) pipelineEvent({ stage: 'plan', status: 'creative', ...creative })
+        const pilot = settings.autopilot ? decide({ prompt: opts.prompt, durationHintSec: creative?.durationHintSec ?? opts.durationHintSec, settings, imageAvailable: media.imageAvailable() }) : null
+        if (pilot) runSettings = applyAutopilot(settings, pilot)
+        return await orchestrator.generate({
           ...opts,
+          ...(creative ? { platform: creative.platform, styleHint: creative.styleHint, durationHintSec: creative.durationHintSec } : {}),
           quality: settings.quality,
           gpu: settings.allowGpu,
           craft: settings.craft,
-          lookHint: pilot?.look,
-          autopilotNotes: pilot?.reasons,
+          lookHint: creative?.look ?? pilot?.look,
+          autopilotNotes: [...(creative ? [`format: ${creative.platform} · ${creative.styleHint} · ${creative.durationHintSec}s · ${creative.look} — ${creative.reason}`] : []), ...(pilot?.reasons.filter((reason) => !creative || !reason.startsWith('look:')) ?? [])],
           onEvent: pipelineEvent
         })
-      )
-    } finally {
-      runSettings = null
-    }
+      } finally {
+        runSettings = null
+      }
+    })
   })
   ipcMain.handle('gen:cancel', () => {
     orchestrator.cancel()

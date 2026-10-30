@@ -123,7 +123,7 @@ export function craftedCSS(ctx: DesignContext, th: CraftTheme): string {
     .cr-chip { font-size: ${px(22)}; color: ${th.ink}; background: rgba(6,8,11,0.72); border: 1.5px solid ${th.hair}; padding: ${px(10)} ${px(16)}; border-radius: ${th.doc ? '0' : px(14)}; }
     .cr-chip.hot { border-color: ${th.accent}; }
     .cr-cap { position: absolute; margin: 0; font-family: 'Inter', sans-serif; font-weight: 650; line-height: 1.25; letter-spacing: -0.01em; color: ${th.ink}; overflow-wrap: break-word; text-shadow: 0 2px 18px rgba(0,0,0,0.55); }
-    .cr-cap .cw { opacity: 0.28; }
+    .cr-cap .cw { opacity: 0.8; }
     .cr-cap.vo { visibility: hidden; opacity: 0; }
     .cr-cap .cw.key { color: ${th.accent}; }
     .cr-over { position: absolute; left: 0; top: 0; overflow: visible; }
@@ -271,6 +271,7 @@ export function renderCraftedScene(
   // a moving clip (engine-chosen motion plate) wins over the painted still
   const clip = craft.background === 'plate' && craft.plate?.clipFile ? craft.plate : undefined
   const plate = clip ?? (craft.background === 'plate' && craft.plate?.file && craft.plate.depthFile ? craft.plate : undefined)
+  const imageLed = Boolean(plate && craft.headlineTreatment === 'visual')
   let plateJob: PlateJob | undefined
   if (plate) {
     const anchor = plate.anchor ?? { x: plate.subject === 'left' ? 0.3 : plate.subject === 'right' ? 0.7 : 0.5, y: 0.6 }
@@ -284,7 +285,7 @@ export function renderCraftedScene(
     } else {
       parts.push(`<canvas class="cr-plate" id="${id}-plate" width="${ctx.width}" height="${ctx.height}"></canvas>`)
     }
-    parts.push(R.align === 'left' && ctx.width > ctx.height * 1.15 ? `<div class="cr-scrim-side"></div>` : `<div class="cr-scrim-top"></div>`)
+    if (!imageLed) parts.push(R.align === 'left' && ctx.width > ctx.height * 1.15 ? `<div class="cr-scrim-side"></div>` : `<div class="cr-scrim-top"></div>`)
     parts.push(`<div class="cr-scrim-bot"></div>`)
     plateJob = {
       sceneId: id,
@@ -305,22 +306,24 @@ export function renderCraftedScene(
   }
 
   // ---------- chrome ----------
-  if (th.doc) {
+  if (!imageLed && th.doc) {
     parts.push(`<div class="cr-tick tl"></div><div class="cr-tick tr"></div><div class="cr-tick bl"></div><div class="cr-tick br"></div>`)
-  } else {
+  } else if (!imageLed) {
     parts.push(`<div class="cr-frame" id="${id}-frame"></div>`)
   }
   const hudLeft = craft.hud.left || design.series
   const hudRight = craft.hud.right || `Fig. ${index + 1}`
   const leftHTML = esc(hudLeft).replace(/\s·\s/, ' <b>·</b> ')
-  parts.push(
-    `<div class="cr-hud cr-mono" id="${id}-hud" style="left:${R.hud.x}px;top:${R.hud.y}px;width:${R.hud.w}px"><span class="l">${leftHTML}</span><span class="r">${esc(hudRight)}</span><i class="rule" id="${id}-rule"></i></div>`
-  )
-  steps.push(
-    { kind: 'tween', t: startSec + 0.05, sel: `#${id}-rule`, from: { scaleX: 0 }, to: { scaleX: 1 }, dur: 0.8, ease: 'power3.inOut' },
-    { kind: 'tween', t: startSec + 0.15, sel: `#${id}-hud .l`, from: { autoAlpha: 0, y: 10 * s }, to: { autoAlpha: 1, y: 0 }, dur: 0.45, ease: 'power2.out' },
-    { kind: 'tween', t: startSec + 0.25, sel: `#${id}-hud .r`, from: { autoAlpha: 0, y: 10 * s }, to: { autoAlpha: 1, y: 0 }, dur: 0.45, ease: 'power2.out' }
-  )
+  if (!imageLed) {
+    parts.push(
+      `<div class="cr-hud cr-mono" id="${id}-hud" style="left:${R.hud.x}px;top:${R.hud.y}px;width:${R.hud.w}px"><span class="l">${leftHTML}</span><span class="r">${esc(hudRight)}</span><i class="rule" id="${id}-rule"></i></div>`
+    )
+    steps.push(
+      { kind: 'tween', t: startSec + 0.05, sel: `#${id}-rule`, from: { scaleX: 0 }, to: { scaleX: 1 }, dur: 0.8, ease: 'power3.inOut' },
+      { kind: 'tween', t: startSec + 0.15, sel: `#${id}-hud .l`, from: { autoAlpha: 0, y: 10 * s }, to: { autoAlpha: 1, y: 0 }, dur: 0.45, ease: 'power2.out' },
+      { kind: 'tween', t: startSec + 0.25, sel: `#${id}-hud .r`, from: { autoAlpha: 0, y: 10 * s }, to: { autoAlpha: 1, y: 0 }, dur: 0.45, ease: 'power2.out' }
+    )
+  }
 
   // ---------- headline ----------
   // hero mode: no widget on a grid scene → the headline owns the centre of the frame
@@ -342,7 +345,8 @@ export function renderCraftedScene(
     )
   }
   const accent = new Set(craft.accentWord.split(/\s+/).map(norm).filter(Boolean))
-  const fs = Math.round((th.doc ? 156 : 78) * s * (ctx.width > ctx.height * 1.15 ? 0.9 : 1) * (hero ? (th.doc ? 1.1 : 1.45) : 1))
+  // The footage or photograph should remain the focal point on plate scenes.
+  const fs = Math.round((th.doc ? (plate ? 100 : 156) : (plate ? 66 : 78)) * s * (craft.headlineTreatment === 'compact' ? 0.7 : 1) * (ctx.width > ctx.height * 1.15 ? 0.9 : 1) * (hero ? (th.doc ? 1.1 : 1.45) : 1))
   const lines = balancedLines(craft.headline, 3, R.headline.w, fs * (th.doc ? 0.46 : 0.52))
   const lineHTML = lines
     .map((l) => {
@@ -353,16 +357,18 @@ export function renderCraftedScene(
       return `<span class="line">${ws.join(' ')}</span>`
     })
     .join('')
-  parts.push(
-    `<h1 class="cr-hl ${th.doc ? 'doc' : 'info'}${R.align === 'center' ? ' center' : ''}" id="${id}-hl" style="left:${Math.round(R.headline.x)}px;top:${Math.round(R.headline.y)}px;width:${Math.round(R.headline.w)}px;font-size:${fs}px;${R.align === 'center' ? 'text-align:center' : 'text-align:left'}" ${fitAttrs(R.headline.w, R.headline.h, 'lines')}>${lineHTML}</h1>`
-  )
-  steps.push(
-    th.doc
-      ? { kind: 'tween', t: startSec + 0.3, sel: `#${id}-hl .w`, from: { yPercent: 110 }, to: { yPercent: 0 }, dur: 0.75, ease: 'power4.out', stagger: 0.08 }
-      : { kind: 'tween', t: startSec + 0.3, sel: `#${id}-hl .w`, from: { autoAlpha: 0, y: 34 * s, filter: 'blur(10px)' }, to: { autoAlpha: 1, y: 0, filter: 'blur(0px)' }, dur: 0.6, ease: 'power3.out', stagger: 0.08 }
-  )
+  if (craft.headlineTreatment !== 'visual' || !plate) {
+    parts.push(
+      `<h1 class="cr-hl ${th.doc ? 'doc' : 'info'}${R.align === 'center' ? ' center' : ''}" id="${id}-hl" style="left:${Math.round(R.headline.x)}px;top:${Math.round(R.headline.y)}px;width:${Math.round(R.headline.w)}px;font-size:${fs}px;${R.align === 'center' ? 'text-align:center' : 'text-align:left'}" ${fitAttrs(R.headline.w, R.headline.h, 'lines')}>${lineHTML}</h1>`
+    )
+    steps.push(
+      th.doc
+        ? { kind: 'tween', t: startSec + 0.3, sel: `#${id}-hl .w`, from: { yPercent: 110 }, to: { yPercent: 0 }, dur: 0.75, ease: 'power4.out', stagger: 0.08 }
+        : { kind: 'tween', t: startSec + 0.3, sel: `#${id}-hl .w`, from: { autoAlpha: 0, y: 34 * s, filter: 'blur(10px)' }, to: { autoAlpha: 1, y: 0, filter: 'blur(0px)' }, dur: 0.6, ease: 'power3.out', stagger: 0.08 }
+    )
+  }
 
-  if (craft.deck) {
+  if (craft.deck && !imageLed) {
     const dfs = Math.round(52 * s)
     parts.push(
       `<p class="cr-deck" id="${id}-deck" style="${boxStyle({ ...R.deck, h: R.deck.h })};font-size:${dfs}px;${R.align === 'center' ? 'text-align:center;margin-left:4%' : ''}" ${fitAttrs(R.deck.w, R.deck.h, 'box')}>${esc(craft.deck)}</p>`
@@ -480,7 +486,7 @@ export function renderCraftedScene(
       const t0 = Math.max(startSec, at + chunk[0].startSec - 0.08)
       steps.push({ kind: 'tween', t: t0, sel: `#${cid}`, from: { autoAlpha: 0, y: 6 * s }, to: { autoAlpha: 1, y: 0 }, dur: 0.16, ease: 'power2.out' })
       chunk.forEach((w, k) => {
-        steps.push({ kind: 'tween', t: at + w.startSec, sel: `#${cid}-w${k}`, from: { opacity: 0.28 }, to: { opacity: 1 }, dur: 0.1, ease: 'power1.out' })
+        steps.push({ kind: 'tween', t: at + w.startSec, sel: `#${cid}-w${k}`, from: { opacity: 0.8 }, to: { opacity: 1 }, dur: 0.1, ease: 'power1.out' })
       })
       const next = chunks[c + 1]
       const t1 = next ? at + next[0].startSec - 0.08 : endSec - 0.15
@@ -498,7 +504,7 @@ export function renderCraftedScene(
     const a = startSec + 0.5
     const b = Math.max(a + 0.4, endSec - 0.5)
     words.forEach((_, k) => {
-      steps.push({ kind: 'tween', t: a + ((b - a) * k) / words.length, sel: `#${id}-c${k}`, from: { opacity: 0.28 }, to: { opacity: 1 }, dur: 0.14, ease: 'power1.out' })
+      steps.push({ kind: 'tween', t: a + ((b - a) * k) / words.length, sel: `#${id}-c${k}`, from: { opacity: 0.8 }, to: { opacity: 1 }, dur: 0.14, ease: 'power1.out' })
     })
   }
 

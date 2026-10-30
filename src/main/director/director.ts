@@ -42,24 +42,25 @@ const WIDGET_GUIDE = `Widget catalog (pick the ONE that makes this beat's idea v
 
 const FILM_SYSTEM = `You are the film director of a premium short-form video studio (motion design for TikTok, Reels, Shorts, YouTube).
 Given a planned film, choose ONE design system for the whole video.
-- look "infographic": dark UI diagrams, dot-grid, glowing widgets — for science, how-it-works, health, money, tech, data, tips, products.
-- look "documentary": painted cinematic stills with an editorial HUD (FIG. labels, annotations) — for history, stories, places, nature, events, mysteries, biographies.
+- look "infographic" or "documentary" sets the graphic treatment, not the media type. Both can and should combine relevant footage, photographs, illustrations and diagrams.
+- Start from what the audience needs to see. For a physical process, show its actual subjects and steps: for coffee, cherries, processing, roasting, grinding and brewing. Use diagrams when they add understanding, not as a substitute for showing real things.
 - series: a short HUD label like "BRAIN CHEMISTRY · 02" or "CASE 04 · THE SOUND" (≤ 32 chars).
-- imageStyle (documentary only): one consistent art direction for every still — medium, era, palette, lighting, lens, mood. Painterly or photographic, never cartoon unless asked.
+- imageStyle: consistent art direction for photographic or illustrative images across the film, appropriate to the subject and user brief.
 - accent / accent2: hex colors that pop on near-black (documentary: one hot accent such as ember red; infographic: amber + cyan style pairs).
 Output ONLY the JSON object.`
 
 const SCENE_SYSTEM = `You are a scene director for premium explainer motion design. You design ONE scene of a film.
-Your job: find the single visual metaphor that makes this beat instantly understood, and express it with the widget catalog.
+Your job: make this beat instantly understood through specific visual storytelling. Choose relevant footage or photographs for visible subjects and processes, and graphics only where they add explanatory value. An explainer is not a slide deck: vary shot scale, pace and visual treatment; avoid repeated generic widgets and walls of text. Compare this beat with the supplied storyboard and choose a distinct subject, action and framing from neighboring scenes; avoid depicting the same process twice.
 Rules:
 - headline: ≤ 9 words, punchy, on-screen; accentWord = the 1–2 words that carry the meaning (must appear in the headline).
+- headlineTreatment: choose headline for a major idea, compact for a supporting label, or visual when the image and narration communicate the beat without a headline. Vary these deliberately across the film; a strong photograph or clip should sometimes fill the screen without a repeated large title.
 - deck: optional italic line (≤ 12 words) that adds context, never repeats the headline.
 - caption: the spoken line for this scene (≤ 22 words), lit word by word; keyWord = one word of it to highlight.
 - hud.left/right: short editorial labels (e.g. "CASE 04 · THE SOUND" / "FIG. 3"); hud.chips: 0–2 data chips (dates, readings, sources).
 - Numbers must come from the script or be well-established facts; if the script has no numbers, choose a non-numeric widget (toggle, timeline, quoteCard, slots) or none.
 - Never use the same widget type as the previous scene.
-- background "plate" (only when plates are available): write plate.prompt as a vivid, concrete image brief (subject, setting, era, light, weather, camera) — no text in the image. Set plate.subject to where the subject sits and plate.subjectLabel to its short name. Plate scenes use widgets: [annotation] plus at most ONE compact widget (counter, distanceBar, waveform, statPair). plate.subjectLabel names exactly the spot the annotation must mark (e.g. "the gash below the waterline", not just "ship").
-- plate.motion (only when clipsAvailable): true ONLY when real movement is the point of the beat — crashing waves, erupting lava, a crowd surging, machinery turning, a storm rolling in. Static subjects (portraits, buildings, documents, maps) stay false. Moving clips are expensive: at most one or two scenes per film.
+- background "plate" (when available): show the actual subject or action of the beat, not a vague metaphor. Write plate.prompt as a specific shot brief (subject, action, setting, light, framing), without embedded text. Set a short searchable subjectLabel. Use an annotation only when it genuinely helps; no widget is required.
+- plate.motion (only when clipsAvailable): use for processes and actions whose movement helps understanding, such as pouring, roasting, grinding or brewing, as well as dramatic action. The engine manages clip allocation.
 - camera: push (default, reveals), pull (aftermath, scale), truckLeft/truckRight (journeys), craneUp (rising stakes), drift (calm).
 ${WIDGET_GUIDE}
 Output ONLY the JSON object.`
@@ -184,7 +185,7 @@ export class SceneDirector {
         const hint = this.opts.lookHint && (this.opts.lookHint === 'infographic' || this.opts.platesAvailable) ? this.opts.lookHint : undefined
         const look = hint ?? r.data.look
         const imageStyle = r.data.imageStyle || 'cinematic painterly still, natural light, 35mm lens, muted palette with one warm accent'
-        return { ...r.data, look, imageStyle: look === 'documentary' ? imageStyle : '' }
+        return { ...r.data, look, imageStyle }
       }
     } catch {
       /* fall through */
@@ -194,8 +195,10 @@ export class SceneDirector {
 
   /** all scenes in parallel (bounded); each failure falls back to the heuristic craft for that scene */
   async directScenes(spec: VideoSpec, design: FilmDesign, notes?: Map<string, string>, only?: Set<string>): Promise<SceneCraft[]> {
-    const out: SceneCraft[] = [...spec.crafts.filter((c) => only && !only.has(c.sceneId))]
-    const indices = spec.scenes.map((_, i) => i).filter((i) => !only || only.has(spec.scenes[i].id))
+    const native3D = (i: number) => spec.style === 'motion3d' && (spec.scenes[i].kind === 'showcase3d' || spec.scenes[i].kind === 'particles')
+    const nativeIds = new Set(spec.scenes.filter((_, i) => native3D(i)).map((s) => s.id))
+    const out: SceneCraft[] = [...spec.crafts.filter((c) => only && !only.has(c.sceneId) && !nativeIds.has(c.sceneId))]
+    const indices = spec.scenes.map((_, i) => i).filter((i) => !native3D(i) && (!only || only.has(spec.scenes[i].id)))
     const limit = this.opts.concurrency ?? 3
     const results = new Map<number, SceneCraft>()
     let cursor = 0
@@ -210,13 +213,27 @@ export class SceneDirector {
     await Promise.all(Array.from({ length: Math.min(limit, indices.length) }, worker))
     for (const i of indices) out.push(results.get(i) as SceneCraft)
     const order = new Map(spec.scenes.map((s, i) => [s.id, i]))
-    return out.sort((a, b) => (order.get(a.sceneId) ?? 0) - (order.get(b.sceneId) ?? 0))
+    out.sort((a, b) => (order.get(a.sceneId) ?? 0) - (order.get(b.sceneId) ?? 0))
+    // Review the visual rhythm as a film. Scene calls run in parallel and
+    // cannot otherwise see one another's treatment choices.
+    if (!this.mock && !only && out.filter(c => c.background === 'plate').length > 1) {
+      try {
+        const plan = await this.opts.provider.generateJSON<{ treatments: Array<{ sceneId: string; treatment: 'headline' | 'compact' | 'visual' }> }>({
+          system: 'As the film editor, choose the text treatment for each scene across this complete video. Use headline for a major idea, compact for a short supporting label, visual to let the photograph or footage and narration tell the beat without a headline. Avoid the same treatment in every scene; when a sequence has multiple suitable photo/footage scenes, make at least one image-led visual scene. Keep a headline when it is essential to understanding, and do not hide text for purely graphic scenes. Return the actual scene IDs and one treatment each.',
+          prompt: JSON.stringify({ brief: this.opts.userPrompt, storyboard: spec.scenes, scenes: out.map(c => ({ sceneId: c.sceneId, headline: c.headline, caption: c.caption, background: c.background, shot: c.plate?.prompt })) }),
+          schemaName: 'VisualTreatmentPlan', jsonSchema: { type: 'object', properties: { treatments: { type: 'array', items: { type: 'object', properties: { sceneId: { type: 'string' }, treatment: { type: 'string', enum: ['headline', 'compact', 'visual'] } }, required: ['sceneId', 'treatment'], additionalProperties: false } } }, required: ['treatments'], additionalProperties: false }, temperature: 0.3, maxTokens: 700
+        })
+        const picks = new Map((Array.isArray(plan.treatments) ? plan.treatments : []).filter(p => ['headline', 'compact', 'visual'].includes(p.treatment)).map(p => [p.sceneId, p.treatment]))
+        return out.map(c => ({ ...c, headlineTreatment: picks.get(c.sceneId) ?? c.headlineTreatment }))
+      } catch { /* keep the scene directors' choices */ }
+    }
+    return out
   }
 
   async directScene(spec: VideoSpec, design: FilmDesign, index: number, critique?: string): Promise<SceneCraft> {
     const scene = spec.scenes[index]
     const narration = spec.narration.find((n) => n.sceneId === scene.id)?.text ?? ''
-    const guardOpts = { platesAvailable: this.opts.platesAvailable && design.look === 'documentary', clipsAvailable: this.opts.clipsAvailable, narration }
+    const guardOpts = { platesAvailable: this.opts.platesAvailable, clipsAvailable: this.opts.clipsAvailable, narration }
     if (this.mock) return guardCraft(heuristicCraft(spec, design, index), scene.id, guardOpts)
     sceneSchema ??= toSchema(SceneCraftDraft)
     const preset = PLATFORM_PRESETS[spec.platform]

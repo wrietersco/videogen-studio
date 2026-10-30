@@ -54,4 +54,17 @@ describe('Gemini Omni Flash clips', () => {
   it('needs a key', async () => {
     await expect(new GeminiVideoClient(() => '').clip({ prompt: 'x' })).rejects.toThrow(/Gemini key/)
   })
+
+  it('sends the requested duration and rejects invalid values before calling the API', async () => {
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body)).response_format.duration).toBe('4s')
+      return json({ status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'video', data: Buffer.from('MP4').toString('base64') }] }] })
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const client = new GeminiVideoClient(() => 'k')
+    await expect(client.clip({ prompt: 'x', durationSec: 11 })).rejects.toThrow(/duration/)
+    expect(fetcher).not.toHaveBeenCalled()
+    await client.clip({ prompt: 'x', durationSec: 4 })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
 })

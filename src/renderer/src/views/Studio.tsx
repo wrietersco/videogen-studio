@@ -42,7 +42,7 @@ const EXAMPLES: Array<{ emoji: string; prompt: string; platform: PlatformId; sty
 const STEPS: Array<{ emoji: string; label: string; stages: Array<PipelineEvent['stage']> }> = [
   { emoji: '🧠', label: 'Writing the story', stages: ['plan'] },
   { emoji: '🎨', label: 'Designing scenes', stages: ['direct', 'plates', 'critic', 'revise'] },
-  { emoji: '🧩', label: 'Putting it together', stages: ['compose', 'qa', 'thumbs'] },
+  { emoji: '🧩', label: 'Putting it together', stages: ['compose', 'qa', 'custom', 'thumbs'] },
   { emoji: '🎞️', label: 'Rendering video', stages: ['render'] },
   { emoji: '🎉', label: 'Ready!', stages: ['done'] }
 ]
@@ -71,16 +71,18 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [board, setBoard] = useState<{ title: string | null; scenes: SceneCard[]; captured: number } | null>(null)
+  const [creative, setCreative] = useState<Extract<PipelineEvent, { stage: 'plan'; status: 'creative' }> | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
   const [cfg, setCfg] = useState<SettingsView | null>(null)
   useEffect(() => {
-    api.getSettings().then(setCfg).catch(() => {})
+    api.getSettings().then(setCfg).catch(() => setError('Could not load your creative settings. Reopen Create to try again.'))
   }, [])
   const estimate = cfg ? estimateFor(cfg, duration) : null
 
   useEffect(() => {
     unsubRef.current = api.onEvent((e) => {
       setEvents((prev) => [...prev.slice(-120), e])
+      if (e.stage === 'plan' && e.status === 'creative') setCreative(e)
       if (e.stage === 'plan' && e.status === 'done') {
         setBoard({ title: e.title, scenes: e.sceneCards.map((c) => ({ ...c })), captured: 0 })
       }
@@ -142,13 +144,14 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
   }, [])
 
   const generate = async () => {
-    if (!prompt.trim() || running) return
+    if (!prompt.trim() || running || !cfg) return
     setEvents([])
     setProgress(0)
     setDone(null)
     setError(null)
     setNotice(null)
     setBoard(null)
+    setCreative(null)
     setRunning(true)
     const res = await api.generate({
       prompt: prompt.trim(),
@@ -168,7 +171,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
 
   const step = done ? STEPS.length - 1 : stepFor(events)
   const started = running || events.length > 0
-  const wide = platform === 'youtube'
+  const wide = (creative?.platform ?? platform) === 'youtube'
 
   return (
     <div className="page-bg flex h-full">
@@ -211,6 +214,18 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
             </div>
           </section>
 
+          {!cfg ? (
+            <section className="card mt-4 p-5 text-sm text-ink/60">Loading your creative settings…</section>
+          ) : cfg.autopilot ? (
+            <section className="card mt-4 p-5">
+              <div className="text-base font-black">🪄 Your agent chooses the creative settings</div>
+              <p className="mt-2 text-sm leading-relaxed text-ink/65">Describe the audience, platform, length or style if they matter to you. Otherwise, the agent chooses them from your idea and selects the visuals for each scene.</p>
+              <p className="mt-2 text-xs text-ink/55">Your selected AI providers and models stay the same. Generation can incur provider charges; the activity and receipt show what was used.</p>
+              {creative && <p className="mt-3 text-sm text-ink/75"><strong>Chosen for this video:</strong> {PLATFORMS.find((p) => p.id === creative.platform)?.label ?? creative.platform} · {creative.durationHintSec}s · {STYLES.find((s) => s.id === creative.styleHint)?.label ?? creative.styleHint}. {creative.reason}</p>}
+              <button onClick={onOpenSettings} className="mt-3 text-xs font-bold text-grape hover:underline">Manage autonomous mode and AI settings</button>
+            </section>
+          ) : (
+          <>
           {/* 2 · platform */}
           <section className="card mt-4 p-5">
             <StepTitle n={2} color="bg-berry" title="Where will you post it?" />
@@ -273,6 +288,8 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
               </div>
             )}
           </section>
+          </>
+          )}
 
           {/* progress */}
           {started && !error && (
@@ -354,7 +371,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
 
           {error && (
             <div className="mt-6">
-              <ErrorCard error={error} onOpenSettings={onOpenSettings} onRetry={prompt.trim() ? generate : undefined} />
+              <ErrorCard error={error} onOpenSettings={onOpenSettings} onRetry={prompt.trim() && cfg ? generate : undefined} />
             </div>
           )}
           {notice && <div className="slide-up mt-4 rounded-2xl border-2 border-sky/30 bg-sky-soft p-4 text-sm font-semibold text-ink/80">✋ {notice}</div>}
@@ -397,7 +414,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
           ) : (
             <button
               onClick={generate}
-              disabled={!prompt.trim()}
+              disabled={!prompt.trim() || !cfg}
               className="btn-primary w-full !rounded-2xl !py-4 !text-lg"
               title={prompt.trim() ? 'Ctrl+Enter works too' : 'Type your idea first'}
             >
@@ -408,6 +425,8 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
             <div className="mx-auto mt-2 w-fit rounded-full bg-white/90 px-3 py-1 text-center text-xs text-ink/60 shadow-sm">
               {!prompt.trim()
                 ? '👆 Type your idea above to get started'
+                : cfg?.autopilot
+                  ? '🧾 The agent chooses the format and media; actual provider charges appear as it works.'
                 : estimate
                   ? estimate.usd === 0
                     ? '🆓 Free with your current settings'

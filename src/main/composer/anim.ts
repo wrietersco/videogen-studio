@@ -177,7 +177,7 @@ export function whipTransition(outSel: string, inSel: string, tBoundary: number,
     },
     {
       kind: 'tween',
-      t: tBoundary,
+      t: tBoundary - d,
       sel: inSel,
       from: { xPercent: 110 * dir, skewX: -12 * dir, autoAlpha: 1 },
       to: { xPercent: 0, skewX: 0 },
@@ -229,7 +229,7 @@ export function zoomTransition(outSel: string, inSel: string, tBoundary: number,
     },
     {
       kind: 'tween',
-      t: tBoundary,
+      t: tBoundary - d,
       sel: inSel,
       from: { scale: 0.82, autoAlpha: 0 },
       to: { scale: 1, autoAlpha: 1 },
@@ -254,7 +254,7 @@ export function slideTransition(outSel: string, inSel: string, tBoundary: number
     },
     {
       kind: 'tween',
-      t: tBoundary - d * 0.25,
+      t: tBoundary - d,
       sel: inSel,
       from: { xPercent: 100 * dir, autoAlpha: 0 },
       to: { xPercent: 0, autoAlpha: 1 },
@@ -273,7 +273,7 @@ export const TRANSITIONS: Record<string, TransitionKind> = {
   fade: {
     build: (o, i, t, ctx) => [
       exitFade(o, t, ctx),
-      { kind: 'tween', t, sel: i, from: { autoAlpha: 0 }, to: { autoAlpha: 1 }, dur: 0.35, ease: EASE.softIn }
+      { kind: 'tween', t: Math.max(0, t - 0.28), sel: i, from: { autoAlpha: 0 }, to: { autoAlpha: 1 }, dur: 0.28, ease: EASE.softIn }
     ]
   },
   whip: { build: (o, i, t, ctx) => whipTransition(o, i, t, ctx, 1) },
@@ -283,7 +283,7 @@ export const TRANSITIONS: Record<string, TransitionKind> = {
   wipe: {
     build: (o, i, t, ctx) => [
       exitFade(o, t, ctx, { dur: 0.2 }),
-      maskReveal(i, t, ctx, { dur: 0.5 })
+      maskReveal(i, Math.max(0, t - 0.2), ctx, { dur: 0.2 })
     ]
   }
 }

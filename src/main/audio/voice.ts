@@ -46,7 +46,7 @@ function linesByScene(spec: VideoSpec): Map<string, string> {
  * Synthesize (or reuse) every scene's take, then fit scene durations to the
  * voice. Mutates and returns `spec`. No TTS-capable provider → unchanged.
  */
-export async function narrate(spec: VideoSpec, provider: SpeechProvider | null, projectDir: string, cache?: VoiceCache): Promise<VideoSpec> {
+export async function narrate(spec: VideoSpec, provider: SpeechProvider | null, projectDir: string, cache?: VoiceCache, targetSec?: number): Promise<VideoSpec> {
   const lines = linesByScene(spec)
   if (!provider || lines.size === 0) return spec
   const voice = spec.voice && provider.voices.includes(spec.voice.id) ? spec.voice : defaultVoice(spec, provider)
@@ -99,15 +99,37 @@ export async function narrate(spec: VideoSpec, provider: SpeechProvider | null, 
     })
   )
   spec.voiceover = takes.filter((t): t is VoiceTake => t !== null)
-  fitScenes(spec)
+  fitScenes(spec, targetSec)
   return spec
 }
 
 /** scene length = lead + take + tail, rounded up to whole beats */
-export function fitScenes(spec: VideoSpec): void {
+export function fitScenes(spec: VideoSpec, targetSec?: number): void {
   const { beatSec, beatsPerCut } = beatGrid(spec)
   const unit = beatSec * beatsPerCut
   const take = new Map(spec.voiceover.map((t) => [t.sceneId, t]))
+  if (targetSec && Number.isFinite(targetSec) && targetSec > 0) {
+    const minimums = spec.scenes.map((scene) => {
+      const t = take.get(scene.id)
+      return Math.max(2, t ? t.leadSec + t.durationSec + 0.15 : 2)
+    })
+    const minTotal = minimums.reduce((sum, n) => sum + n, 0)
+    // Honor the requested duration when speech can fit without cutting it off.
+    // If it cannot, preserve the existing voice-first behavior instead.
+    if (minTotal <= targetSec) {
+      const slack = targetSec - minTotal
+      const weights = spec.scenes.map((s) => s.durationSec)
+      const weightTotal = weights.reduce((sum, n) => sum + n, 0)
+      let remaining = Math.round(targetSec * 1000)
+      spec.scenes.forEach((scene, i) => {
+        const ms = i === spec.scenes.length - 1 ? remaining : Math.round((minimums[i] + slack * weights[i] / weightTotal) * 1000)
+        scene.durationSec = ms / 1000
+        remaining -= ms
+      })
+      spec.durationSec = Math.round(targetSec * 100) / 100
+      return
+    }
+  }
   for (const scene of spec.scenes) {
     const t = take.get(scene.id)
     const want = t ? t.leadSec + t.durationSec + 0.35 : scene.durationSec

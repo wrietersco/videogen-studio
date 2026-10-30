@@ -7,6 +7,7 @@ const STAGE_META: Record<PipelineEvent['stage'], { label: string; icon: string }
   critic: { label: 'Quality checker', icon: '👁' },
   compose: { label: 'Assembler', icon: '🎼' },
   qa: { label: 'Fixer', icon: '🛡' },
+  custom: { label: 'Custom scene artist', icon: '🖌️' },
   thumbs: { label: 'Storyboard', icon: '📸' },
   revise: { label: 'Scene redo', icon: '🔁' },
   render: { label: 'Renderer', icon: '🎬' },
@@ -27,8 +28,15 @@ function toRows(events: PipelineEvent[]): Row[] {
   events.forEach((e, i) => {
     const meta = STAGE_META[e.stage]
     const key = `${i}-${e.stage}-${'status' in e ? e.status : 'final'}`
+    if (e.stage === 'custom') {
+      if (e.status === 'started') rows.push({ key, ...meta, detail: `building and testing ${e.total} custom scene(s)…`, state: 'run' })
+      if (e.status === 'attempt') rows.push({ key, ...meta, detail: `scene ${e.sceneIndex + 1}: ${e.phase === 'authoring' ? 'building' : 'reviewing'} attempt ${e.attempt}`, state: 'run' })
+      if (e.status === 'scene') rows.push({ key, ...meta, detail: `scene ${e.sceneIndex + 1}: ${e.accepted ? 'custom scene selected' : 'original retained'}${e.detail ? ` — ${e.detail.slice(0, 120)}` : ''}`, state: e.accepted ? 'ok' : 'warn' })
+      if (e.status === 'done') rows.push({ key, ...meta, detail: 'custom scene review complete', state: 'ok' })
+    }
     if (e.stage === 'plan') {
       if (e.status === 'started') rows.push({ key, ...meta, detail: 'reading the brief…', state: 'run' })
+      if (e.status === 'creative') rows.push({ key, ...meta, detail: `Format: ${e.platform} · ${e.durationHintSec}s · ${e.styleHint}. ${e.reason}`, state: 'info' })
       if (e.status === 'done')
         rows.push({
           key,

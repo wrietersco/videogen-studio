@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 import { VideoSpec } from '@shared/spec'
+import type { PlatformId, StyleFamily } from '@shared/spec'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import type { MediaRouter } from '../media/router'
 import { Planner } from './planner'
@@ -11,11 +12,15 @@ import { captureSceneThumbs } from '../livePreview'
 import { ProjectStore, type StageName, type StageState } from '../store/projectStore'
 import { RenderService, type CheckReport, type RenderProgress } from '../rendererService/hyperframes'
 import { vendorDir, fontsDir, musicDir } from '../paths'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, unlinkSync } from 'node:fs'
 import { PLATFORM_PRESETS } from '@shared/presets'
 import { SceneDirector, pickClipScenes, preserveFinishedPlates } from '../director/director'
 import { makePlate, relocatePlate } from '../director/plates'
 import { reviewScenes } from '../director/critic'
+import { authorCustomScene, chooseCustomScenes } from '../director/customScene'
+import { authorCanvasCode, needsCanvasCode, renderCanvasCode } from '../director/canvasCode'
+import { randomUUID } from 'node:crypto'
+import sharp from 'sharp'
 
 
 function readComposition(dir: string): string {
@@ -25,6 +30,13 @@ function readComposition(dir: string): string {
 
 function writeComposition(dir: string, html: string): void {
   writeFileSync(join(dir, 'index.html'), html)
+}
+
+/** A failed capture can be an almost-black frame even when the CLI succeeds. */
+export async function isBlankReviewFrame(image: Buffer): Promise<boolean> {
+  const stats = await sharp(image).resize(128, 128, { fit: 'fill' }).removeAlpha().stats()
+  const channels = stats.channels.slice(0, 3)
+  return channels.every(c => c.mean < 28 && c.stdev < 5)
 }
 
 /** salvage the audio layer (clips + caption cues) embedded in an old composition */
@@ -77,6 +89,7 @@ type CraftMode = 'directed' | 'classic'
 
 export type PipelineEvent =
   | { stage: 'plan'; status: 'started' }
+  | { stage: 'plan'; status: 'creative'; platform: PlatformId; styleHint: StyleFamily; durationHintSec: number; look: 'documentary' | 'infographic'; reason: string }
   | {
       stage: 'plan'
       status: 'done'
@@ -102,6 +115,10 @@ export type PipelineEvent =
   | { stage: 'qa'; status: 'fixing'; attempt: number; issues: string[] }
   | { stage: 'qa'; status: 'done'; clean: boolean; warnings: number }
   | { stage: 'qa'; status: 'failed'; issues: string[] }
+  | { stage: 'custom'; status: 'started'; total: number }
+  | { stage: 'custom'; status: 'attempt'; sceneIndex: number; attempt: number; phase: 'authoring' | 'reviewing' }
+  | { stage: 'custom'; status: 'scene'; sceneIndex: number; accepted: boolean; detail: string }
+  | { stage: 'custom'; status: 'done' }
   | { stage: 'thumbs'; status: 'started'; total: number }
   | { stage: 'thumbs'; status: 'progress'; index: number; sceneId: string; dataUrl: string }
   | { stage: 'thumbs'; status: 'done'; captured: number }
@@ -361,6 +378,11 @@ export class Orchestrator {
     if (this.cancelled) return this.abort(projectId, emit)
     const audio = await this.runCompose(projectId, spec, emit)
     const qa = await this.runQaLoop(projectId, spec, audio, emit)
+    const wasCustom = spec.customScenes?.some(c => c.sceneId === sceneId) || spec.customVideos?.some(c => c.sceneId === sceneId)
+    if (wasCustom && !this.cancelled) {
+      const originalPrompt = this.store.readMeta(projectId)?.prompt ?? spec.title
+      spec = await this.runCustomScenes(projectId, spec, `${originalPrompt}\nUser revision: ${feedback}`, audio, emit, new Map([[sceneId, feedback]]))
+    }
 
     // ---------- fresh storyboard captures ----------
     if (this.cancelled) return this.abort(projectId, emit)
@@ -398,6 +420,9 @@ export class Orchestrator {
     spec.narration = spec.narration.filter((n) => ids.has(n.sceneId))
     spec.crafts = spec.crafts.filter((c) => ids.has(c.sceneId))
     spec.voiceover = spec.voiceover.filter((t) => ids.has(t.sceneId))
+    const unchanged = (id: string) => JSON.stringify(before.scenes.find(s => s.id === id)) === JSON.stringify(spec.scenes.find(s => s.id === id)) && JSON.stringify(before.narration.find(n => n.sceneId === id)) === JSON.stringify(spec.narration.find(n => n.sceneId === id))
+    spec.customScenes = spec.customScenes?.filter(c => ids.has(c.sceneId) && unchanged(c.sceneId))
+    spec.customVideos = spec.customVideos?.filter(c => ids.has(c.sceneId) && unchanged(c.sceneId))
     this.cancelled = false
     this.activeJobId = projectId
     this.store.pushHistory(projectId, before)
@@ -498,11 +523,19 @@ export class Orchestrator {
 
     // ---------- compose ----------
     if (this.cancelled) return this.abort(projectId, emit)
-    const audio = await this.runCompose(projectId, spec, emit)
+    const range = PLATFORM_PRESETS[spec.platform].durationRange
+    const target = opts.durationHintSec && Number.isFinite(opts.durationHintSec) ? Math.min(range[1], Math.max(range[0], opts.durationHintSec)) : undefined
+    const audio = await this.runCompose(projectId, spec, emit, target)
 
     // ---------- QA fix-loop ----------
     if (this.cancelled) return this.abort(projectId, emit)
     let qa = await this.runQaLoop(projectId, spec, audio, emit)
+
+    // Bespoke vector scenes are trialled against the existing composition;
+    // failures leave the original scene and its paid media intact.
+    if (!this.cancelled && opts.craft !== 'classic') {
+      spec = await this.runCustomScenes(projectId, spec, opts.prompt, audio, emit)
+    }
 
     // ---------- vision critic: watch the real frames, send weak scenes back ----------
     if (this.cancelled) return this.abort(projectId, emit)
@@ -528,6 +561,165 @@ export class Orchestrator {
   }
 
   // ---------------- shared stage implementations (used by generate + resume) ----------------
+
+  private async runCustomScenes(
+    projectId: string,
+    spec: VideoSpec,
+    prompt: string,
+    audio: Awaited<ReturnType<Orchestrator['runCompose']>>,
+    emit: (e: PipelineEvent) => void = () => {},
+    targeted?: Map<string, string>
+  ): Promise<VideoSpec> {
+    const provider = this.providerFor()
+    if (provider.id === 'mock') return spec
+    const ids = targeted ? [...targeted.keys()] : await chooseCustomScenes(provider, spec, prompt)
+    if (!ids.length) return spec
+    emit({ stage: 'custom', status: 'started', total: ids.length })
+    const dir = this.store.dir(projectId)
+    let current = spec
+    let continuityFrame: Buffer | undefined
+    let continuityIndex = -1
+    for (const sceneId of ids) {
+      if (this.cancelled) break
+      const index = current.scenes.findIndex(s => s.id === sceneId)
+      if (index < 0) continue
+      const scene = current.scenes[index]
+      const originalHtml = readComposition(dir)
+      const start = current.scenes.slice(0, index).reduce((sum, s) => sum + s.durationSec, 0)
+      if (index > 0 && continuityIndex !== index - 1) {
+        continuityFrame = undefined
+        try {
+          const prior = current.scenes[index - 1]
+          const priorTime = start - Math.min(0.55, prior.durationSec * 0.5)
+          const priorDir = join(dir, '.custom-continuity')
+          rmSync(priorDir, { recursive: true, force: true })
+          const priorFrames = await this.renders.snapshot(dir, [priorTime], priorDir)
+          if (priorFrames[0] && existsSync(priorFrames[0])) {
+            const raw = readFileSync(priorFrames[0])
+            if (!(await isBlankReviewFrame(raw))) continuityFrame = await sharp(raw).resize({ width: 720 }).jpeg({ quality: 80 }).toBuffer()
+          }
+        } catch { /* proceed without a visual reference if capture fails */ }
+      } else if (index === 0) continuityFrame = undefined
+      // Do not sample inside the outgoing transition: that can show the next
+      // scene and falsely attribute its content to this candidate.
+      const lastFraction = Math.max(0.4, 1 - 0.55 / scene.durationSec)
+      const times = [0.18, 0.4, lastFraction].map(fraction => start + scene.durationSec * fraction)
+      const beforeDir = join(dir, '.custom-before')
+      let beforeImages: Buffer[]
+      try {
+        let usable: Buffer[] | undefined
+        for (let capture = 0; capture < 3 && !this.cancelled; capture++) {
+          rmSync(beforeDir, { recursive: true, force: true })
+          const before = await this.renders.snapshot(dir, times, beforeDir)
+          if (before.length !== 3 || before.some(f => !existsSync(f))) continue
+          const raw = before.map(f => readFileSync(f))
+          if ((await Promise.all(raw.map(isBlankReviewFrame))).some(Boolean)) continue
+          usable = await Promise.all(raw.map(frame => sharp(frame).resize({ width: 720 }).jpeg({ quality: 80 }).toBuffer()))
+          break
+        }
+        if (!usable) throw new Error('Original scene capture was blank or unavailable')
+        beforeImages = usable
+      } catch (err) {
+        this.store.appendEvent(projectId, `custom scene ${index + 1}: skipped comparison (${String((err as Error)?.message ?? err).slice(0, 120)})`)
+        continue
+      }
+      let feedback: string | undefined = targeted?.get(sceneId)
+      let previousSvg: string | undefined = current.customScenes?.find(c => c.sceneId === sceneId)?.svg
+      let previousCode: string | undefined = current.customVideos?.find(c => c.sceneId === sceneId)?.source
+      let previousFrame: Buffer | undefined = (previousCode || targeted?.has(sceneId)) ? beforeImages[1] : undefined
+      const clipFile = current.crafts.find(c => c.sceneId === sceneId)?.plate?.clipFile
+      const backgroundVideo = clipFile && /^assets\/plates\/[A-Za-z0-9._-]+\.mp4$/.test(clipFile) ? join(dir, clipFile) : undefined
+      if (clipFile && (!backgroundVideo || !existsSync(backgroundVideo))) {
+        this.store.appendEvent(projectId, `custom scene ${index + 1}: kept moving footage because the source could not be loaded safely`)
+        continue
+      }
+      const useCode = Boolean(backgroundVideo) || previousCode !== undefined || await needsCanvasCode(provider, current, sceneId, prompt)
+      let accepted = false
+      let best: { spec: VideoSpec; score: number; file?: string; reason: string; attempt: number; frame: Buffer } | undefined
+      for (let attempt = 1; attempt <= 3 && !this.cancelled; attempt++) {
+        let trialFile: string | undefined
+        emit({ stage: 'custom', status: 'attempt', sceneIndex: index, attempt, phase: 'authoring' })
+        try {
+          let candidate: VideoSpec
+          if (useCode) {
+            const plateFile = current.crafts.find(c => c.sceneId === sceneId)?.plate?.file
+            let backgroundJpeg: Buffer | undefined
+            if (plateFile && /^assets\/plates\/[A-Za-z0-9._-]+\.(?:jpe?g|png|webp)$/i.test(plateFile)) {
+              const platePath = join(dir, plateFile)
+              if (existsSync(platePath)) backgroundJpeg = await sharp(readFileSync(platePath)).resize({ width: 1080, height: 1920, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer()
+            }
+            if (backgroundVideo) backgroundJpeg = beforeImages[1]
+            const code = await authorCanvasCode(provider, current, prompt, sceneId, feedback, previousCode, backgroundJpeg, previousFrame, Boolean(backgroundVideo), continuityFrame)
+            previousCode = code
+            const file = `assets/custom/${randomUUID()}.mp4`
+            trialFile = join(dir, file)
+            const preset = PLATFORM_PRESETS[current.platform]
+            await renderCanvasCode({ code, width: preset.width, height: preset.height, durationSec: scene.durationSec, output: trialFile, backgroundJpeg: backgroundVideo ? undefined : backgroundJpeg, backgroundVideo, cancelled: () => this.cancelled })
+            candidate = { ...current, customScenes: (current.customScenes ?? []).filter(c => c.sceneId !== sceneId), customVideos: [...(current.customVideos ?? []).filter(c => c.sceneId !== sceneId), { sceneId, file, source: code }] }
+          } else {
+            const svg = await authorCustomScene(provider, current, prompt, sceneId, feedback, previousSvg, continuityFrame)
+            previousSvg = svg
+            candidate = { ...current, customVideos: (current.customVideos ?? []).filter(c => c.sceneId !== sceneId), customScenes: [...(current.customScenes ?? []).filter(c => c.sceneId !== sceneId), { sceneId, svg }] }
+          }
+          this.store.saveComposition(projectId, compose(candidate, vendorDir, fontsDir, audio))
+          const check = await this.renders.check(dir)
+          if (!check.ok) throw new Error(`Render check: ${(check.errors.map(e => e.message).join('; ') || check.raw || 'check failed without diagnostics').slice(0, 500)}`)
+          const candidateDir = join(dir, `.custom-candidate-${attempt}`)
+          rmSync(candidateDir, { recursive: true, force: true })
+          const frames = await this.renders.snapshot(dir, times, candidateDir)
+          if (frames.length !== 3 || frames.some(f => !existsSync(f))) throw new Error('Could not render all candidate frames')
+          const afterImages = await Promise.all(frames.map(f => sharp(readFileSync(f)).resize({ width: 720 }).jpeg({ quality: 80 }).toBuffer()))
+          previousFrame = afterImages[1]
+          emit({ stage: 'custom', status: 'attempt', sceneIndex: index, attempt, phase: 'reviewing' })
+          const verdict = await provider.generateJSON<{ useCandidate: boolean; score: number; originalScore: number; blockingIssue: boolean; reason: string }>({
+            system: 'You are the video editor. Images 1, 2 and 3 are the existing scene at early, middle and late times; images 4, 5 and 6 are the new custom illustration or coded animation at those same times. If image 7 is provided, it is the preceding approved scene and is the authoritative visual reference for any recurring emblem, character or product. The original scene in images 1-3 may be the inconsistent scene being repaired: do not treat its conflicting design as the established identity. Judge both original and candidate against image 7, and reject a candidate that changes that identity contrary to the brief. Preserve relevant moving footage and its subject; reject the candidate if footage or its motion is lost. The brief describes the whole film; assess the intended beat of this scene in the context of the surrounding scene plan rather than demanding that every scene contain every film-wide action. Compare them against the brief and narration. Rate both the original and candidate out of 10 using the same criteria; put the original rating in originalScore. Reserve 8 or above for professional, accurate and legible motion that communicates the scene. Set blockingIssue true for any inconsistent recurring identity when continuity is required, factual or scientific error, wrong subject, missing required content, clipped or overlapping labels, or illegible text, even when the candidate looks better than the original. Accept only if it scores at least 8, has no blocking issue, and is clearly better than the original. Do not prefer a generic diagram over relevant photos or footage. Give concrete improvement notes.',
+            prompt: JSON.stringify({ brief: prompt, scene, filmScenes: current.scenes, narration: current.narration.find(n => n.sceneId === sceneId)?.text, hasContinuityReference: Boolean(continuityFrame) }),
+            schemaName: 'CustomSceneReview', jsonSchema: { type: 'object', properties: { useCandidate: { type: 'boolean' }, score: { type: 'number' }, originalScore: { type: 'number' }, blockingIssue: { type: 'boolean' }, reason: { type: 'string' } }, required: ['useCandidate', 'score', 'originalScore', 'blockingIssue', 'reason'], additionalProperties: false },
+            images: [...beforeImages, ...afterImages, ...(continuityFrame ? [continuityFrame] : [])].map(image => ({ mimeType: 'image/jpeg', base64: image.toString('base64') })), temperature: 0.1, maxTokens: 500
+          })
+          feedback = String(verdict.reason ?? 'Improve the visual and match the scene more closely').slice(0, 600)
+          if (verdict.useCandidate === true && verdict.blockingIssue === false && Number(verdict.score) >= 8) {
+            if (best?.file && best.file !== trialFile) { try { unlinkSync(best.file) } catch {} }
+            best = undefined
+            current = candidate
+            this.store.saveSpec(projectId, current)
+            this.store.appendEvent(projectId, `custom scene ${index + 1}: candidate ${attempt} accepted after render and visual comparison — ${feedback}`)
+            continuityFrame = afterImages[2]
+            accepted = true
+            break
+          }
+          const score = Number(verdict.score), originalScore = Number(verdict.originalScore)
+          if (verdict.blockingIssue === false && Number.isFinite(score) && Number.isFinite(originalScore) && score >= 1 && score <= 10 && originalScore >= 1 && originalScore <= 10 && score > originalScore && (!best || score > best.score)) {
+            if (best?.file && best.file !== trialFile) { try { unlinkSync(best.file) } catch {} }
+            best = { spec: candidate, score, file: trialFile, reason: feedback, attempt, frame: afterImages[2] }
+          }
+        } catch (err) {
+          feedback = String((err as Error)?.message ?? err).slice(0, 600)
+        }
+        try { if (trialFile && trialFile !== best?.file && existsSync(trialFile)) unlinkSync(trialFile) } catch { /* a retained trial is harmless */ }
+        this.store.appendEvent(projectId, `custom scene ${index + 1}: candidate ${attempt} rejected — ${feedback}`)
+      }
+      if (!accepted && best && !this.cancelled) {
+        current = best.spec
+        this.store.saveComposition(projectId, compose(current, vendorDir, fontsDir, audio))
+        this.store.saveSpec(projectId, current)
+        feedback = best.reason
+        continuityFrame = best.frame
+        this.store.appendEvent(projectId, `custom scene ${index + 1}: selected candidate ${best.attempt}, the best safe improvement after retries`)
+        accepted = true
+      }
+      if (!accepted) {
+        if (best?.file) { try { unlinkSync(best.file) } catch {} }
+        this.store.appendEvent(projectId, `custom scene ${index + 1}: retained existing scene after testing — ${feedback ?? 'no usable candidate'}`)
+        writeComposition(dir, originalHtml)
+        continuityFrame = beforeImages[2]
+      }
+      continuityIndex = index
+      emit({ stage: 'custom', status: 'scene', sceneIndex: index, accepted, detail: feedback ?? '' })
+    }
+    emit({ stage: 'custom', status: 'done' })
+    return current
+  }
 
   /**
    * Scene director stage: film design system (once), then one craft per scene
@@ -702,11 +894,14 @@ export class Orchestrator {
     const preset = PLATFORM_PRESETS[spec.platform]
     const dir = this.store.dir(projectId)
     let made = 0
+    let missed = 0
+    const attempted = new Set<string>()
     for (const scene of spec.scenes) {
       if (this.cancelled) break
       const c = crafts.get(scene.id)
       const plate = c?.plate
       if (!c || c.background !== 'plate' || !plate?.motion || plate.clipFile) continue
+      attempted.add(scene.id)
       try {
         const still = plate.file && existsSync(join(dir, plate.file)) ? readFileSync(join(dir, plate.file)) : undefined
         const r = await media.motionClip({
@@ -727,9 +922,26 @@ export class Orchestrator {
         made += 1
       } catch (err) {
         this.store.appendEvent(projectId, `clip for ${scene.id} skipped: ${String((err as Error)?.message ?? err).slice(0, 160)}`)
+        missed++
         if (plate.file) c.plate = { ...plate, motion: false }
         else toGrid(scene.id)
       }
+    }
+    // A failed motion request should not waste a suitable clip elsewhere in
+    // the library. Try other beats without making extra downloads or paid calls.
+    if (missed && !this.cancelled) for (const scene of spec.scenes) {
+      if (!missed || this.cancelled) break
+      const c = crafts.get(scene.id), plate = c?.plate
+      if (!c || c.background !== 'plate' || !plate || plate.clipFile || attempted.has(scene.id)) continue
+      try {
+        const hit = await media.motionClip({ prompt: plate.prompt, subjectLabel: plate.subjectLabel, camera: plate.camera, imageStyle: spec.design.imageStyle, width: preset.width, height: preset.height, durationSec: scene.durationSec, projectId, libraryOnly: true })
+        if (!hit) continue
+        mkdirSync(join(dir, 'assets', 'plates'), { recursive: true })
+        writeFileSync(join(dir, 'assets', 'plates', `${scene.id}.mp4`), hit.buffer)
+        c.plate = { ...plate, motion: true, clipFile: `assets/plates/${scene.id}.mp4` }
+        this.store.appendEvent(projectId, `clip for ${scene.id}: reused a suitable library clip after another beat had no match`)
+        made++; missed--
+      } catch { /* retain the existing still and try the next beat */ }
     }
     return made
   }
@@ -746,7 +958,7 @@ export class Orchestrator {
     emit: (e: PipelineEvent) => void
   ): Promise<{ spec: VideoSpec; qa?: CheckReport } | null> {
     const provider = this.providerFor()
-    if (!spec.design || spec.crafts.length === 0 || provider.id === 'mock') return null
+    if (!spec.design || provider.id === 'mock') return null
     this.track(projectId, 'critic', 'running')
     emit({ stage: 'critic', status: 'started' })
     const reviews = await reviewScenes({
@@ -754,6 +966,7 @@ export class Orchestrator {
       renders: this.renders,
       projectDir: this.store.dir(projectId),
       spec,
+      userPrompt,
       onReview: (r) => emit({ stage: 'critic', status: 'scene', sceneIndex: r.index, score: r.score, notes: r.notes })
     })
     const byId = new Map(reviews.map((r) => [r.sceneId, r]))
@@ -776,14 +989,25 @@ export class Orchestrator {
       this.store.saveComposition(projectId, compose(next, vendorDir, fontsDir, audio))
       qa = await this.runQaLoop(projectId, next, audio, emit)
     }
+    // Native 3D and existing custom scenes cannot be repaired by the plate
+    // director. Try a bespoke alternative and retain the original unless it wins.
+    const bespokeFixes = reviews.filter(r => r.needsManualRevision)
+    let bespokeRevised = 0
+    if (bespokeFixes.length && !this.cancelled) {
+      const previous = next
+      next = await this.runCustomScenes(projectId, next, userPrompt, audio, emit, new Map(bespokeFixes.map(r => [r.sceneId, r.notes.join(' | ')])))
+      const signature = (value: VideoSpec, id: string) => JSON.stringify([value.customScenes?.find(c => c.sceneId === id), value.customVideos?.find(c => c.sceneId === id)])
+      bespokeRevised = bespokeFixes.filter(r => signature(previous, r.sceneId) !== signature(next, r.sceneId)).length
+    }
     this.store.saveSpec(projectId, next)
     const avg = reviews.length ? reviews.reduce((a, r) => a + r.score, 0) / reviews.length : 0
-    this.track(projectId, 'critic', 'done', reviews.length ? `avg ${avg.toFixed(1)}/10 · ${toFix.length} revised` : 'no frames reviewed')
-    emit({ stage: 'critic', status: 'done', revised: toFix.length })
+    const revised = toFix.length + bespokeRevised
+    this.track(projectId, 'critic', 'done', reviews.length ? `avg ${avg.toFixed(1)}/10 | ${revised} revised` : 'no frames reviewed')
+    emit({ stage: 'critic', status: 'done', revised })
     return { spec: next, qa }
   }
 
-  private async runCompose(projectId: string, spec: VideoSpec, emit: (e: PipelineEvent) => void) {
+  private async runCompose(projectId: string, spec: VideoSpec, emit: (e: PipelineEvent) => void, targetSec?: number) {
     this.track(projectId, 'compose', 'running')
     emit({ stage: 'compose', status: 'started' })
     // voice-first: narration is synthesized (or reused) and measured, and scene
@@ -791,7 +1015,7 @@ export class Orchestrator {
     try {
       const speech = this.speech()
       const before = spec.durationSec
-      await narrate(spec, speech, this.store.dir(projectId), speech && this.media ? this.media.voiceCache(projectId, speech) : undefined)
+      await narrate(spec, speech, this.store.dir(projectId), speech && this.media ? this.media.voiceCache(projectId, speech) : undefined, targetSec)
       this.store.saveSpec(projectId, spec)
       if (spec.voiceover.length) {
         this.store.appendEvent(projectId, `voice: ${spec.voiceover.length} takes (${spec.voice?.id}) · ${before}s → ${spec.durationSec}s`)

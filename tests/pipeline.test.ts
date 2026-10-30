@@ -9,6 +9,7 @@ import { Orchestrator } from '../src/main/pipeline/orchestrator'
 import { ProjectStore } from '../src/main/store/projectStore'
 import { MockProvider } from '../src/main/providers/mock'
 import { RenderService } from '../src/main/rendererService/hyperframes'
+import type { VideoSpec } from '../src/shared/spec'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const ffmpeg = resolve(appRoot, 'node_modules/ffmpeg-static/ffmpeg.exe')
@@ -62,10 +63,20 @@ describe('full pipeline (mock provider, draft render)', () => {
   it('generates a real MP4 from a freestyle prompt and is deterministic on re-render', { timeout: 600_000 }, async () => {
     const workDir = mkdtempSync(join(tmpdir(), 'vg-e2e-'))
     const store = new ProjectStore(join(workDir, 'projects'))
-    const orch = new Orchestrator(store, () => new MockProvider())
+    const mock = new MockProvider()
+    const generate = mock.generateJSON.bind(mock)
+    mock.generateJSON = async <T,>(req: Parameters<typeof mock.generateJSON>[0]) => {
+      const plan = await generate<VideoSpec>(req)
+      plan.scenes = ['READY', 'PLAY', 'WIN'].map((headline, index) => ({ id: `short-${index}`, kind: 'statement' as const, headline, durationSec: 8 / 3, transitionIn: 'cut' as const, transitionOut: 'cut' as const }))
+      plan.narration = plan.scenes.map(scene => ({ sceneId: scene.id, text: scene.headline }))
+      plan.durationSec = 8
+      return plan as T
+    }
+    const orch = new Orchestrator(store, () => mock)
     const result = await orch.generate({
-      prompt: 'quick hype clip about retro gaming',
+      prompt: 'eight-second hype clip about retro gaming',
       platform: 'tiktok',
+      durationHintSec: 8,
       quality: 'standard', // deterministic path: software GL + single worker
       onEvent: () => {}
     })

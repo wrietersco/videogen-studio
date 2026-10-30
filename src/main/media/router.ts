@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { extname, join } from 'node:path'
 import type { FilmDesign, VideoSpec } from '@shared/spec'
 import { tokenize, type AssetMeta } from '@shared/assets'
 import { priceUsage, type UsageNumbers } from '@shared/pricing'
 import { orientationOf, type AssetLibrary } from '../assets/library'
-import { joinClips, lastFrame, probe } from '../assets/probe'
+import { joinClips, lastFrame, probe, videoPoster } from '../assets/probe'
 import type { LLMProvider, ProviderId, SpeechProvider, VoiceCache } from '../providers/types'
 import { ElevenLabsClient, ELEVEN_VOICES } from '../providers/elevenlabs'
 import { GeminiVideoClient, GEMINI_VIDEO_MODEL } from '../providers/geminiVideo'
@@ -34,6 +34,9 @@ export interface MediaDeps {
   provider: (id: ProviderId) => LLMProvider
   /** the active chat provider's painter, else any keyed one (legacy 'auto') */
   autoImageProvider: () => LLMProvider | null
+  /** Explicit test-only budget, shared by all clips in this router instance. */
+  testVideoLimits?: { maxClips: number; maxDurationSec: 3 | 4 }
+  onDecision?: (projectId: string, message: string) => void
 }
 
 export interface PaintRequest {
@@ -63,9 +66,24 @@ function split(v: string): [string, string | undefined] {
   return i < 0 ? [v, undefined] : [v.slice(0, i), v.slice(i + 1)]
 }
 
+/** Capture real clip dimensions and duration so subsequent library searches can reuse it. */
+function videoMetadata(buffer: Buffer): { durationSec?: number; width?: number; height?: number } {
+  const dir = mkdtempSync(join(tmpdir(), 'vg-clip-meta-'))
+  try {
+    const file = join(dir, 'clip.mp4')
+    writeFileSync(file, buffer)
+    return probe(file)
+  } catch {
+    return {}
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 export class MediaRouter {
   private readonly eleven: ElevenLabsClient
   private readonly omni: GeminiVideoClient
+  private generatedClips = 0
 
   constructor(private readonly d: MediaDeps) {
     this.eleven = new ElevenLabsClient(() => d.key('elevenlabs'))
@@ -84,7 +102,18 @@ export class MediaRouter {
 
   /** the painter Settings → Media points at, with its model (null → stock or nothing) */
   private painter(): { provider: LLMProvider; model?: string } | null {
-    const [p, model] = split(this.d.settings().media.image || 'auto')
+    const settings = this.d.settings()
+    const [p, model] = split(settings.media.image || 'auto')
+    // A stock-first autonomous run may use the image model explicitly selected
+    // for the active provider if reviewed stock cannot satisfy the brief.
+    if (p === 'stock' && settings.autopilot) {
+      const active = settings.provider
+      const selectedModel = settings.models[`${active}-image`]
+      if ((active === 'openai' || active === 'gemini') && selectedModel && this.d.key(active)) {
+        const provider = this.d.provider(active)
+        if (provider.generateImage) return { provider, model: selectedModel }
+      }
+    }
     if (p === 'auto') {
       const auto = this.d.autoImageProvider()
       return auto ? { provider: auto } : null
@@ -95,6 +124,7 @@ export class MediaRouter {
 
   private useStock(): boolean {
     const v = this.d.settings().media.image || 'auto'
+    if (this.d.settings().autopilot && v !== 'none') return true
     // auto falls back to Pexels/Pixabay photos when no painter is keyed (Openverse alone is too hit-and-miss for plates)
     return v === 'stock' || (v === 'auto' && !this.painter() && Boolean(this.d.key('pexels') || this.d.key('pixabay')))
   }
@@ -152,15 +182,43 @@ export class MediaRouter {
       // a stocked photo only stands in for a plate when stock is what's asked for —
       // never let yesterday's free download shadow the painter the user chose
       if (hit && path && (hit.source !== 'stock' || this.useStock())) {
+        if (this.d.settings().autopilot && hit.source === 'stock') {
+          const score = await this.scoreImage(readFileSync(path), req.fullPrompt)
+          if (score === null || score < 7) {
+            // Continue to new candidates instead of reusing an unverified match.
+          } else {
+            lib.markUsed(hit.id, req.projectId)
+            return { buffer: readFileSync(path), assetId: hit.id, source: hit.source, reused: true }
+          }
+        } else {
         lib.markUsed(hit.id, req.projectId)
         const est = this.imageCostEstimate()
         if (est.usd > 0)
           meter.record({ kind: 'image', provider: est.provider, model: est.model, usage: est.usage, saved: true, note: `reused ${hit.id}` })
         return { buffer: readFileSync(path), assetId: hit.id, source: hit.source, reused: true }
+        }
       }
     }
     const tags = [...tokenize(req.subjectLabel ?? ''), ...(req.look ? [req.look] : []), 'plate']
-    if (this.useStock() && !(opts.fresh && this.painter())) {
+    if (this.d.settings().autopilot && !opts.fresh && this.useStock()) {
+      const query = stockQuery(req.subjectLabel, req.brief)
+      const { results } = await searchStock('image', query, { orientation: orientationOf(req.width, req.height), pexelsKey: this.d.key('pexels'), pixabayKey: this.d.key('pixabay') })
+      for (const result of results.slice(0, 3)) {
+        try {
+          const asset = await downloadStock(lib, result, tags)
+          const path = lib.path(asset.id)
+          if (!path) continue
+          const buffer = readFileSync(path)
+          const score = await this.scoreImage(buffer, req.fullPrompt)
+          this.d.onDecision?.(req.projectId, `image stock candidate: ${score === null ? 'review unavailable' : `${score}/10`}`)
+          if (score !== null && score >= 7) {
+            lib.markUsed(asset.id, req.projectId)
+            return { buffer, assetId: asset.id, source: 'stock', reused: false }
+          }
+        } catch { /* try the next candidate */ }
+      }
+      if (!this.painter()) throw new Error(`No suitable evaluated stock image for "${query}" and no image model is configured`)
+    } else if (this.useStock() && !(opts.fresh && this.painter())) {
       const query = stockQuery(req.subjectLabel, req.brief)
       const { results } = await searchStock('image', query, { orientation: orientationOf(req.width, req.height), pexelsKey: this.d.key('pexels'), pixabayKey: this.d.key('pixabay') })
       if (!results.length) throw new Error(`no free stock photo found for "${query}"`)
@@ -174,7 +232,18 @@ export class MediaRouter {
     const p = this.painter()
     if (!p?.provider.generateImage) throw new Error('no image model configured')
     const before = meter.current()?.entries.length ?? 0
-    const buffer = await p.provider.generateImage({ prompt: req.fullPrompt, width: req.width, height: req.height, model: p.model })
+    let buffer = await p.provider.generateImage({ prompt: req.fullPrompt, width: req.width, height: req.height, model: p.model })
+    if (this.d.settings().autopilot) {
+      const firstScore = await this.scoreImage(buffer, req.fullPrompt)
+      if (firstScore !== null) {
+        try {
+          const second = await p.provider.generateImage({ prompt: req.fullPrompt, width: req.width, height: req.height, model: p.model })
+          const secondScore = await this.scoreImage(second, req.fullPrompt)
+          this.d.onDecision?.(req.projectId, `generated images: first ${firstScore}/10, second ${secondScore === null ? 'unavailable' : `${secondScore}/10`}; ${secondScore !== null && secondScore > firstScore ? 'second' : 'first'} selected`)
+          if (secondScore !== null && secondScore > firstScore) buffer = second
+        } catch { /* retain the first working candidate */ }
+      }
+    }
     const spent = meter.current()?.entries.slice(before).find((e) => e.kind === 'image')
     const asset = lib.add(buffer, sniffImageExt(buffer), {
       kind: 'image',
@@ -191,6 +260,42 @@ export class MediaRouter {
     })
     lib.markUsed(asset.id, req.projectId)
     return { buffer, assetId: asset.id, source: 'generated', reused: false }
+  }
+
+  private async scoreImage(buffer: Buffer, brief: string): Promise<number | null> {
+    const vision = this.d.provider(this.d.settings().provider)
+    if (vision.id === 'mock') return null
+    try {
+      const sharp = (await import('sharp')).default
+      const preview = await sharp(buffer).resize({ width: 720, height: 720, fit: 'inside' }).jpeg().toBuffer()
+      const r = await vision.generateJSON<{ score: number }>({
+        system: 'Judge how well the image satisfies the scene brief, including subject, action, composition and mood. Score 0 to 10. A generic or wrong subject must score below 7.',
+        prompt: brief, schemaName: 'MediaSuitability',
+        jsonSchema: { type: 'object', properties: { score: { type: 'number' } }, required: ['score'], additionalProperties: false },
+        images: [{ mimeType: 'image/jpeg', base64: preview.toString('base64') }], temperature: 0.2, maxTokens: 100
+      })
+      return Number.isFinite(r.score) ? Math.max(0, Math.min(10, r.score)) : null
+    } catch { return null }
+  }
+
+  private async scoreVideo(buffer: Buffer, brief: string): Promise<number | null> {
+    const dir = mkdtempSync(join(tmpdir(), 'vg-video-review-'))
+    try {
+      const file = join(dir, 'clip.mp4')
+      writeFileSync(file, buffer)
+      const duration = probe(file).durationSec
+      if (!duration || duration <= 0) return null
+      const vision = this.d.provider(this.d.settings().provider)
+      if (vision.id === 'mock') return null
+      const frames = [0.2, 0.5, 0.8].map((fraction) => videoPoster(file, duration * fraction)).filter((frame): frame is Buffer => Boolean(frame))
+      if (frames.length < 2) return null
+      const result = await vision.generateJSON<{ score: number }>({
+        system: 'Judge these ordered frames from one video against the scene brief. Score 0 to 10 for subject, continuity, visual quality and suitability. A wrong subject scores below 7. Do not infer motion you cannot see.',
+        prompt: brief, schemaName: 'VideoSuitability', jsonSchema: { type: 'object', properties: { score: { type: 'number' } }, required: ['score'], additionalProperties: false },
+        images: frames.map((frame) => ({ mimeType: 'image/jpeg', base64: frame.toString('base64') })), temperature: 0.2, maxTokens: 100
+      })
+      return Number.isFinite(result.score) ? Math.max(0, Math.min(10, result.score)) : null
+    } catch { return null } finally { rmSync(dir, { recursive: true, force: true }) }
   }
 
   // ---------------- voice ----------------
@@ -364,7 +469,7 @@ export class MediaRouter {
   clipsAvailable(): boolean {
     const [p] = split(this.d.settings().media.video || 'stock')
     if (p === 'gemini') return this.omni.configured()
-    if (p === 'stock') return Boolean(this.d.key('pexels') || this.d.key('pixabay'))
+    if (p === 'stock') return Boolean(this.d.key('pexels') || this.d.key('pixabay') || (this.reuse && this.d.library.all().some((asset) => asset.kind === 'video')))
     return false
   }
 
@@ -383,6 +488,8 @@ export class MediaRouter {
     height: number
     durationSec: number
     projectId: string
+    /** Search the existing library only; never download or generate. */
+    libraryOnly?: boolean
   }): Promise<{ buffer: Buffer; assetId: string; source: AssetMeta['source'] } | null> {
     const lib = this.d.library
     const orientation = orientationOf(req.width, req.height)
@@ -406,7 +513,8 @@ export class MediaRouter {
     }
     if (this.reuse) {
       const exact = lib.findByKey('video', key)
-      if (exact) {
+      const exactPath = exact ? lib.path(exact.id) : null
+      if (exact && exactPath && (!this.d.settings().autopilot || exact.source !== 'stock' || (await this.scoreVideo(readFileSync(exactPath), prompt) ?? 0) >= 7)) {
         if (exact.source === 'generated') meter.record({ kind: 'video', provider: 'gemini', model, usage: { outputTokens: (exact.durationSec ?? 8) * 5792 }, saved: true, note: `reused ${exact.id}` })
         return use(exact)
       }
@@ -415,13 +523,72 @@ export class MediaRouter {
       const ready = lib
         .search(req.subjectLabel ?? '', { kind: 'video', orientation, sources: ['stock'], tags: ['motion'], minDurationSec: req.durationSec * 0.6, limit: 5 })
         .find((h) => h.score >= 0.75)
-      if (ready) return use(ready.asset)
-      const close = lib.search(`${req.subjectLabel ?? ''} ${req.prompt}`, { kind: 'video', orientation, minDurationSec: req.durationSec * 0.6, limit: 1 })[0]
-      if (close && close.score >= 0.75) return use(close.asset)
+      const readyPath = ready ? lib.path(ready.asset.id) : null
+      if (ready && readyPath && (!this.d.settings().autopilot || (await this.scoreVideo(readFileSync(readyPath), prompt) ?? 0) >= 7)) return use(ready.asset)
+      // Search by the scene subject and visually check promising matches. Older
+      // clips may lack metadata, so probe them before judging suitability.
+      const legacy = lib.search(req.subjectLabel?.trim() || req.prompt, { kind: 'video', limit: 8 })
+      for (const hit of legacy) {
+        if (hit.score < (this.d.settings().autopilot ? 0.5 : 0.75)) continue
+        const path = lib.path(hit.asset.id)
+        if (!path) continue
+        const metadata = hit.asset.durationSec && hit.asset.width && hit.asset.height ? hit.asset : probe(path)
+        const foundOrientation = orientationOf(metadata.width, metadata.height)
+        if (!metadata.durationSec || metadata.durationSec < req.durationSec * 0.6 || (orientation && foundOrientation && orientation !== foundOrientation)) continue
+        const buffer = readFileSync(path)
+        if (this.d.settings().autopilot && (await this.scoreVideo(buffer, prompt) ?? 0) < 7) continue
+        if (hit.asset.source === 'generated' && hit.asset.provider === 'gemini') meter.record({ kind: 'video', provider: 'gemini', model: hit.asset.model || model, usage: { outputTokens: metadata.durationSec * 5792 }, saved: true, note: `reused ${hit.asset.id}` })
+        return use(hit.asset)
+      }
+      const close = lib.search(`${req.subjectLabel ?? ''} ${req.prompt}`, { kind: 'video', orientation, minDurationSec: req.durationSec * 0.6, limit: 5 })[0]
+      const closePath = close ? lib.path(close.asset.id) : null
+      if (close && closePath && close.score >= 0.75 && (!this.d.settings().autopilot || (close.asset.source !== 'stock' && !close.asset.tags.includes('candidate-alternate')) || (await this.scoreVideo(readFileSync(closePath), prompt) ?? 0) >= 7)) return use(close.asset)
+    }
+    if (req.libraryOnly) return null
+    if (this.d.settings().autopilot && (p === 'stock' || p === 'gemini') && (this.d.key('pexels') || this.d.key('pixabay'))) {
+      const query = stockQuery(req.subjectLabel, req.prompt)
+      const minSec = req.durationSec * 0.8
+      const { results } = await searchStock('video', query, { orientation, minDurationSec: minSec, pexelsKey: this.d.key('pexels'), pixabayKey: this.d.key('pixabay') })
+      for (const candidate of results.filter((r) => (r.durationSec ?? 0) >= minSec).slice(0, 3)) {
+        try {
+          const asset = await downloadStock(lib, candidate, [...tokenize(query), 'motion'])
+          const file = lib.path(asset.id)
+          const score = file ? await this.scoreVideo(readFileSync(file), prompt) : null
+          this.d.onDecision?.(req.projectId, `video stock candidate: ${score === null ? 'review unavailable' : `${score}/10`}`)
+          if (file && (score ?? 0) >= 7) return use(asset)
+        } catch { /* try the next candidate */ }
+      }
+      if (p === 'stock') return null
     }
     if (p === 'gemini' && this.omni.configured()) {
       const still = req.still ? { mimeType: 'image/jpeg', base64: req.still.toString('base64') } : undefined
-      const { video, usd } = await this.omni.clip({ prompt, aspect, model, image: still })
+      const generate = async () => {
+        const limit = this.d.testVideoLimits
+        if (limit && (!Number.isInteger(limit.maxClips) || limit.maxClips < 0 || this.generatedClips >= Math.min(limit.maxClips, 3))) throw new Error('AI video test clip limit reached')
+        this.generatedClips++
+        return this.omni.clip({ prompt, aspect, model, image: still, ...(limit ? { durationSec: limit.maxDurationSec } : {}) })
+      }
+      let chosen = await generate()
+      let alternate: typeof chosen | undefined
+      if (this.d.settings().autopilot) {
+        const firstScore = await this.scoreVideo(chosen.video, prompt)
+        if (firstScore !== null) {
+          try {
+            const second = await generate()
+            const secondScore = await this.scoreVideo(second.video, prompt)
+            this.d.onDecision?.(req.projectId, `generated videos: first ${firstScore}/10, second ${secondScore === null ? 'unavailable' : `${secondScore}/10`}; ${secondScore !== null && secondScore > firstScore ? 'second' : 'first'} selected`)
+            if (secondScore !== null && secondScore > firstScore) { alternate = chosen; chosen = second } else alternate = second
+          } catch { /* retain the first working candidate */ }
+        }
+      }
+      const { video, usd } = chosen
+      if (alternate) lib.add(alternate.video, '.mp4', {
+        kind: 'video', source: 'generated', title: `${(req.subjectLabel || req.prompt).slice(0, 65)} — alternate`,
+        tags: [...tokenize(req.subjectLabel ?? ''), 'clip', 'motion', 'candidate-alternate'], prompt,
+        provider: 'gemini', model, costUsd: alternate.usd,
+        ...videoMetadata(alternate.video),
+        license: { name: 'Generated with your API key (SynthID watermarked)', requiresAttribution: false }
+      })
       const a = lib.add(video, '.mp4', {
         kind: 'video',
         source: 'generated',
@@ -432,6 +599,7 @@ export class MediaRouter {
         model,
         key,
         costUsd: usd,
+        ...videoMetadata(video),
         license: { name: 'Generated with your API key (SynthID watermarked)', requiresAttribution: false }
       })
       return use(a)
@@ -474,6 +642,8 @@ export class MediaRouter {
     onNote?: (msg: string) => void
   }): Promise<{ images: number; clips: number }> {
     const lib = this.d.library
+    // Autonomous candidates must be inspected before reuse; unreviewed prefetches bypass that gate.
+    if (this.d.settings().autopilot) return { images: 0, clips: 0 }
     if (!this.reuse) return { images: 0, clips: 0 } // 'fresh' ignores the library — prefetch would be wasted bytes
     const wantImages = this.useStock()
     const wantClips =

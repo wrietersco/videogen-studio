@@ -157,8 +157,8 @@ export default function Settings() {
             Full autonomous agent
           </label>
           <div className="mt-2 text-[11px] text-ink/60">
-            For each video it picks the look (pictures or diagrams), whether moving clips are worth it, and reuses your library to save money.
-            <b> It never changes your AI provider or models, never picks a costlier engine than the one you chose, and never touches your keys.</b> Every decision is written to the video's activity log.
+            For each video it chooses the format and visual approach, finds suitable media and reuses your library when it can.
+            <b> It keeps your selected AI providers and models.</b> When stock is unsuitable, it may use your selected image model; AI calls can incur charges. Review the activity log and cost receipt for the result.
           </div>
           {confirmPilot && !settings.autopilot && (
             <div className="pop-in mt-3 flex items-center gap-3 rounded-2xl border-2 border-sunny/60 bg-sunny-soft p-3 text-xs text-ink/80">

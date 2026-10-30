@@ -52,5 +52,5 @@ export const DEFAULT_SETTINGS: Settings = {
   media: { ...DEFAULT_MEDIA },
   reuse: 'smart',
   sharing: 'local',
-  autopilot: false
+  autopilot: true
 }

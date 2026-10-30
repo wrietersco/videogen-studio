@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url'
 import { MockProvider } from '../src/main/providers/mock'
 import { Planner } from '../src/main/pipeline/planner'
 import { compose } from '../src/main/composer'
-import { VideoSpec } from '../src/shared/spec'
+import { SceneCraft, VideoSpec } from '../src/shared/spec'
+import { TRANSITIONS } from '../src/main/composer/anim'
+import { designContext } from '../src/main/composer/layout'
+import { PLATFORM_PRESETS } from '../src/shared/presets'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const vendorDir = resolve(appRoot, 'vendor')
@@ -24,6 +27,18 @@ async function buildCase(c: (typeof CASES)[number]) {
   const result = compose(spec, vendorDir, fontsDir)
   return { spec, result }
 }
+
+describe('scene transitions', () => {
+  it('overlaps incoming and outgoing visuals before a scene boundary', async () => {
+    const { spec } = await buildCase(CASES[0])
+    const ctx = designContext(spec, PLATFORM_PRESETS[spec.platform])
+    for (const name of ['fade', 'slide', 'whip', 'zoom', 'wipe']) {
+      const steps = TRANSITIONS[name].build('#old', '#new', 4, ctx)
+      const incoming = steps.find(step => 'sel' in step && step.sel === '#new')
+      expect(incoming?.t, name).toBeLessThan(4)
+    }
+  })
+})
 
 describe('mock planner', () => {
   it('produces valid, platform-clamped specs for every style family', async () => {
@@ -56,6 +71,32 @@ describe('mock planner', () => {
 
 describe('composer', () => {
   const specs: Array<{ style: string; spec: VideoSpec; html: string }> = []
+
+  it('preserves planned 3D scenes even when directed crafts exist', async () => {
+    const { spec } = await buildCase(CASES[2])
+    expect(spec.scenes.some((s) => s.kind === 'showcase3d' || s.kind === 'particles')).toBe(true)
+    spec.design = { look: 'infographic', series: 'SPACE', imageStyle: '', accent: '#ff6600', accent2: '#00ccff' }
+    spec.crafts = spec.scenes.map((scene) => SceneCraft.parse({ sceneId: scene.id, headline: 'Fallback scene', widgets: [] }))
+    const result = compose(spec, vendorDir, fontsDir, { clips: [], captions: [{ startSec: 0, endSec: 1, text: 'A narrated line' }] })
+    expect(result.needsThree).toBe(true)
+    expect(result.html).toContain('canvas-host')
+    expect(result.html).toContain('caption-text')
+  })
+
+  it('uses extruded text geometry for supported 3D logos and keeps a readable fallback', async () => {
+    const { spec } = await buildCase(CASES[2])
+    const scene = spec.scenes.find((s) => s.kind === 'showcase3d')
+    if (!scene || scene.kind !== 'showcase3d') throw new Error('Expected a 3D scene')
+    scene.objectStyle = 'logoText'
+    scene.logoText = 'STARFALL'
+    const supported = compose(spec, vendorDir, fontsDir)
+    expect(supported.html).toContain('new TextGeometry("STARFALL"')
+    expect(supported.html).toContain('type="importmap"')
+    expect(supported.assets.some((a) => a.to.endsWith('TextGeometry.js'))).toBe(true)
+    scene.logoText = '星'
+    const fallback = compose(spec, vendorDir, fontsDir)
+    expect(fallback.html).toContain('logo-overlay')
+  })
 
   it('composes every style family', async () => {
     for (const c of CASES) {

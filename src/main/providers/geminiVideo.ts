@@ -21,6 +21,8 @@ export interface ClipRequest {
   /** optional first frame / reference picture (image_to_video) */
   image?: { mimeType: string; base64: string }
   model?: string
+  /** Requested output duration in seconds. */
+  durationSec?: number
 }
 
 type Content = { type: string; mime_type?: string; data?: string; uri?: string }
@@ -69,6 +71,7 @@ export class GeminiVideoClient {
   /** make one clip; returns mp4 bytes plus what was billed */
   async clip(req: ClipRequest): Promise<{ video: Buffer; model: string; usd?: number; outputTokens: number }> {
     if (!this.configured()) throw new Error('Add a Gemini key in Settings to make video clips')
+    if (req.durationSec !== undefined && (!Number.isInteger(req.durationSec) || req.durationSec < 3 || req.durationSec > 10)) throw new Error('Gemini video duration must be between 3 and 10 seconds')
     const model = req.model ?? GEMINI_VIDEO_MODEL
     const input = req.image
       ? [
@@ -79,7 +82,7 @@ export class GeminiVideoClient {
     const body: Record<string, unknown> = {
       model,
       input,
-      response_format: { type: 'video', aspect_ratio: req.aspect ?? '16:9', resolution: '720p', delivery: 'uri' }
+      response_format: { type: 'video', aspect_ratio: req.aspect ?? '16:9', resolution: '720p', delivery: 'uri', ...(req.durationSec !== undefined ? { duration: `${req.durationSec}s` } : {}) }
     }
     if (req.image) body.generation_config = { video_config: { task: 'image_to_video' } }
 

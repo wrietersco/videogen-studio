@@ -9,6 +9,7 @@ import { MediaRouter, plateKey } from '../src/main/media/router'
 import { platePrompt } from '../src/main/director/plates'
 import { DEFAULT_SETTINGS } from '../src/main/settings'
 import type { FilmDesign, VideoSpec } from '../src/shared/spec'
+import type { LLMProvider } from '../src/main/providers/types'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -141,6 +142,31 @@ describe('search dedupes and ranks across providers', () => {
 })
 
 describe('stock prefetch — downloads into the library for on-the-go use', () => {
+  it('evaluates three stock images before comparing two generated candidates', async () => {
+    const lib = new AssetLibrary(mkdtempSync(join(tmpdir(), 'vg-autostock-')), null)
+    let downloads = 0
+    let generations = 0
+    const imageModels: Array<string | undefined> = []
+    const scores = [2, 3, 4, 6, 9]
+    const provider = {
+      id: 'openai', label: 'test',
+      generateJSON: async () => ({ score: scores.shift() }),
+      generateImage: async (req: { model?: string }) => { imageModels.push(req.model); return png(50, 50, ++generations * 50) }
+    } as unknown as LLMProvider
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('api.pexels.com/v1/search')) return new Response(JSON.stringify({ photos: [1, 2, 3].map((id) => ({ id, width: 1000, height: 1000, url: `https://pexels.com/${id}`, alt: 'workshop', photographer: 'A', src: { medium: `https://dl/img-${id}`, large2x: `https://dl/img-${id}` } })) }))
+      if (u.includes('dl/img-')) { downloads++; return new Response(await png(50, 50, downloads)) }
+      return new Response(JSON.stringify({ results: [] }))
+    }))
+    const router = new MediaRouter({ library: lib, settings: () => ({ ...DEFAULT_SETTINGS, autopilot: true, provider: 'openai', models: { 'openai-image': 'chosen-model' }, media: { ...DEFAULT_SETTINGS.media, image: 'stock' } }), key: (id) => id === 'pexels' || id === 'openai' ? 'key' : '', provider: () => provider, autoImageProvider: () => provider })
+    const painted = await router.paint({ brief: 'old workshop', fullPrompt: 'old workshop in warm sunset', subjectLabel: 'workshop', width: 1000, height: 1000, projectId: 'p1' })
+    expect(downloads).toBe(3)
+    expect(generations).toBe(2)
+    expect(imageModels).toEqual(['chosen-model', 'chosen-model'])
+    expect(painted.source).toBe('generated')
+    expect(painted.buffer.equals(await png(50, 50, 100))).toBe(true)
+  }, 60_000)
   it('fetches the ranked best photo and clip per scene, then paint/motionClip reuse them', async () => {
     const lib = new AssetLibrary(mkdtempSync(join(tmpdir(), 'vg-prefetch-')), null)
     let imageDownloads = 0
@@ -180,7 +206,7 @@ describe('stock prefetch — downloads into the library for on-the-go use', () =
         return new Response(JSON.stringify({ results: [] }), { status: 200 })
       })
     )
-    const settings = () => ({ ...DEFAULT_SETTINGS, media: { ...DEFAULT_SETTINGS.media, image: 'stock', video: 'stock' } })
+    const settings = () => ({ ...DEFAULT_SETTINGS, autopilot: false, media: { ...DEFAULT_SETTINGS.media, image: 'stock', video: 'stock' } })
     const router = new MediaRouter({
       library: lib,
       settings,

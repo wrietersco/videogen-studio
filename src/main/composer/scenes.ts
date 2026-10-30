@@ -4,7 +4,7 @@ import type { AnimStep } from './anim'
 import type { StyleKit } from './kits'
 import { EASE, exitFade, popStagger, riseIn, slamIn } from './anim'
 import type { Scene } from '@shared/spec'
-import { buildThreeShowcase, buildThreeParticles } from './three'
+import { buildThreeShowcase, buildThreeParticles, supportsExtrudedLogo } from './three'
 
 /**
  * Scene renderers — one per VideoSpec scene kind. Each returns the scene's
@@ -484,9 +484,10 @@ export function renderScene(
     }
 
     case 'showcase3d': {
+      const useExtrudedLogo = scene.objectStyle === 'logoText' && supportsExtrudedLogo(scene.logoText)
+      const headline = useExtrudedLogo && scene.headline?.trim().toLowerCase() === scene.logoText?.trim().toLowerCase() ? '' : scene.headline
       // hero text pinned to the top third; the 3D object renders below it
-      const hl = scene.headline ? highlightWord(scene.headline) : null
-      const lines = scene.headline ? fitLines(scene.headline, 2, ctx.safe.w * 0.92, Math.round(ts.headline * 0.8)) : []
+      const lines = headline ? fitLines(headline, 2, ctx.safe.w * 0.92, Math.round(ts.headline * 0.8)) : []
       const fs = Math.round(
         Math.min(
           ts.headline * 0.8,
@@ -494,8 +495,8 @@ export function renderScene(
         )
       )
       const overlay = `
-        ${scene.headline ? headlineHTML(`${id}-hl`, lines, hl, fs, 'headline overlay', fitAttrs(ctx.safe.w * 0.92, ctx.safe.h * 0.24, 'lines')) : ''}
-        ${scene.logoText ? `<div class="logo-overlay" id="${id}-logo" ${fitAttrs(ctx.safe.w * 0.9, ctx.safe.h * 0.12, 'box')}>${esc(scene.logoText)}</div>` : ''}`
+        ${headline ? headlineHTML(`${id}-hl`, lines, null, fs, 'headline overlay', fitAttrs(ctx.safe.w * 0.92, ctx.safe.h * 0.24, 'lines')) : ''}
+        ${scene.logoText && !useExtrudedLogo ? `<div class="logo-overlay" id="${id}-logo" ${fitAttrs(ctx.safe.w * 0.9, ctx.safe.h * 0.12, 'box')}>${esc(scene.logoText)}</div>` : ''}`
       html = sceneShellFullBleed(
         id,
         scene.kind,
@@ -512,9 +513,10 @@ export function renderScene(
         id,
         (index + 1) * 1013,
         ctx.palette.accent,
-        ctx.palette.accent2
+        ctx.palette.accent2,
+        scene.logoText
       )
-      steps.push(...(scene.logoText || scene.headline ? enter(scene.logoText ? `#${id}-logo` : `#${id}-hl`) : []))
+      steps.push(...(scene.logoText && !useExtrudedLogo || headline ? enter(scene.logoText && !useExtrudedLogo ? `#${id}-logo` : `#${id}-hl`) : []))
       break
     }
 

@@ -243,9 +243,13 @@ export interface CheckReport {
 }
 
 /** Defensive normalization — the CLI's JSON shape may evolve. */
-function normalizeCheckReport(json: unknown): CheckReport {
+export function normalizeCheckReport(json: unknown): CheckReport {
   const j = json as Record<string, unknown>
-  const sections = (j.checks ?? j.sections ?? j.results ?? {}) as Record<string, unknown>
+  // Current HyperFrames emits lint/runtime/layout/etc. directly at the top
+  // level; older versions nested them under checks/sections/results.
+  const sections = (j.checks ?? j.sections ?? j.results ?? Object.fromEntries(
+    Object.entries(j).filter(([, value]) => value !== null && typeof value === 'object' && !Array.isArray(value) && Array.isArray((value as { findings?: unknown }).findings))
+  )) as Record<string, unknown>
   const errors: CheckIssue[] = []
   const warnings: CheckIssue[] = []
   for (const [category, v] of Object.entries(sections)) {
@@ -257,11 +261,11 @@ function normalizeCheckReport(json: unknown): CheckReport {
         category,
         message: f.message ?? JSON.stringify(f),
         selector: (f as { selector?: string }).selector,
-        fix: (f as { fix?: string }).fix
+        fix: (f as { fix?: string; fixHint?: string }).fix ?? (f as { fixHint?: string }).fixHint
       }
       const level = f.level ?? (f as { severity?: string }).severity
       if (level === 'error') errors.push(issue)
-      else warnings.push(issue)
+      else if (level === 'warning' || level === 'warn') warnings.push(issue)
     }
   }
   // top-level shapes

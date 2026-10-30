@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { applyAutopilot, chooseLook, decide } from '../src/main/autopilot'
+import { applyAutopilot, chooseLook, decide, decideCreative } from '../src/main/autopilot'
+import { MockProvider } from '../src/main/providers/mock'
 import { DEFAULT_SETTINGS, type Settings } from '../src/main/settings'
 
 const base = (over: Partial<Settings> = {}): Settings => ({
@@ -19,8 +20,24 @@ describe('autopilot', () => {
 
   it('skips paid clips when the idea is not about motion, keeps them when it is', () => {
     const s = base({ media: { ...DEFAULT_SETTINGS.media, video: 'gemini:gemini-omni-1.1-flash' } })
-    expect(decide({ prompt: 'history of the Roman empire', settings: s, imageAvailable: true }).media.video).toBe('stock')
+    expect(decide({ prompt: 'history of the Roman empire', settings: s, imageAvailable: true }).media.video).toBeUndefined()
     expect(decide({ prompt: 'a cinematic astronaut walking across a desert at sunrise', durationHintSec: 20, settings: s, imageAvailable: true }).media.video).toBeUndefined()
+  })
+
+  it('chooses different Create settings from simple and complex briefs without changing models', async () => {
+    const mock = new MockProvider()
+    expect(await decideCreative('Make a 15 second TikTok hype edit about gaming', mock)).toMatchObject({ platform: 'tiktok', styleHint: 'social', durationHintSec: 15 })
+    expect(await decideCreative('A 60 second YouTube 3D logo reveal with particles', mock)).toMatchObject({ platform: 'youtube', styleHint: 'motion3d', durationHintSec: 60 })
+    expect(await decideCreative('Explain how coffee is made', mock)).toMatchObject({ platform: 'youtube', styleHint: 'explainer' })
+  })
+
+  it('uses the configured provider decision and rejects invalid decisions', async () => {
+    const provider = new MockProvider()
+    Object.defineProperty(provider, 'id', { value: 'openai' })
+    provider.generateJSON = async <T>() => ({ platform: 'instagram-reels', styleHint: 'social', durationHintSec: 22, look: 'documentary', reason: 'A visual teaser' }) as T
+    expect(await decideCreative('A product teaser', provider)).toMatchObject({ platform: 'instagram-reels', durationHintSec: 22, look: 'documentary' })
+    provider.generateJSON = async <T>() => ({ platform: 'invalid' }) as T
+    expect(await decideCreative('A 15 second TikTok hype edit', provider)).toMatchObject({ platform: 'tiktok', durationHintSec: 15 })
   })
 
   it('never changes provider, models or keys, and never steps up to a costlier engine', () => {

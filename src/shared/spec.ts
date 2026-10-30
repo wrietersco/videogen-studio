@@ -194,6 +194,8 @@ export const SceneCraft = z.object({
   plate: Plate.optional(),
   /** on-screen headline (≤ 9 words) and the one word painted in the accent */
   headline: z.string().max(90),
+  /** Let the director give imagery room when a headline is unnecessary. */
+  headlineTreatment: z.enum(['headline', 'compact', 'visual']).optional(),
   accentWord: z.string().max(24).default(''),
   /** small italic line under the headline */
   deck: z.string().max(90).default(''),
@@ -262,6 +264,10 @@ export const VideoSpec = z.object({
   voiceover: z.array(VoiceTake).default([]),
   /** directed mode: film design system + per-scene crafts (absent = classic template scenes) */
   design: FilmDesign.optional(),
-  crafts: z.array(SceneCraft).default([])
+  crafts: z.array(SceneCraft).default([]),
+  /** Model-authored vector scenes; markup is validated before use. */
+  customScenes: z.array(z.object({ sceneId: z.string(), svg: z.string().max(100000) })).optional(),
+  /** A locally rendered, sandboxed custom-code scene and its retained source. */
+  customVideos: z.array(z.object({ sceneId: z.string(), file: z.string(), source: z.string().max(50000) })).optional()
 })
 export type VideoSpec = z.infer<typeof VideoSpec>

@@ -1,4 +1,6 @@
 import type { VideoSpec, Scene } from '@shared/spec'
+import { resolve } from 'node:path'
+import { appRoot } from '../paths'
 import { PLATFORM_PRESETS } from '@shared/presets'
 import { designContext, type DesignContext, typeScale, fitAttrs } from './layout'
 import type { AnimStep } from './anim'
@@ -7,6 +9,7 @@ import { validateSelectors } from './selectors'
 import { renderScene } from './scenes'
 import { TRANSITIONS } from './anim'
 import { craftTheme, craftedCSS, craftFontCSS, craftFontAssets, plateEngineScript, renderCraftedScene, type PlateJob } from './crafted'
+import { validateSceneSvg } from '../director/customScene'
 
 /**
  * compose() — VideoSpec + platform preset → complete HyperFrames project.
@@ -56,7 +59,28 @@ export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string, au
   spec.scenes.forEach((scene: Scene, i) => {
     const { start, end } = windows[i]
     const craft = theme ? craftOf.get(scene.id) : undefined
-    const rendered = craft && theme ? renderCraftedScene(spec, craft, i, start, end, ctx, theme) : renderScene(scene, i, start, end, ctx, kit)
+    const native3D = spec.style === 'motion3d' && (scene.kind === 'showcase3d' || scene.kind === 'particles')
+    const rendered = craft && theme && !native3D ? renderCraftedScene(spec, craft, i, start, end, ctx, theme) : renderScene(scene, i, start, end, ctx, kit)
+    const custom = spec.customScenes?.find((c) => c.sceneId === scene.id)
+    const customVideo = spec.customVideos?.find((c) => c.sceneId === scene.id)
+    if (customVideo && /^assets\/custom\/[A-Za-z0-9._-]+\.mp4$/.test(customVideo.file)) {
+      rendered.html = `<section class="scene" id="scene-${i + 1}" data-kind="custom-code"><video class="clip" id="scene-${i + 1}-custom-video" src="${esc(customVideo.file)}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover" data-start="${start.toFixed(3)}" data-duration="${(end - start).toFixed(3)}" data-track-index="${20 + i}" muted playsinline preload="auto"></video></section>`
+      rendered.steps = []
+      if ('plate' in rendered) rendered.plate = undefined
+      if ('threeScript' in rendered) rendered.threeScript = undefined
+    } else if (custom) {
+      const safe = validateSceneSvg(custom.svg)
+      const prefix = `custom${i + 1}-`
+      const groupIds = [...safe.matchAll(/<g\s[^>]*\bid="(motion[1-6])"/g)].map((m) => m[1])
+      const inline = safe.replace(/\bid="([A-Za-z][\w.-]*)"/g, `id="${prefix}$1"`).replace(/url\(#([A-Za-z][\w.-]*)\)/g, `url(#${prefix}$1)`)
+      rendered.html = `<section class="scene" id="scene-${i + 1}" data-kind="custom-vector"><div id="scene-${i + 1}-custom" class="custom-art">${inline}</div></section>`
+      rendered.steps = [{ kind: 'tween', t: start, sel: `#scene-${i + 1}-custom`, from: { scale: 1 }, to: { scale: 1.035 }, dur: end - start, ease: 'none' }]
+      for (const [n, groupId] of [...new Set(groupIds)].entries()) {
+        rendered.steps.push({ kind: 'tween', t: start + 0.15 + n * Math.min(0.7, Math.max(0.15, (end - start - 0.8) / Math.max(1, groupIds.length))), sel: `#${prefix}${groupId}`, from: { opacity: 0, y: 20 }, to: { opacity: 1, y: 0 }, dur: 0.35, ease: 'power1.out' })
+      }
+      if ('plate' in rendered) rendered.plate = undefined
+      if ('threeScript' in rendered) rendered.threeScript = undefined
+    }
     if ('plate' in rendered && rendered.plate) plates.push(rendered.plate)
     sceneHTML.push(rendered.html)
     steps.push(...rendered.steps)
@@ -75,13 +99,15 @@ export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string, au
       // so a lingering previous scene ghosts its text/3D under the new one
       steps.push({ kind: 'set', t: start, sel: `#scene-${i}`, set: { autoAlpha: 0 } })
     }
-    // cut entrances bring the section up at its start (non-cut transitions handle it themselves)
-    if (i > 0 && scene.transitionIn === 'cut') {
+    // Video tracks do not display before their start time, so a transition
+    // leading into a clip must cut at the boundary instead of revealing black.
+    const incomingClip = Boolean(customVideo || (craft?.background === 'plate' && craft.plate?.clipFile && !custom))
+    const transition = incomingClip ? 'cut' : scene.transitionIn
+    if (i > 0 && transition === 'cut') {
       steps.push({ kind: 'set', t: start, sel: `#scene-${i + 1}`, set: { autoAlpha: 1 } })
     }
-    // section-level transition from the previous scene
-    if (i > 0 && scene.transitionIn !== 'cut') {
-      const builder = TRANSITIONS[scene.transitionIn] ?? TRANSITIONS.fade
+    if (i > 0 && transition !== 'cut') {
+      const builder = TRANSITIONS[transition] ?? TRANSITIONS.fade
       steps.push(...builder.build(`#scene-${i}`, `#scene-${i + 1}`, start, ctx))
     }
   })
@@ -118,6 +144,11 @@ export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string, au
     assets.push({ from: `${vendorDir}/three.module.js`, to: 'assets/vendor/three.module.js' })
     // three ≥0.170 splits its build: module.js imports ./three.core.js
     assets.push({ from: `${vendorDir}/three.core.js`, to: 'assets/vendor/three.core.js' })
+    if (spec.scenes.some((s) => s.kind === 'showcase3d' && s.objectStyle === 'logoText' && s.logoText)) {
+      assets.push({ from: resolve(appRoot, 'node_modules/three/examples/jsm/loaders/FontLoader.js'), to: 'assets/vendor/FontLoader.js' })
+      assets.push({ from: resolve(appRoot, 'node_modules/three/examples/jsm/geometries/TextGeometry.js'), to: 'assets/vendor/TextGeometry.js' })
+      assets.push({ from: resolve(appRoot, 'node_modules/three/examples/fonts/LICENSE'), to: 'assets/fonts/three-example-font-LICENSE' })
+    }
   }
   for (const f of fontsNeeded(spec)) {
     assets.push({ from: `${fontsDir}/${f}`, to: `assets/fonts/${f}` })
@@ -183,6 +214,8 @@ function baseCSS(ctx: DesignContext, captionUppercase: boolean): string {
     #root { position: relative; width: 100%; height: 100%; }
     .atmo, .atmo > * { position: absolute; inset: 0; pointer-events: none; }
     .scene { position: absolute; inset: 0; visibility: hidden; }
+    .custom-art { position: absolute; inset: 0; }
+    .custom-art svg { display: block; width: 100%; height: 100%; }
     .bleed { position: absolute; inset: 0; }
     .safe {
       position: absolute;
@@ -212,6 +245,7 @@ function baseCSS(ctx: DesignContext, captionUppercase: boolean): string {
       position: relative; z-index: 2;
     }
     .headline.overlay { font-size: ${Math.round(ts.headline * 0.8)}px; }
+    [data-kind="showcase3d"] .headline.overlay, [data-kind="showcase3d"] .logo-overlay { background: rgba(4, 6, 12, 0.82); padding: 0.08em 0.18em; border-radius: 0.1em; }
     .display.overlay { font-size: ${Math.round(ts.display * 0.85)}px; }
     .subline.overlay { font-size: ${Math.round(ts.subline * 0.95)}px; }
     .headline.overlay, .display.overlay, .logo-overlay, .kb-text {
@@ -578,8 +612,9 @@ function buildDocument(
 ): string {
   const ts = typeScale(ctx)
   const capFit = fitAttrs(ctx.captionBand.maxWidthPx, Math.round(ts.caption * 1.22 * 2 + 24 * ctx.scale), 'box')
+  const hasNative3D = spec.style === 'motion3d' && spec.scenes.some((s) => s.kind === 'showcase3d' || s.kind === 'particles')
   const captionLayer =
-    audio && audio.captions.length > 0 && !directed
+    audio && audio.captions.length > 0 && (!directed || hasNative3D)
       ? `<div class="caption-layer caption-${spec.captionStyle.position}"><div class="caption-bar" id="caption-text" ${capFit}></div></div>`
       : ''
   const audioClips = (audio?.clips ?? [])
@@ -596,7 +631,7 @@ function buildDocument(
   // on-screen text per scene window — captions repeating it are suppressed
   let cursor = 0
   const sceneTexts = spec.scenes.map((s) => {
-    const w = { start: cursor, end: cursor + s.durationSec, text: '' }
+    const w = { start: cursor, end: cursor + s.durationSec, text: '', directed: Boolean(directed) && spec.crafts.some((c) => c.sceneId === s.id) && !(spec.style === 'motion3d' && (s.kind === 'showcase3d' || s.kind === 'particles')) }
     cursor = w.end
     const parts: string[] = []
     for (const k of ['kicker', 'headline', 'subline', 'text', 'label', 'logoText', 'action'] as const) {
@@ -630,6 +665,7 @@ function buildDocument(
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=${ctx.width}, height=${ctx.height}" />
     <title>${esc(spec.title)}</title>
+    ${threeScripts.length ? '<script type="importmap">{"imports":{"three":"./assets/vendor/three.module.js"}}</script>' : ''}
     <style>
 ${style}
     </style>
@@ -682,7 +718,7 @@ ${interpreter}
           return;
         }
         const scene = CAP_SCENES.find((s) => t >= s.start && t < s.end);
-        const dup = scene && capRedundant(cue.text, scene.text);
+        const dup = scene && (scene.directed || capRedundant(cue.text, scene.text));
         capEl.textContent = cue.text;
         capEl.style.opacity = dup ? '0' : '1';
       });
