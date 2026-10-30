@@ -74,9 +74,20 @@ export class Planner {
       temperature: 0.8
     }
 
-    const raw = await this.provider.generateJSON<unknown>(req)
+    let raw = await this.provider.generateJSON<unknown>(req)
     const enforceChoices = (value: VideoSpecT): VideoSpecT => ({ ...value, platform: input.platform, ...(input.styleHint ? { style: input.styleHint } : {}) })
-    const first = this.clampToPlatform(enforceChoices(this.validate(raw)))
+    let first: VideoSpecT | undefined
+    let validationError: unknown
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { first = this.clampToPlatform(enforceChoices(this.validate(raw))); break }
+      catch (err) {
+        validationError = err
+        if (attempt === 2) break
+        raw = await this.provider.generateJSON<unknown>({ ...req, prompt: JSON.stringify({ ...payload, correction: `The previous plan was invalid: ${String((err as Error)?.message ?? err).slice(0, 1200)}. Return a corrected complete plan matching the schema and preserve the requested content.` }), temperature: 0.2 })
+      }
+    }
+    if (!first) throw validationError
+
     // Do not silently accept an overlong plan: ask the same
     // selected model to simplify the story rather than making text unreadable.
     if (input.durationHintSec && Number.isFinite(input.durationHintSec)) {
@@ -99,6 +110,15 @@ export class Planner {
     const candidate = raw && typeof raw === 'object' && !Array.isArray(raw)
       ? { ...raw, design: undefined, crafts: undefined, voice: undefined, voiceover: undefined, customScenes: undefined, customVideos: undefined }
       : raw
+    // Music is optional presentation metadata: an invented mood must not
+    // prevent an otherwise valid film from being created.
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+      const plan = candidate as Record<string, unknown>
+      if (plan.musicMood !== undefined && !['upbeat', 'cinematic', 'minimal', 'playful', 'dark', 'corporate', 'none'].includes(String(plan.musicMood))) {
+        const mood = String(plan.musicMood).toLowerCase()
+        plan.musicMood = /none|silent|no music/.test(mood) ? 'none' : /cinema|epic|emotional|nostalg/.test(mood) ? 'cinematic' : /happy|energetic|upbeat/.test(mood) ? 'upbeat' : /playful|fun/.test(mood) ? 'playful' : /dark|ominous/.test(mood) ? 'dark' : /corporate|business/.test(mood) ? 'corporate' : 'minimal'
+      }
+    }
     const result = VideoSpec.safeParse(candidate)
     if (!result.success) {
       const issues = result.error.issues

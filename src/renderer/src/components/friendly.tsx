@@ -14,6 +14,8 @@ const PROVIDERS: Array<[RegExp, string]> = [
 ]
 
 export function friendlyError(raw: string): FriendlyError {
+  if (/Planner produced an invalid VideoSpec/i.test(raw))
+    return { title: 'The video plan could not be completed', fix: 'The planner returned an invalid plan after retrying. Try again; your selected models and providers do not need to be changed.', settings: false, raw }
   const who = PROVIDERS.find(([re]) => re.test(raw))?.[1]
   const keyPlace = `Settings → 🔑 Your keys${who ? ` → ${who}` : ''}`
   if (/add (an?|your)? ?.*key|no api key|missing.*key|api key.*(not set|missing|required)|key is not set/i.test(raw))

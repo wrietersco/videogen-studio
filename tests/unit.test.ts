@@ -53,6 +53,34 @@ describe('videoSpec JSON schema', () => {
   })
 })
 
+describe('planner recovery', () => {
+  it('repairs an unsupported music mood without another paid call', async () => {
+    const prompt = 'Explain how coffee gets from a ripe cherry to a cup. Show the actual steps: harvesting, processing, roasting, grinding and brewing. Make it warm, clear and visually engaging'
+    const base = await new Planner(new MockProvider()).plan({ userPrompt: prompt, platform: 'youtube' })
+    let calls = 0
+    const provider = { id: 'openai' as const, label: 'test', isConfigured: async () => true, listModels: async () => [], generateText: async () => '', generateJSON: async <T,>() => { calls++; return { ...base, musicMood: 'warm and calm' } as T } }
+    const result = await new Planner(provider).plan({ userPrompt: prompt, platform: 'youtube' })
+    expect(result.musicMood).toBe('minimal')
+    expect(calls).toBe(1)
+  })
+  it('stops after three invalid plans instead of retrying indefinitely', async () => {
+    const base = await new Planner(new MockProvider()).plan({ userPrompt: 'coffee', platform: 'youtube' })
+    let calls = 0
+    const provider = { id: 'openai' as const, label: 'test', isConfigured: async () => true, listModels: async () => [], generateText: async () => '', generateJSON: async <T,>() => { calls++; return { ...base, scenes: [] } as T } }
+    await expect(new Planner(provider).plan({ userPrompt: 'coffee', platform: 'youtube' })).rejects.toThrow(/invalid VideoSpec/)
+    expect(calls).toBe(3)
+  })
+  it('asks the same provider to repair an invalid plan and bounds retries', async () => {
+    const base = await new Planner(new MockProvider()).plan({ userPrompt: 'coffee', platform: 'youtube' })
+    const prompts: string[] = []
+    const provider = { id: 'openai' as const, label: 'test', isConfigured: async () => true, listModels: async () => [], generateText: async () => '', generateJSON: async <T,>(req: { prompt: string }) => { prompts.push(req.prompt); return (prompts.length === 1 ? { ...base, scenes: [] } : base) as T } }
+    const result = await new Planner(provider).plan({ userPrompt: 'coffee', platform: 'youtube' })
+    expect(result.scenes.length).toBeGreaterThan(0)
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]).toContain('previous plan was invalid')
+  })
+})
+
 describe('planner clamp', () => {
   it('preserves the selected platform and creative style when the planner disagrees', async () => {
     const base = await new Planner(new MockProvider()).plan({ userPrompt: 'space', platform: 'youtube', styleHint: 'motion3d' })
