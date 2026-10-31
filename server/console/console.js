@@ -67,6 +67,7 @@ async function guarded(fn) {
 async function setupAuth() {
   const config = await (await fetch('/console/config.json')).json()
   if (config.devAuth) {
+    $('google-btn').classList.add('hidden')
     $('dev-row').classList.remove('hidden')
     let devToken = ''
     getToken = async () => devToken
@@ -86,6 +87,14 @@ async function setupAuth() {
     return auth.currentUser.getIdToken()
   }
   signOutFn = () => fa.signOut(auth)
+  $('google-btn').onclick = async () => {
+    $('login-error').textContent = ''
+    try {
+      await fa.signInWithPopup(auth, new fa.GoogleAuthProvider())
+    } catch (err) {
+      $('login-error').textContent = err?.code === 'auth/unauthorized-domain' ? 'This address is not yet allowed for Google sign-in (Firebase → Authentication → Settings → Authorized domains).' : 'Google sign-in failed or was closed.'
+    }
+  }
   $('login-form').onsubmit = async (e) => {
     e.preventDefault()
     $('login-error').textContent = ''

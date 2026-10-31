@@ -1,4 +1,4 @@
-import type { Entitlements, PlanMediaKind } from '@shared/plans'
+import { providerOfModel, type Entitlements, type PlanMediaKind } from '@shared/plans'
 import type { MediaSettings, Settings } from '../settings'
 
 /**
@@ -37,11 +37,7 @@ function planDefaults(ent: Entitlements): MediaSettings {
   }
 }
 
-export function providerOf(model: string): string {
-  if (/^gpt-|^whisper|^tts-/.test(model)) return 'openai'
-  if (/^eleven_|^music_v1$/.test(model)) return 'elevenlabs'
-  return 'gemini'
-}
+export const providerOf = providerOfModel
 
 /** engines that never call a paid model */
 const FREE_ENGINE = /^(none|stock|library|builtin(:.*)?)$/

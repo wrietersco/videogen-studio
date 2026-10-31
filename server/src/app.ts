@@ -8,6 +8,7 @@ import {
   DEFAULT_POLICY,
   entitlements,
   entitlementView,
+  withProviders,
   mergePolicy,
   monthKey,
   PLAN_IDS,
@@ -123,6 +124,12 @@ export function createApp(deps: AppDeps) {
     return p
   }
 
+  async function availableProviders(): Promise<Set<string>> {
+    const names: ProviderName[] = ['openai', 'gemini', 'elevenlabs']
+    const keys = await Promise.all(names.map((p) => deps.secret(p)))
+    return new Set(names.filter((_, i) => Boolean(keys[i])))
+  }
+
   function limit(key: string, max: number, windowMs = 60_000): void {
     if (!limiter.allow(key, max, windowMs, now().getTime())) throw new HttpError(429, 'rate_limited', 'Too many requests. Wait a minute and try again.')
   }
@@ -146,7 +153,7 @@ export function createApp(deps: AppDeps) {
     const pol = await policy()
     const lic = user.licenseId ? await store.getLicense(user.licenseId) : null
     const account = { ...user, email: c.email, emailVerified: c.emailVerified }
-    const ent = entitlements(pol, account, lic, now())
+    const ent = withProviders(entitlements(pol, account, lic, now()), await availableProviders())
     return { caller: c, user, license: lic, policy: pol, ent, subject: subjectOf(user.uid, lic?.id) }
   }
 
@@ -655,7 +662,8 @@ export function createApp(deps: AppDeps) {
       'Content-Type': TYPES[file.split('.').pop()!],
       'Cache-Control': 'no-cache',
       'Content-Security-Policy':
-        "default-src 'self'; script-src 'self' https://www.gstatic.com; style-src 'self'; img-src 'self' data:; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+        // Google sign-in needs Google's script host and the project's auth frame
+        `default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com; style-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; frame-src https://${deps.consoleConfig?.authDomain ?? 'localhost'} https://accounts.google.com; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`
     })
     res.end(body)
   }

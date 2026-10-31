@@ -375,6 +375,22 @@ export function entitlements(policy: Policy, account: Account, license: License 
   }
 }
 
+/** which provider runs a model id */
+export function providerOfModel(model: string): 'openai' | 'gemini' | 'elevenlabs' {
+  if (/^gpt-|^whisper|^tts-/.test(model)) return 'openai'
+  if (/^eleven_|^music_v1$/.test(model)) return 'elevenlabs'
+  return 'gemini'
+}
+
+/**
+ * Drop models whose provider the server has no key for, so the app never
+ * picks an engine that would only fail (it falls back to free stock instead).
+ */
+export function withProviders(ent: Entitlements, available: ReadonlySet<string>): Entitlements {
+  const models = Object.fromEntries(PLAN_MEDIA_KINDS.map((k) => [k, ent.models[k].filter((m) => available.has(providerOfModel(m)))])) as Entitlements['models']
+  return { ...ent, models, chatModel: models.chat.includes(ent.chatModel) ? ent.chatModel : models.chat[models.chat.length - 1] ?? ent.chatModel, clipsPerVideo: models.video.length ? ent.clipsPerVideo : 0 }
+}
+
 // ---------------- usage + the gates ----------------
 
 /** one month of AI use for a subject (a licence, or a free account) */

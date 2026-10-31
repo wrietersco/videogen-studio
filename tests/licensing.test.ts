@@ -225,9 +225,10 @@ describe('licence server', () => {
     // a video that was never started cannot spend
     const stray = await call('/v1/ai/openai/chat/completions', { token: token('carol'), device: DEVICE, project: 'film-9', body: { model: 'gpt-6-luna', messages: [] } })
     expect(stray.json.error.code).toBe('video_not_started')
-    // a provider with no server key is off, not open
+    // a provider with no server key is off, not open: its models drop out of the plan
     const g = await call('/v1/ai/gemini/models/gemini-nano-banana-2.1:generateContent', { token: token('carol'), device: DEVICE, project: 'film-1', body: {} })
-    expect(g.json.error.code).toBe('provider_unavailable')
+    expect(g.json.error.code).toBe('model_not_in_plan')
+    expect((await call('/v1/entitlements', { token: token('carol'), device: DEVICE })).json.entitlements.models.image).toEqual([])
     expect(upstreamCalls).toHaveLength(1)
   })
 
