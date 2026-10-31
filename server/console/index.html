@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>VideoGen Superadmin</title>
+  <link rel="stylesheet" href="console.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">VideoGen <span>Superadmin</span></div>
+    <div class="who"><span id="whoami"></span> <button id="logout" class="ghost sm hidden">Sign out</button></div>
+  </header>
+
+  <main>
+    <section id="login" class="card narrow">
+      <h1>Sign in</h1>
+      <p class="dim">Superadmin accounts only. Every change is written to the audit log.</p>
+      <form id="login-form">
+        <label>Email <input id="email" type="email" autocomplete="username" required /></label>
+        <label>Password <input id="password" type="password" autocomplete="current-password" required /></label>
+        <label id="dev-row" class="hidden">Dev token <input id="dev-token" placeholder="dev:admin:admin@example.com:verified" /></label>
+        <button type="submit">Sign in</button>
+        <p id="login-error" class="error"></p>
+      </form>
+    </section>
+
+    <div id="app" class="hidden">
+      <nav class="tabs">
+        <button data-tab="licenses" class="on">Licences</button>
+        <button data-tab="users">Users</button>
+        <button data-tab="plans">Plans &amp; quotas</button>
+        <button data-tab="audit">Audit log</button>
+      </nav>
+      <p id="flash" class="flash hidden"></p>
+
+      <section data-panel="licenses">
+        <div class="stats" id="stats"></div>
+        <div class="card">
+          <div class="row-head">
+            <h2>Licences</h2>
+            <input id="lic-filter" type="search" placeholder="Filter by customer or plan" />
+            <button id="lic-new">+ New licence</button>
+          </div>
+          <form id="lic-form" class="grid hidden">
+            <label>Customer <input name="customerName" required maxlength="120" /></label>
+            <label>Contact email <input name="contactEmail" type="email" maxlength="200" /></label>
+            <label>Plan <select name="plan"></select></label>
+            <label>Seats <input name="seats" type="number" min="1" max="1000" value="1" /></label>
+            <label>Paid through <input name="paidThrough" type="date" /></label>
+            <label>Revenue / month ($) <input name="revenueUsdMonthly" type="number" min="0" step="0.01" value="0" /></label>
+            <label>Own API keys <select name="allowOwnKeys"><option value="false">Not allowed</option><option value="true">Allowed (no counting)</option></select></label>
+            <label class="wide">Notes <input name="notes" maxlength="2000" /></label>
+            <div class="actions wide"><button type="submit">Create licence and show key</button> <button type="button" class="ghost" id="lic-cancel">Cancel</button></div>
+          </form>
+          <div id="key-box" class="keybox hidden"></div>
+          <table>
+            <thead><tr><th>Customer</th><th>Plan</th><th>Seats</th><th>Status</th><th>Paid through</th><th>AI videos</th><th>AI cost</th><th>Revenue</th><th></th></tr></thead>
+            <tbody id="lic-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section data-panel="users" class="hidden">
+        <div class="card">
+          <div class="row-head">
+            <h2>Users</h2>
+            <input id="user-q" type="search" placeholder="Search email or uid" />
+            <button id="user-search" class="ghost">Search</button>
+          </div>
+          <table>
+            <thead><tr><th>Email</th><th>Plan</th><th>Verified</th><th>AI videos</th><th>AI cost</th><th>Computers</th><th>Status</th><th>Last seen</th><th></th></tr></thead>
+            <tbody id="user-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section data-panel="plans" class="hidden">
+        <div class="card">
+          <div class="row-head"><h2>Plans &amp; quotas</h2><span class="dim">Changes apply to every account within a minute.</span></div>
+          <div id="plans-editor"></div>
+          <h3>Rules</h3>
+          <div class="grid" id="rules-editor"></div>
+          <div class="actions">
+            <button id="plans-save">Save plans</button>
+            <button id="plans-reset" class="ghost">Fill in recommended values</button>
+          </div>
+        </div>
+      </section>
+
+      <section data-panel="audit" class="hidden">
+        <div class="card">
+          <div class="row-head"><h2>Audit log</h2><button id="audit-refresh" class="ghost sm">Refresh</button></div>
+          <table>
+            <thead><tr><th>When</th><th>Who</th><th>What</th><th>Target</th><th>Details</th></tr></thead>
+            <tbody id="audit-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script type="module" src="console.js"></script>
+</body>
+</html>

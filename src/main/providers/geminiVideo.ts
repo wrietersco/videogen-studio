@@ -1,4 +1,5 @@
 import { meter } from '../usage/meter'
+import { route } from '../license/route'
 
 /**
  * Gemini Omni Flash video clips — the Gemini API's only video model since
@@ -42,14 +43,17 @@ export class GeminiVideoClient {
     return this.key().length > 0
   }
 
-  private headers(): Record<string, string> {
-    return { 'x-goog-api-key': this.key(), 'Content-Type': 'application/json' }
+  /** the provider URL as given, or the same path on the licence server when the account runs on its plan */
+  private target(url: string): { url: string; headers: Record<string, string> } {
+    const r = route('gemini', { base: API, headers: { 'x-goog-api-key': this.key() } })
+    return { url: url.startsWith(API) ? r.base + url.slice(API.length) : url, headers: r.headers }
   }
 
   private async call<T>(method: 'GET' | 'POST', url: string, body?: unknown, timeoutMs = 60_000): Promise<T> {
     let res: Response
     try {
-      res = await fetch(url, { method, headers: this.headers(), body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(timeoutMs) })
+      const t = this.target(url)
+      res = await fetch(t.url, { method, headers: { ...t.headers, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(timeoutMs) })
     } catch (e) {
       const msg = (e as Error).name === 'TimeoutError' ? 'Gemini took too long to make the clip — try again' : (e as Error).message
       throw new Error(msg)
@@ -61,7 +65,8 @@ export class GeminiVideoClient {
       } catch {
         /* keep status */
       }
-      if (res.status === 401 || res.status === 403) throw new Error(`Gemini rejected the key: ${detail}`)
+      if (res.status === 401) throw new Error(`Gemini rejected the key: ${detail}`)
+      if (res.status === 403) throw new Error(detail)
       if (res.status === 429) throw new Error(`Gemini rate limit / quota: ${detail} (video needs the paid tier)`)
       throw new Error(`Gemini video failed: ${detail}`)
     }
@@ -122,7 +127,8 @@ export class GeminiVideoClient {
       }
     }
     const url = id ? `${API}/files/${id}:download?alt=media` : uri
-    const res = await fetch(url, { headers: { 'x-goog-api-key': this.key() }, redirect: 'follow', signal: AbortSignal.timeout(180_000) })
+    const t = this.target(url)
+    const res = await fetch(t.url, { headers: t.headers, redirect: 'follow', signal: AbortSignal.timeout(180_000) })
     if (!res.ok) throw new Error(`video download failed (${res.status})`)
     return Buffer.from(await res.arrayBuffer())
   }

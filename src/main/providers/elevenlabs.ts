@@ -1,5 +1,6 @@
 import { meter } from '../usage/meter'
 import { ProviderError, type TTSRequest, type TTSResult } from './types'
+import { route } from '../license/route'
 
 /**
  * ElevenLabs adapter — speech with character timestamps (folded into word
@@ -48,9 +49,10 @@ export class ElevenLabsClient {
   private async post(path: string, body: unknown): Promise<Response> {
     let res: Response
     try {
-      res = await fetch(`${API}${path}`, {
+      const r = route('elevenlabs', { base: API, headers: { 'xi-api-key': this.key() } })
+      res = await fetch(`${r.base}${path}`, {
         method: 'POST',
-        headers: { 'xi-api-key': this.key(), 'Content-Type': 'application/json' },
+        headers: { ...r.headers, 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       })
     } catch (e) {

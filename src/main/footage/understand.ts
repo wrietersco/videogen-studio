@@ -4,6 +4,7 @@ import type { FootageClip, TranscriptLine, UnderstandEstimate } from '../../shar
 import { priceUsage } from '../../shared/pricing'
 import type { LLMProvider } from '../providers/types'
 import { meter } from '../usage/meter'
+import { route } from '../license/route'
 import { runFfmpeg } from './ffmpeg'
 
 /**
@@ -106,7 +107,8 @@ export async function listenToClip(apiKey: string, clip: FootageClip, projectDir
       form.append('model', 'whisper-1')
       form.append('response_format', 'verbose_json')
       form.append('timestamp_granularities[]', 'segment')
-      const resp = await fetch(WHISPER_URL, { method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form })
+      const r = route('openai', { base: WHISPER_URL.replace(/\/audio\/transcriptions$/, ''), headers: { Authorization: `Bearer ${apiKey}` } })
+      const resp = await fetch(`${r.base}/audio/transcriptions`, { method: 'POST', headers: r.headers, body: form })
       if (!resp.ok) throw new Error(`Speech recognition failed (${resp.status}). Check your OpenAI key in Settings.`)
       const json = (await resp.json()) as { duration?: number; segments?: Array<{ start: number; end: number; text: string; no_speech_prob?: number; avg_logprob?: number }> }
       meter.record({ kind: 'transcribe', provider: 'openai', model: 'whisper-1', usage: { seconds: json.duration ?? len }, stage: 'listen' })

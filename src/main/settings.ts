@@ -33,6 +33,8 @@ export interface Settings {
   sharing: 'local' | 'shareable'
   /** full autonomous agent: tunes look, clips and reuse per video — never the LLM provider/model, never to a costlier engine */
   autopilot: boolean
+  /** use the provider keys above instead of the plan's AI — only honoured when the licence allows own keys */
+  useOwnKeys: boolean
 }
 
 export const DEFAULT_MEDIA: MediaSettings = {
@@ -52,5 +54,6 @@ export const DEFAULT_SETTINGS: Settings = {
   media: { ...DEFAULT_MEDIA },
   reuse: 'smart',
   sharing: 'local',
-  autopilot: true
+  autopilot: true,
+  useOwnKeys: false
 }

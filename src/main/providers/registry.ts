@@ -61,6 +61,12 @@ class ProviderRegistry {
     }
   }
 
+  /** replace every stored key (sign-in / plan changes switch between the plan's relay and the user's own keys) */
+  setKeys(keys: Partial<Record<ProviderId, string>>): void {
+    this.keys.clear()
+    for (const [p, k] of Object.entries(keys)) if (k) this.keys.set(p as ProviderId, k)
+  }
+
   get(id: ProviderId): LLMProvider {
     const p = this.providers.get(id)
     if (!p) throw new Error(`unknown provider ${id}`)

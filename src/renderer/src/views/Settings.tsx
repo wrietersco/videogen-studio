@@ -3,6 +3,8 @@ import { MEDIA_MODELS, PRICES_AS_OF, RATES, modelTags, type MediaModel } from '@
 import { api, type KeyId, type MediaSettings, type ModelInfo, type ProviderId, type ProviderStatus, type SettingsView } from '../api'
 import { Chip, Meter, Section } from '../components/ui'
 import Updater from '../components/Updater'
+import { PlanPanel, useAccount } from '../components/Account'
+import { PLAN_IDS, DEFAULT_POLICY } from '@shared/plans'
 
 /**
  * Settings — five friendly sections: the brain (chat model), keys, media
@@ -88,6 +90,17 @@ export default function Settings() {
   const [models, setModels] = useState<Partial<Record<ProviderId, ModelInfo[]>>>({})
   const [saved, setSaved] = useState<string | null>(null)
   const [confirmPilot, setConfirmPilot] = useState(false)
+  const [account, setAccount] = useAccount()
+  const ent = account?.view?.entitlements ?? null
+  const onPlan = account?.mode === 'plan'
+  /** the licence lets this account use its own keys instead of the plan */
+  const ownKeysAllowed = Boolean(ent?.allowOwnKeys)
+  const showOwnKeys = !account?.signedIn || ownKeysAllowed
+  /** first plan that includes a model, for the lock badge */
+  const planWith = (kind: 'image' | 'voice' | 'music' | 'video', model: string) => {
+    const id = PLAN_IDS.find((p) => DEFAULT_POLICY.plans[p].models[kind].includes(model))
+    return id ? DEFAULT_POLICY.plans[id].label : 'a higher plan'
+  }
 
   const refresh = async () => {
     setProviders(await api.listProviders())
@@ -131,12 +144,24 @@ export default function Settings() {
         <div className="flex items-end justify-between">
           <div>
             <h1 className="text-3xl font-black tracking-tight">⚙️ Settings</h1>
-            <p className="mt-1 text-[15px] text-ink/60">Connect your AI accounts and choose who makes what. You pay the providers directly, and every video shows you what it cost.</p>
+            <p className="mt-1 text-[15px] text-ink/60">{onPlan ? 'Your plan runs the AI for you. Choose who makes each part from what your plan includes.' : 'Connect your AI accounts and choose who makes what. You pay the providers directly, and every video shows you what it cost.'}</p>
           </div>
           {saved && <span className="pop-in rounded-full bg-mint-soft px-3 py-1 text-xs font-bold text-mint">{saved}</span>}
         </div>
 
-        {keys && !keys.openai && !keys.anthropic && !keys.gemini && (
+        {account && (
+          <Section icon="💳" title="Your plan" hint="AI videos, models and your licence key. Programmatic videos are always free and unlimited." tone="violet">
+            <PlanPanel status={account} onChange={setAccount} />
+            {ownKeysAllowed && (
+              <label className="mt-4 flex cursor-pointer items-center gap-3 text-sm font-bold">
+                <input type="checkbox" checked={settings.useOwnKeys} onChange={(e) => patch({ useOwnKeys: e.target.checked }, e.target.checked ? '🔑 Using your own keys' : '💳 Using your plan')} className="h-4 w-4 accent-grape" />
+                Use my own API keys instead of the plan (your licence allows it; your provider bills you and nothing is counted)
+              </label>
+            )}
+          </Section>
+        )}
+
+        {showOwnKeys && !onPlan && keys && !keys.openai && !keys.anthropic && !keys.gemini && (
           <div className="pop-in flex items-start gap-3 rounded-2xl border-2 border-sunny/60 bg-sunny-soft p-4">
             <span className="text-2xl">👋</span>
             <div className="text-sm text-ink/80">
@@ -174,6 +199,7 @@ export default function Settings() {
         </Section>
 
         {/* keys */}
+        {showOwnKeys && (
         <Section icon="🔑" title="Your AI accounts" hint="Paste a key to connect an account. Keys are encrypted on this PC and only ever sent to that company." tone="amber">
           <div className="space-y-2">
             {KEYS.map((k) => (
@@ -215,8 +241,29 @@ export default function Settings() {
             ))}
           </div>
         </Section>
+        )}
+
+        {/* the plan's chat models */}
+        {onPlan && ent && (
+          <Section icon="🧠" title="Who writes & directs your AI videos" hint="The models your plan includes. Programmatic videos use the free engine." tone="violet">
+            <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
+              {ent.models.chat.map((id) => {
+                const sel = (settings.models.openai && ent.models.chat.includes(settings.models.openai) ? settings.models.openai : ent.chatModel) === id
+                return (
+                  <button key={id} onClick={() => patch({ models: { openai: id } }, `🧠 ${id}`)} className={`tile px-3 py-2 text-left ${sel ? 'tile-on' : ''}`}>
+                    <div className="flex items-center justify-between gap-2 text-xs font-bold">
+                      {(models.openai ?? []).find((m) => m.id === id)?.label ?? id}
+                      {id === ent.chatModel && <span className="text-[10px] font-semibold text-ink/60">plan's pick</span>}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </Section>
+        )}
 
         {/* brain */}
+        {!onPlan && (
         <Section icon="🧠" title="Who writes & directs your videos" hint="This AI writes the script, plans each scene and checks the result." tone="violet">
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {providers.map((p) => {
@@ -269,6 +316,7 @@ export default function Settings() {
             </details>
           )}
         </Section>
+        )}
 
         {/* media models */}
         <Section
@@ -294,12 +342,15 @@ export default function Settings() {
                   <div className="mt-2 grid grid-cols-2 gap-2 lg:grid-cols-4">
                     {optionsFor(mk.kind).map((o) => {
                       const sel = current === o.value || (o.value !== 'auto' && current.startsWith(`${o.value}:`))
-                      const missing = o.needs && keys && !keys[o.needs]
+                      const model = o.value.includes(':') ? o.value.split(':').slice(1).join(':') : ''
+                      const locked = onPlan && ent && model && !o.value.startsWith('builtin:') && (!ent.models[mk.kind].includes(model) || (mk.kind === 'video' && !ent.clipsPerVideo))
+                      const missing = !onPlan && o.needs && keys && !keys[o.needs]
                       return (
                         <button
                           key={o.value}
+                          disabled={Boolean(locked)}
                           onClick={() => patch({ media: { ...settings.media, [mk.kind]: o.value } }, `${mk.icon} ${o.label}`)}
-                          className={`tile relative flex flex-col justify-start p-3 text-left ${sel ? 'tile-on' : ''} ${missing ? 'opacity-55' : ''}`}
+                          className={`tile relative flex flex-col justify-start p-3 text-left disabled:cursor-not-allowed ${sel && !locked ? 'tile-on' : ''} ${missing || locked ? 'opacity-55' : ''}`}
                         >
                           <div className="flex items-start justify-between gap-1">
                             <div className="text-xs font-black leading-tight">{o.label}</div>
@@ -328,6 +379,7 @@ export default function Settings() {
                             </div>
                           )}
                           {o.note && <div className="mt-1.5 text-[11px] leading-snug text-ink/55">{o.note}</div>}
+                          {locked && <div className="mt-1.5 rounded-lg bg-grape-soft px-1.5 py-0.5 text-[10px] font-bold text-grape">🔒 In {planWith(mk.kind, model)}</div>}
                           {missing && <div className="mt-1.5 rounded-lg bg-coral-soft px-1.5 py-0.5 text-[10px] font-bold text-coral">🔒 Connect your {KEYS.find((k) => k.id === o.needs)?.label ?? o.needs} account first</div>}
                         </button>
                       )

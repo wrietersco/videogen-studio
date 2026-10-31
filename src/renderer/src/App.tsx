@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from './api'
 import Studio from './views/Studio'
 import Library from './views/Library'
@@ -7,6 +7,7 @@ import Editor from './views/Editor'
 import Assets from './views/Assets'
 import Footage from './views/Footage'
 import Updater from './components/Updater'
+import { AccountGate, PlanBadge, useAccount } from './components/Account'
 
 type Tab = 'studio' | 'footage' | 'library' | 'assets' | 'editor' | 'settings'
 
@@ -22,6 +23,28 @@ const TABS: Array<{ id: Tab; label: string; icon: string; tip: string; on: strin
 export default function App() {
   const [tab, setTab] = useState<Tab>('studio')
   const [editorProjectId, setEditorProjectId] = useState<string | null>(null)
+  const [account, setAccount] = useAccount()
+  const [skipped, setSkipped] = useState(() => {
+    try {
+      return localStorage.getItem('vg.skipSignIn') === '1'
+    } catch {
+      return false
+    }
+  })
+  useEffect(() => {
+    const show = () => setSkipped(false)
+    window.addEventListener('videogen:sign-in', show)
+    return () => window.removeEventListener('videogen:sign-in', show)
+  }, [])
+  const skip = () => {
+    setSkipped(true)
+    try {
+      localStorage.setItem('vg.skipSignIn', '1')
+    } catch {
+      /* the choice just isn't remembered */
+    }
+  }
+  const gate = account && !account.signedIn && !skipped
 
   const openEditor = (id?: string) => {
     setEditorProjectId(id ?? null)
@@ -42,6 +65,7 @@ export default function App() {
         </div>
         <div className="titlebar-nothing flex h-full items-stretch">
           <div className="flex items-center gap-1.5">
+            <PlanBadge status={account} onClick={() => (account?.signedIn ? setTab('settings') : setSkipped(false))} />
             {TABS.map((t) => (
               <button
                 key={t.id}
@@ -91,18 +115,19 @@ export default function App() {
 
       {/* content */}
       <div className="min-h-0 flex-1">
-        {tab === 'studio' && <Studio onOpenEditor={() => openEditor()} onOpenSettings={() => setTab('settings')} />}
-        {tab === 'footage' && <Footage onOpenSettings={() => setTab('settings')} />}
-        {tab === 'library' && <Library onOpenEditor={openEditor} />}
-        {tab === 'editor' && (
+        {gate && <AccountGate status={account} onDone={(s) => (setAccount(s), setTab('studio'))} onSkip={skip} />}
+        {!gate && tab === 'studio' && <Studio onOpenEditor={() => openEditor()} onOpenSettings={() => setTab('settings')} />}
+        {!gate && tab === 'footage' && <Footage onOpenSettings={() => setTab('settings')} />}
+        {!gate && tab === 'library' && <Library onOpenEditor={openEditor} />}
+        {!gate && tab === 'editor' && (
           <Editor
             key={editorProjectId ?? 'default'}
             initialProjectId={editorProjectId}
             onBack={() => setTab('library')}
           />
         )}
-        {tab === 'assets' && <Assets />}
-        {tab === 'settings' && <Settings />}
+        {!gate && tab === 'assets' && <Assets />}
+        {!gate && tab === 'settings' && <Settings />}
       </div>
     </div>
   )

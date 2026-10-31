@@ -1,0 +1,9 @@
+# Upload only what the image needs: the bundle, the console, the manifest.
+*
+!package.json
+!package-lock.json
+!Dockerfile
+!dist/
+!dist/**
+!console/
+!console/**

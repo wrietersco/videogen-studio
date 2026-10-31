@@ -24,6 +24,10 @@ import { FootageService } from './footage/service'
 import { registerFootageIpc } from './footage/ipc'
 import { meter, readProjectUsage, type UsageRun } from './usage/meter'
 import { checkForUpdate, downloadUpdate, installUpdate } from './updater'
+import { AccountError, AccountSession, newProjectKey, type AccountStatus } from './license/session'
+import { accessMode, effectiveSettings, type AccessMode } from './license/access'
+import { setManagedRouter, withProject } from './license/route'
+import { setClipCap } from './director/director'
 
 /**
  * Electron main process — owns the pipeline, project store, provider keys
@@ -38,12 +42,18 @@ const library = new AssetLibrary(libraryDir, builtinPackDir, () => settings.shar
 /** decrypted keys, cached (safeStorage round-trips are not free) */
 const keyCache = new Map<KeyId, string>()
 const keyOf = (id: KeyId): string => {
+  // on a plan, AI providers are reached through the licence server; with no AI, not at all
+  if (id === 'openai' || id === 'gemini' || id === 'elevenlabs' || id === 'anthropic') {
+    if (aiOff) return ''
+    if (mode === 'plan') return id === 'anthropic' ? '' : 'managed'
+    if (mode === 'programmatic') return ''
+  }
   if (!keyCache.has(id)) keyCache.set(id, decryptKey(settings.keys[id]))
   return keyCache.get(id) ?? ''
 }
 const media = new MediaRouter({
   library,
-  settings: () => runSettings ?? settings,
+  settings: () => runSettings ?? effective,
   key: keyOf,
   provider: (id) => providerRegistry.get(id),
   autoImageProvider: () => providerRegistry.imageProvider(),
@@ -54,9 +64,9 @@ const footage = new FootageService({
   store: footageStore,
   provider: () => providerRegistry.active(),
   whisperKey: () => keyOf('openai'),
-  chatModel: () => settings.models[settings.provider] || ({ openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash' } as Record<string, string>)[settings.provider],
+  chatModel: () => effective.models[effective.provider] || ({ openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash' } as Record<string, string>)[effective.provider],
   emit: (e) => emit('footage:event', e),
-  aiReady: () => keyOf('gemini').length > 0,
+  aiReady: () => (mode === 'plan' ? (planEnt()?.clipsPerVideo ?? 0) > 0 : keyOf('gemini').length > 0),
   makeClip: async (prompt, aspect, sec) => {
     const asset = await media.clipToLibrary(prompt, aspect === '9:16' ? 'portrait' : 'landscape', { durationSec: sec })
     const file = library.path(asset.id)
@@ -78,6 +88,109 @@ const templates = new PromptTemplateStore(join(app.getPath('userData'), 'prompt-
 let settings: Settings = { ...DEFAULT_SETTINGS }
 /** autopilot's per-video settings; null outside a generate run (then the user's own settings apply) */
 let runSettings: Settings | null = null
+/** the user's settings as the current access allows them (plan-clamped, or no AI) — see license/access.ts */
+let effective: Settings = { ...DEFAULT_SETTINGS }
+let mode: AccessMode = 'programmatic'
+/** a programmatic run is in progress: every AI path is switched off */
+let aiOff = false
+
+// ---------------- account, plan and access ----------------
+
+const account = new AccountSession({
+  dir: app.getPath('userData'),
+  appVersion: app.getVersion(),
+  encrypt: (plain) => encryptKey(plain),
+  decrypt: (stored) => decryptKey(stored),
+  onChange: (status) => {
+    applyAccess()
+    emit('account:changed', accountPayload(status))
+  }
+})
+const planEnt = () => account.status().view?.entitlements ?? null
+
+/** recompute what runs: provider, model, keys, relay and clip cap all follow the account's plan */
+function applyAccess(): void {
+  if (aiOff) return // a programmatic run re-applies when it ends
+  const ent = planEnt()
+  mode = accessMode({ signedIn: account.signedIn, ent, wantsOwnKeys: settings.useOwnKeys })
+  effective = effectiveSettings(settings, mode, ent)
+  keyCache.clear()
+  providerRegistry.reconfigure(effective)
+  providerRegistry.setKeys(
+    mode === 'plan'
+      ? { openai: 'managed', gemini: 'managed' }
+      : mode === 'own-keys'
+        ? { openai: decryptKey(settings.keys.openai), anthropic: decryptKey(settings.keys.anthropic), gemini: decryptKey(settings.keys.gemini) }
+        : {}
+  )
+  setManagedRouter(mode === 'plan' ? (p) => account.managedRoute(p) : null)
+  setClipCap(mode === 'plan' && ent ? ent.clipsPerVideo : 3)
+}
+
+function accountPayload(status: AccountStatus = account.status()) {
+  return { ...status, mode }
+}
+
+const accountError = (err: unknown) =>
+  err instanceof AccountError ? { ok: false as const, code: err.code, error: err.message, ...err.extra } : { ok: false as const, code: 'error', error: String((err as Error)?.message ?? err) }
+
+interface ProjectLicense {
+  projectKey: string
+  mode: 'ai' | 'programmatic'
+}
+
+/** the key a project's AI calls are counted under (saved with the project so edits reopen the same video) */
+function projectLicense(projectId: string): ProjectLicense {
+  try {
+    const saved = JSON.parse(readFileSync(join(store.dir(projectId), 'license.json'), 'utf8')) as ProjectLicense
+    if (/^[A-Za-z0-9_-]{4,80}$/.test(saved.projectKey) && (saved.mode === 'ai' || saved.mode === 'programmatic')) return saved
+  } catch {
+    /* made before licences existed: editing it with AI counts it once as an AI video */
+  }
+  return { projectKey: `p-${projectId}`.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80), mode: 'ai' }
+}
+function saveProjectLicense(projectId: string, info: ProjectLicense): void {
+  if (existsSync(store.dir(projectId))) writeFileSync(join(store.dir(projectId), 'license.json'), JSON.stringify(info))
+}
+
+/**
+ * Run a job that may call AI models. On a plan the video is started (counted,
+ * or reopened) on the server first, so a used-up allowance is refused before
+ * anything is paid for, and every call inside is tagged with the video.
+ * Programmatic projects, and accounts without AI, run with AI switched off.
+ */
+async function withAccess<T>(o: { projectKey: string; programmatic: boolean; title: string; durationSec?: number; started?: boolean }, fn: () => Promise<T>): Promise<T> {
+  if (o.programmatic || mode === 'programmatic') {
+    aiOff = true
+    const before = runSettings
+    runSettings = effectiveSettings(runSettings ?? settings, 'programmatic', null)
+    keyCache.clear()
+    providerRegistry.reconfigure(runSettings)
+    providerRegistry.setKeys({})
+    setManagedRouter(null)
+    try {
+      return await fn()
+    } finally {
+      runSettings = before
+      aiOff = false
+      applyAccess()
+    }
+  }
+  if (mode === 'own-keys') return fn()
+  if (!o.started) await account.startVideo(o.projectKey, o.title, o.durationSec)
+  return withProject(o.projectKey, fn)
+}
+
+/** revise / resume / edit an existing project under its own access */
+function projectJob(projectId: string, fn: () => Promise<unknown>): () => Promise<unknown> {
+  const lic = projectLicense(projectId)
+  const title = store.readMeta(projectId)?.title ?? projectId
+  return () =>
+    withAccess({ projectKey: lic.projectKey, programmatic: lic.mode === 'programmatic', title }, async () => {
+      saveProjectLicense(projectId, lic)
+      return fn()
+    })
+}
 
 function loadSettings(): void {
   if (!existsSync(settingsPath)) return
@@ -265,6 +378,48 @@ function registerIpc(): void {
     ...settings,
     keys: {} // never send raw keys back to the UI; presence flags only
   }))
+  /** what actually runs after the plan's limits (the Settings screen shows locked choices from this) */
+  ipcMain.handle('settings:effective', () => ({ ...effective, keys: {}, mode }))
+
+  // ---- account, licence and plan ----
+  ipcMain.handle('account:status', () => accountPayload())
+  const accountCall = async (fn: () => Promise<AccountStatus>) => {
+    try {
+      return { ok: true as const, status: accountPayload(await fn()) }
+    } catch (err) {
+      return accountError(err)
+    }
+  }
+  ipcMain.handle('account:signUp', (_e, email: string, password: string) => accountCall(() => account.signUp(String(email ?? ''), String(password ?? ''))))
+  ipcMain.handle('account:signIn', (_e, email: string, password: string) => accountCall(() => account.signIn(String(email ?? ''), String(password ?? ''))))
+  ipcMain.handle('account:signOut', () => {
+    if (busy) return { ok: false as const, code: 'busy', error: 'A video is being made — sign out once it finishes' }
+    return accountCall(() => account.signOut())
+  })
+  ipcMain.handle('account:refresh', () => accountCall(() => account.sync(true)))
+  ipcMain.handle('account:activate', (_e, key: string) => accountCall(() => account.activate(String(key ?? ''))))
+  ipcMain.handle('account:leave', () => accountCall(() => account.leaveLicense()))
+  ipcMain.handle('account:removeDevice', (_e, id: string) => accountCall(() => account.removeDevice(String(id ?? ''))))
+  ipcMain.handle('account:resendVerification', async () => {
+    try {
+      await account.sendVerification()
+      return { ok: true as const }
+    } catch (err) {
+      return accountError(err)
+    }
+  })
+  ipcMain.handle('account:resetPassword', async (_e, email: string) => {
+    try {
+      await account.resetPassword(String(email ?? ''))
+      return { ok: true as const }
+    } catch (err) {
+      return accountError(err)
+    }
+  })
+  ipcMain.handle('account:contactSales', (_e, plan: string) => {
+    const subject = encodeURIComponent(`VideoGen Studio — ${String(plan ?? '').replace(/[^A-Za-z ]/g, '').slice(0, 20) || 'plan'} licence`)
+    void shell.openExternal(`mailto:visitwritersco@gmail.com?subject=${subject}`)
+  })
   ipcMain.handle('settings:hasKey', (_e, provider: KeyId) => Boolean(settings.keys[provider]))
   ipcMain.handle('settings:keyStatus', () =>
     Object.fromEntries((['openai', 'anthropic', 'gemini', 'elevenlabs', 'pexels', 'pixabay'] as KeyId[]).map((k) => [k, Boolean(settings.keys[k])]))
@@ -279,22 +434,23 @@ function registerIpc(): void {
     if (patch.reuse === 'smart' || patch.reuse === 'fresh') settings.reuse = patch.reuse
     if (patch.sharing === 'local' || patch.sharing === 'shareable') settings.sharing = patch.sharing
     if (typeof patch.autopilot === 'boolean') settings.autopilot = patch.autopilot
+    if (typeof patch.useOwnKeys === 'boolean') settings.useOwnKeys = patch.useOwnKeys
     saveSettings()
-    providerRegistry.reconfigure(settings)
+    applyAccess()
     return true
   })
   ipcMain.handle('settings:setKey', (_e, provider: KeyId, key: string) => {
     settings.keys[provider] = encryptKey(key.trim())
     keyCache.delete(provider)
     saveSettings()
-    if (provider === 'openai' || provider === 'anthropic' || provider === 'gemini') providerRegistry.reconfigure(settings, { [provider]: decryptKey(settings.keys[provider]) })
+    applyAccess()
     return true
   })
   ipcMain.handle('settings:clearKey', (_e, provider: KeyId) => {
     delete settings.keys[provider]
     keyCache.delete(provider)
     saveSettings()
-    providerRegistry.reconfigure(settings)
+    applyAccess()
     return true
   })
 
@@ -335,15 +491,35 @@ function registerIpc(): void {
     return { meta, spec, html, dir: store.dir(id), thumbs: shown }
   })
 
-  ipcMain.handle('gen:generate', async (_e, opts: GenerateOptions & { shapeLocked?: boolean }) => {
+  ipcMain.handle('gen:generate', async (_e, opts: GenerateOptions & { shapeLocked?: boolean; programmatic?: boolean }) => {
     if (busy) return { ok: false, error: 'A generation job is already running' }
-    return runJob('generate', null, async () => {
+    const programmatic = opts.programmatic === true || mode === 'programmatic'
+    const projectKey = newProjectKey()
+    const title = opts.prompt.slice(0, 120)
+    if (!programmatic && mode === 'plan') {
+      // refuse before the job starts, so the Create screen can say why
+      try {
+        await account.startVideo(projectKey, title, opts.durationHintSec)
+      } catch (err) {
+        return accountError(err)
+      }
+    }
+    return runJob('generate', null, () => withAccess({ projectKey, programmatic, title, durationSec: opts.durationHintSec, started: true }, async () => {
+      const remember = () => {
+        const id = orchestrator.activeProjectId
+        if (id && !existsSync(join(store.dir(id), 'license.json'))) saveProjectLicense(id, { projectKey, mode: programmatic ? 'programmatic' : 'ai' })
+      }
+      const onEvent = (ev: unknown) => {
+        remember()
+        pipelineEvent(ev)
+      }
       try {
         const decided = settings.autopilot ? await decideCreative(opts.prompt, providerRegistry.active()) : null
         const creative = decided && opts.shapeLocked ? honorShape(decided, opts.platform) : decided
         if (creative) pipelineEvent({ stage: 'plan', status: 'creative', ...creative })
-        const pilot = settings.autopilot ? decide({ prompt: opts.prompt, durationHintSec: creative?.durationHintSec ?? opts.durationHintSec, settings, imageAvailable: media.imageAvailable() }) : null
-        if (pilot) runSettings = applyAutopilot(settings, pilot)
+        const base = runSettings ?? effective
+        const pilot = settings.autopilot ? decide({ prompt: opts.prompt, durationHintSec: creative?.durationHintSec ?? opts.durationHintSec, settings: base, imageAvailable: media.imageAvailable() }) : null
+        if (pilot) runSettings = applyAutopilot(base, pilot)
         return await orchestrator.generate({
           ...opts,
           ...(creative ? { platform: creative.platform, styleHint: creative.styleHint, durationHintSec: creative.durationHintSec } : {}),
@@ -352,12 +528,13 @@ function registerIpc(): void {
           craft: settings.craft,
           lookHint: creative?.look ?? pilot?.look,
           autopilotNotes: [...(creative ? [`format: ${creative.platform} · ${creative.styleHint} · ${creative.durationHintSec}s · ${creative.look} — ${creative.reason}`] : []), ...(pilot?.reasons.filter((reason) => !creative || !reason.startsWith('look:')) ?? [])],
-          onEvent: pipelineEvent
+          onEvent
         })
       } finally {
+        remember()
         runSettings = null
       }
-    })
+    }))
   })
   ipcMain.handle('prompt:enhance', async (_e, req: EnhanceRequest) => {
     try {
@@ -384,22 +561,23 @@ function registerIpc(): void {
 
   ipcMain.handle('gen:rerender', async (_e, projectId: string) => {
     if (busy) return { ok: false, error: 'Another job is running' }
-    return runJob('rerender', projectId, () =>
+    // a re-render only draws frames again: no AI, nothing counted
+    return runJob('rerender', projectId, () => withAccess({ projectKey: 'rerender', programmatic: true, title: '' }, () =>
       orchestrator.rerender(projectId, { quality: settings.quality, gpu: settings.allowGpu, onEvent: pipelineEvent })
-    )
+    ))
   })
 
   ipcMain.handle('gen:revise', async (_e, projectId: string, sceneId: string, feedback: string) => {
     if (busy) return { ok: false, error: 'Another job is running' }
     if (!feedback || !feedback.trim()) return { ok: false, error: 'Feedback is empty' }
-    return runJob('revise', projectId, () =>
+    return runJob('revise', projectId, projectJob(projectId, () =>
       orchestrator.reviseScene(projectId, sceneId, feedback.trim(), {
         quality: settings.quality,
         gpu: settings.allowGpu,
         craft: settings.craft,
         onEvent: pipelineEvent
       })
-    )
+    ))
   })
 
   ipcMain.handle('gen:applyEdit', async (_e, projectId: string, edited: unknown) => {
@@ -409,18 +587,18 @@ function registerIpc(): void {
     } catch (e) {
       return { ok: false, error: `Those changes don't make a valid video: ${String((e as Error).message).slice(0, 160)}` }
     }
-    return runJob('revise', projectId, () =>
+    return runJob('revise', projectId, projectJob(projectId, () =>
       orchestrator.applyEdit(projectId, edited, { quality: settings.quality, gpu: settings.allowGpu, onEvent: pipelineEvent })
-    )
+    ))
   })
   ipcMain.handle('project:history', (_e, id: string) => store.listHistory(id))
   ipcMain.handle('project:historyGet', (_e, id: string, at: number) => store.readHistory(id, at))
 
   ipcMain.handle('gen:resume', async (_e, projectId: string) => {
     if (busy) return { ok: false, error: 'Another job is running' }
-    return runJob('resume', projectId, () =>
+    return runJob('resume', projectId, projectJob(projectId, () =>
       orchestrator.resume(projectId, { quality: settings.quality, gpu: settings.allowGpu, craft: settings.craft, onEvent: pipelineEvent })
-    )
+    ))
   })
 
   ipcMain.handle('project:usage', (_e, id: string) => readProjectUsage(store.dir(id)))
@@ -464,14 +642,23 @@ app.whenReady().then(() => {
   // fresh installs download the renderer's Chrome once; start before the first job
   void ensureBrowser()
   loadSettings()
-  providerRegistry.reconfigure(settings, {
-    openai: decryptKey(settings.keys.openai),
-    anthropic: decryptKey(settings.keys.anthropic),
-    gemini: decryptKey(settings.keys.gemini)
-  })
+  applyAccess()
+  // refresh the plan in the background; offline keeps the last one for display
+  void account.sync().catch((err) => console.warn('[account] sync failed', err instanceof Error ? err.message : err))
   registerIpc()
   registerAssetIpc({ library, router: media, key: keyOf, isBusy: () => busy })
-  registerFootageIpc({ store: footageStore, service: footage, isBusy: () => busy, setBusy: (b) => { busy = b }, emit, window: () => win })
+  registerFootageIpc({
+    store: footageStore,
+    service: footage,
+    isBusy: () => busy,
+    setBusy: (b) => { busy = b },
+    emit,
+    window: () => win,
+    aiJob: (projectKey, title, fn) => {
+      if (mode === 'programmatic') return Promise.reject(new Error(account.signedIn ? (planEnt()?.aiBlockedReason || 'AI is not available on this account.') : 'Sign in to use AI on your footage.'))
+      return withAccess({ projectKey, programmatic: false, title }, fn)
+    }
+  })
   createWindow()
   createTray()
   app.on('activate', () => {

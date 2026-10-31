@@ -1,0 +1,17 @@
+{
+  "name": "videogen-license-server",
+  "private": true,
+  "type": "module",
+  "description": "VideoGen Studio licence server: accounts, licence keys, plans, quotas, AI relay and the superadmin console",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/index.mjs --external:firebase-admin --external:@google-cloud/secret-manager",
+    "start": "node dist/index.mjs",
+    "dev": "tsx src/dev.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "engines": { "node": ">=22" },
+  "dependencies": {
+    "@google-cloud/secret-manager": "^6.1.0",
+    "firebase-admin": "^13.5.0"
+  }
+}

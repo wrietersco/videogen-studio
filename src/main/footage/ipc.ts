@@ -1,7 +1,7 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { existsSync, statSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
-import { EditPlan, type FootageEvent, type FootageProject, type PlanRequest } from '../../shared/footage'
+import { aiClipsIn, EditPlan, type FootageEvent, type FootageProject, type PlanRequest } from '../../shared/footage'
 import { meter } from '../usage/meter'
 import { FootageCancelled, type FootageService } from './service'
 import { dedupe, type FootageStore } from './store'
@@ -14,6 +14,8 @@ export interface FootageIpcDeps {
   setBusy: (busy: boolean) => void
   emit: (channel: string, payload: unknown) => void
   window: () => BrowserWindow | null
+  /** runs a job that calls AI models as one AI video of the person's plan (starts it, or refuses with the reason) */
+  aiJob: <T>(projectKey: string, title: string, fn: () => Promise<T>) => Promise<T>
 }
 
 const AUDIO_FILTER = { name: 'Music', extensions: ['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac'] }
@@ -25,13 +27,13 @@ export function registerFootageIpc(d: FootageIpcDeps): void {
   const fail = (err: unknown) => ({ ok: false as const, error: String((err as Error)?.message ?? err) })
 
   /** one job at a time, with a usage run so paid calls are metered and saved with the project */
-  async function job<T>(projectId: string, fn: () => Promise<T>): Promise<T> {
+  async function job<T>(projectId: string, fn: () => Promise<T>, usesAi = false): Promise<T> {
     if (d.isBusy()) throw new Error('Another job is running. Wait for it to finish, then try again.')
     if (!d.store.exists(projectId)) throw new Error('That footage project no longer exists')
     d.setBusy(true)
     meter.begin('footage')
     try {
-      return await fn()
+      return usesAi ? await d.aiJob(`ft-${projectId}`, d.store.read(projectId)?.name ?? 'Footage edit', fn) : await fn()
     } finally {
       meter.end(d.store.dir(projectId))
       d.setBusy(false)
@@ -39,10 +41,10 @@ export function registerFootageIpc(d: FootageIpcDeps): void {
   }
 
   /** run without making the caller wait: progress comes back as footage events */
-  function background(projectId: string, kind: 'scan' | 'understand' | 'render', fn: () => Promise<void>) {
+  function background(projectId: string, kind: 'scan' | 'understand' | 'render', fn: () => Promise<void>, usesAi = false) {
     if (d.isBusy()) return { ok: false as const, error: 'Another job is running. Wait for it to finish, then try again.' }
     current = { projectId, kind }
-    void job(projectId, fn).catch((err) => {
+    void job(projectId, fn, usesAi).catch((err) => {
       const error = String((err as Error)?.message ?? err)
       d.emit('footage:event', (kind === 'render' ? { kind, projectId, status: 'failed', error } : { kind, projectId, status: 'failed', error }) satisfies FootageEvent)
     }).finally(() => {
@@ -132,7 +134,7 @@ export function registerFootageIpc(d: FootageIpcDeps): void {
   })
 
   ipcMain.handle('footage:scan', (_e, id: string) => background(String(id), 'scan', () => d.service.scan(String(id))))
-  ipcMain.handle('footage:understand', (_e, id: string) => background(String(id), 'understand', () => d.service.understand(String(id))))
+  ipcMain.handle('footage:understand', (_e, id: string) => background(String(id), 'understand', () => d.service.understand(String(id)), true))
   ipcMain.handle('footage:estimate', (_e, id: string) => {
     try {
       return d.service.estimate(String(id))
@@ -144,7 +146,7 @@ export function registerFootageIpc(d: FootageIpcDeps): void {
   ipcMain.handle('footage:plan', async (_e, id: string, req: PlanRequest) => {
     try {
       if (!req || typeof req.prompt !== 'string' || !req.prompt.trim()) return { ok: false, error: 'Describe the video you want first.' }
-      const result = await job(String(id), () => d.service.plan(String(id), { ...req, prompt: req.prompt.trim().slice(0, 4000) }))
+      const result = await job(String(id), () => d.service.plan(String(id), { ...req, prompt: req.prompt.trim().slice(0, 4000) }), true)
       return { ok: true, result }
     } catch (err) {
       return fail(err)
@@ -155,7 +157,7 @@ export function registerFootageIpc(d: FootageIpcDeps): void {
     try {
       const parsed = EditPlan.safeParse(rawPlan)
       if (!parsed.success) return { ok: false, error: 'Those changes do not make a valid edit.' }
-      const result = await job(String(id), () => d.service.tighten(String(id), parsed.data))
+      const result = await job(String(id), () => d.service.tighten(String(id), parsed.data), true)
       return { ok: true, result }
     } catch (err) {
       return fail(err)
@@ -176,7 +178,7 @@ export function registerFootageIpc(d: FootageIpcDeps): void {
         if (err instanceof FootageCancelled) d.emit('footage:event', { kind: 'render', projectId, status: 'cancelled' } satisfies FootageEvent)
         else d.emit('footage:event', { kind: 'render', projectId, status: 'failed', error: String((err as Error)?.message ?? err) } satisfies FootageEvent)
       }
-    })
+    }, aiClipsIn(plan) > 0)
   })
 
   ipcMain.handle('footage:cancel', () => {

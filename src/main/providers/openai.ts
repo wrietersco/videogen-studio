@@ -10,6 +10,7 @@ import type {
 } from './types'
 import { ProviderError } from './types'
 import { meter } from '../usage/meter'
+import { route } from '../license/route'
 
 /**
  * OpenAI adapter — Chat Completions with structured outputs (json_schema),
@@ -297,9 +298,10 @@ export class OpenAIProvider implements LLMProvider {
       form.append('model', 'whisper-1')
       form.append('response_format', 'verbose_json')
       form.append('timestamp_granularities[]', 'word')
-      const res = await fetch(`${API}/audio/transcriptions`, {
+      const r = this.route()
+      const res = await fetch(`${r.base}/audio/transcriptions`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${this.key()}` },
+        headers: r.headers,
         body: form
       })
       if (!res.ok) return { words: [], seconds: 0 }
@@ -338,6 +340,10 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
+  private route() {
+    return route('openai', { base: API, headers: { Authorization: `Bearer ${this.key()}` } })
+  }
+
   private async request<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
     const res = await this.requestRaw(method, path, body)
     return (await res.json()) as T
@@ -346,10 +352,11 @@ export class OpenAIProvider implements LLMProvider {
   private async requestRaw(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response> {
     let res: Response
     try {
-      res = await fetch(`${API}${path}`, {
+      const r = this.route()
+      res = await fetch(`${r.base}${path}`, {
         method,
         headers: {
-          Authorization: `Bearer ${this.key()}`,
+          ...r.headers,
           ...(body ? { 'Content-Type': 'application/json' } : {})
         },
         body: body ? JSON.stringify(body) : undefined

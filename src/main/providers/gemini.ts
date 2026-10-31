@@ -10,6 +10,7 @@ import type {
 } from './types'
 import { ProviderError } from './types'
 import { meter } from '../usage/meter'
+import { route } from '../license/route'
 
 /**
  * Gemini adapter — generateContent with responseSchema (structured output),
@@ -175,10 +176,11 @@ export class GeminiProvider implements LLMProvider {
   private async request<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
     let res: Response
     try {
-      res = await fetch(`${API}${path}`, {
+      const r = route('gemini', { base: API, headers: { 'x-goog-api-key': this.key() } })
+      res = await fetch(`${r.base}${path}`, {
         method,
         headers: {
-          'x-goog-api-key': this.key(),
+          ...r.headers,
           'Content-Type': 'application/json'
         },
         body: body ? JSON.stringify(body) : undefined

@@ -269,8 +269,15 @@ export class SceneDirector {
 }
 
 /** how many moving clips one film may carry (≈ $0.80 each with Gemini Omni) */
+let clipCap = 3
+
+/** the plan's animated clips per video (the licence server refuses more) */
+export function setClipCap(n: number): void {
+  clipCap = Math.max(0, Math.min(3, Math.floor(n)))
+}
+
 export function clipBudget(totalSec: number): number {
-  return Math.min(3, Math.max(1, Math.round(totalSec / 20)))
+  return Math.min(clipCap, Math.max(1, Math.round(totalSec / 20)))
 }
 
 /**

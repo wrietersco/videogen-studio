@@ -8,6 +8,7 @@ import { CostReceipt } from '../components/CostReceipt'
 import { ErrorCard } from '../components/friendly'
 import { estimateVideoCost, fmtUsd } from '@shared/pricing'
 import type { SettingsView } from '../api'
+import { useAccount } from '../components/Account'
 
 /** the apps people know; each one implies a shape (see @shared/shapes) */
 const PLATFORMS: Array<{ id: PlatformId; label: string; emoji: string }> = [
@@ -87,10 +88,18 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
   const [creative, setCreative] = useState<Extract<PipelineEvent, { stage: 'plan'; status: 'creative' }> | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
   const [cfg, setCfg] = useState<SettingsView | null>(null)
+  const [account] = useAccount()
   useEffect(() => {
-    api.getSettings().then(setCfg).catch(() => setError('Could not load your creative settings. Reopen Create to try again.'))
-  }, [])
-  const estimate = cfg ? estimateFor(cfg, duration) : null
+    // the settings as the plan allows them, so the estimate shows what will really run
+    api.effectiveSettings().then(setCfg).catch(() => setError('Could not load your creative settings. Reopen Create to try again.'))
+  }, [account?.mode, account?.view?.entitlements.plan])
+  const ent = account?.view?.entitlements ?? null
+  const aiOn = account?.mode === 'plan' || account?.mode === 'own-keys'
+  const aiLeft = account?.mode === 'plan' ? (ent?.usage.aiVideosLeft ?? 0) : null
+  /** AI video, or programmatic (free, unlimited, no AI) */
+  const [kind, setKind] = useState<'ai' | 'programmatic'>('ai')
+  const programmatic = !aiOn || kind === 'programmatic' || aiLeft === 0
+  const estimate = cfg ? estimateFor(programmatic ? { ...cfg, provider: 'mock' } : cfg, duration) : null
   useEffect(() => {
     api.templates.list().then(setTemplates).catch(() => setTemplates([]))
   }, [])
@@ -219,10 +228,12 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
       platform,
       styleHint: style === 'auto' ? undefined : style,
       durationHintSec: duration,
-      shapeLocked: !cfg.autopilot || shapeLocked
+      shapeLocked: !cfg.autopilot || shapeLocked,
+      programmatic
     })
     if (!res.ok) {
       setError(res.error ?? 'failed to start')
+      if (res.code === 'video_quota_exceeded' || res.code === 'monthly_cost_cap' || res.code === 'ai_blocked') setKind('programmatic')
       setRunning(false)
     }
   }
@@ -532,6 +543,29 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
           )}
           {/* go! — sticks to the bottom so the main action is always in reach */}
           <div className="sticky bottom-0 z-10 mt-6 pb-4">
+          {!running && (
+            <div className="mb-2 grid grid-cols-2 gap-2 rounded-2xl bg-white/90 p-1.5 shadow-sm">
+              <button
+                onClick={() => (aiOn ? setKind('ai') : window.dispatchEvent(new Event('videogen:sign-in')))}
+                disabled={aiOn && aiLeft === 0}
+                className={`rounded-xl px-3 py-2 text-left text-xs font-bold transition-all disabled:opacity-50 ${!programmatic ? 'bg-grape text-white' : 'text-ink/70 hover:bg-ink/5'}`}
+                title={aiOn ? 'Planned, painted and voiced by AI' : 'Sign in to make AI videos'}
+              >
+                ✨ AI video
+                <span className="block text-[11px] font-semibold opacity-80">
+                  {!account?.signedIn ? 'Sign in for free AI videos' : account.mode === 'own-keys' ? 'with your own keys' : !aiOn ? (ent?.aiBlockedReason || 'Not available') : aiLeft === null ? `${ent?.label} · unlimited` : `${ent?.label} · ${aiLeft} left this month`}
+                </span>
+              </button>
+              <button
+                onClick={() => setKind('programmatic')}
+                className={`rounded-xl px-3 py-2 text-left text-xs font-bold transition-all ${programmatic ? 'bg-mint text-white' : 'text-ink/70 hover:bg-ink/5'}`}
+                title="Made on your PC from templates and free stock — no AI"
+              >
+                ⚙️ Programmatic
+                <span className="block text-[11px] font-semibold opacity-80">Free · unlimited · no AI</span>
+              </button>
+            </div>
+          )}
           {running ? (
             <button
               onClick={stop}
@@ -553,6 +587,10 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
             <div className="mx-auto mt-2 w-fit rounded-full bg-white/90 px-3 py-1 text-center text-xs text-ink/60 shadow-sm">
               {!prompt.trim()
                 ? '👆 Type your idea above to get started'
+                : programmatic
+                  ? '🆓 Programmatic: free, unlimited, made on your PC'
+                : account?.mode === 'plan'
+                  ? `🎟️ Uses 1 of your ${aiLeft ?? '∞'} AI videos this month · editing it later is included`
                 : cfg?.autopilot
                   ? shapeLocked
                     ? `🧾 Your ${PLATFORM_PRESETS[platform].aspectLabel} shape is kept; the agent chooses the rest. Actual provider charges appear as it works.`

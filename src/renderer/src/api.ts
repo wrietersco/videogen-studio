@@ -12,6 +12,15 @@ import type { KeyId, MediaSettings } from '../../main/settings'
 import type { UpdateInfo } from '../../main/updater'
 import type { EditPlan, EditRecord, FootageEvent, FootageProject, FootageSummary, PlanRequest, PlanResult, UnderstandEstimate } from '@shared/footage'
 import type { EnhancedPrompt, PromptSection, PromptTemplate } from '@shared/promptTemplates'
+import type { AccountStatus } from '../../main/license/session'
+import type { AccessMode } from '../../main/license/access'
+import type { EntitlementView, PlanId } from '@shared/plans'
+
+export type { EntitlementView, PlanId, AccessMode }
+export type AccountState = AccountStatus & { mode: AccessMode }
+export type AccountResult =
+  | { ok: true; status: AccountState }
+  | { ok: false; code: string; error: string; devices?: Array<{ id: string; name: string; platform: string; appVersion: string; lastSeenAt: string }> }
 
 export type { EditPlan, EditRecord, FootageEvent, FootageProject, FootageSummary, PlanRequest, PlanResult, UnderstandEstimate }
 export type { UpdateInfo, EnhancedPrompt, PromptSection, PromptTemplate }
@@ -36,6 +45,8 @@ export interface SettingsView {
   reuse: 'smart' | 'fresh'
   sharing: 'local' | 'shareable'
   autopilot: boolean
+  /** use own provider keys instead of the plan (only when the licence allows it) */
+  useOwnKeys: boolean
 }
 
 export type Orientation = 'portrait' | 'landscape' | 'square'
@@ -47,6 +58,8 @@ export interface GenerateOptionsView {
   durationHintSec?: number
   /** the person picked the shape; autopilot may change the app, never the shape */
   shapeLocked?: boolean
+  /** make it without AI (free, unlimited, not counted) */
+  programmatic?: boolean
 }
 
 export interface EnhanceRequestView {
@@ -83,7 +96,7 @@ declare global {
         toggleMaximize: () => void
         close: () => void
       }
-      generate: (opts: GenerateOptionsView) => Promise<{ ok: boolean; error?: string }>
+      generate: (opts: GenerateOptionsView) => Promise<{ ok: boolean; error?: string; code?: string }>
       cancel: () => Promise<boolean>
       enhancePrompt: (req: EnhanceRequestView) => Promise<{ ok: true; result: EnhancedPrompt } | { ok: false; error: string }>
       templates: {
@@ -122,6 +135,21 @@ declare global {
       setKey: (provider: KeyId, key: string) => Promise<boolean>
       clearKey: (provider: KeyId) => Promise<boolean>
       keyStatus: () => Promise<Record<KeyId, boolean>>
+      effectiveSettings: () => Promise<SettingsView & { mode: AccessMode }>
+      account: {
+        status: () => Promise<AccountState>
+        signUp: (email: string, password: string) => Promise<AccountResult>
+        signIn: (email: string, password: string) => Promise<AccountResult>
+        signOut: () => Promise<AccountResult>
+        refresh: () => Promise<AccountResult>
+        activate: (key: string) => Promise<AccountResult>
+        leave: () => Promise<AccountResult>
+        removeDevice: (id: string) => Promise<AccountResult>
+        resendVerification: () => Promise<{ ok: true } | { ok: false; code: string; error: string }>
+        resetPassword: (email: string) => Promise<{ ok: true } | { ok: false; code: string; error: string }>
+        contactSales: (plan: string) => Promise<void>
+        onChange: (cb: (status: AccountState) => void) => () => void
+      }
       update: {
         version: () => Promise<string>
         check: () => Promise<{ ok: true; info: UpdateInfo } | { ok: false; error: string }>

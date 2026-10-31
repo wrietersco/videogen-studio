@@ -58,6 +58,25 @@ const api = {
   setKey: (provider: string, key: string) => ipcRenderer.invoke('settings:setKey', provider, key),
   clearKey: (provider: string) => ipcRenderer.invoke('settings:clearKey', provider),
   keyStatus: () => ipcRenderer.invoke('settings:keyStatus'),
+  effectiveSettings: () => ipcRenderer.invoke('settings:effective'),
+  account: {
+    status: () => ipcRenderer.invoke('account:status'),
+    signUp: (email: string, password: string) => ipcRenderer.invoke('account:signUp', email, password),
+    signIn: (email: string, password: string) => ipcRenderer.invoke('account:signIn', email, password),
+    signOut: () => ipcRenderer.invoke('account:signOut'),
+    refresh: () => ipcRenderer.invoke('account:refresh'),
+    activate: (key: string) => ipcRenderer.invoke('account:activate', key),
+    leave: () => ipcRenderer.invoke('account:leave'),
+    removeDevice: (id: string) => ipcRenderer.invoke('account:removeDevice', id),
+    resendVerification: () => ipcRenderer.invoke('account:resendVerification'),
+    resetPassword: (email: string) => ipcRenderer.invoke('account:resetPassword', email),
+    contactSales: (plan: string) => ipcRenderer.invoke('account:contactSales', plan),
+    onChange: (cb: (status: unknown) => void) => {
+      const listener = (_e: unknown, payload: unknown) => cb(payload)
+      ipcRenderer.on('account:changed', listener)
+      return () => ipcRenderer.removeListener('account:changed', listener)
+    }
+  },
   update: {
     version: () => ipcRenderer.invoke('update:version'),
     check: () => ipcRenderer.invoke('update:check'),
