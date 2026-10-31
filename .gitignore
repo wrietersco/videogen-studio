@@ -11,3 +11,6 @@ release/
 samples-out/
 library/
 /footage/
+
+# Firebase CLI deploy cache
+.firebase/

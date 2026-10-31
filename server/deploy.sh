@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 PROJECT=brain-3bc3a
 SERVICE=videogen-license-server
 REGION=us-central1
-: "${FIREBASE_WEB_API_KEY:?set FIREBASE_WEB_API_KEY (the 'Snap Projects Desktop' API key: auth APIs only, no referrer restriction)}"
+: "${FIREBASE_WEB_API_KEY:?set FIREBASE_WEB_API_KEY (the Firebase browser key; its referrers must include https://videogen-admin.web.app/*)}"
 
 npm run build
 

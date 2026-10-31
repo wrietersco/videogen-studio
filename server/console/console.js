@@ -92,7 +92,12 @@ async function setupAuth() {
     try {
       await fa.signInWithPopup(auth, new fa.GoogleAuthProvider())
     } catch (err) {
-      $('login-error').textContent = err?.code === 'auth/unauthorized-domain' ? 'This address is not yet allowed for Google sign-in (Firebase → Authentication → Settings → Authorized domains).' : 'Google sign-in failed or was closed.'
+      const code = err?.code || 'unknown'
+      $('login-error').textContent =
+        code === 'auth/unauthorized-domain' ? 'This address is not yet allowed for Google sign-in (Firebase → Authentication → Settings → Authorized domains).'
+        : code === 'auth/popup-blocked' ? 'The browser blocked the Google window. Allow pop-ups for this site and try again.'
+        : code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request' ? 'The Google window was closed before sign-in finished.'
+        : `Google sign-in failed (${code}).`
     }
   }
   $('login-form').onsubmit = async (e) => {
@@ -101,7 +106,7 @@ async function setupAuth() {
     try {
       await fa.signInWithEmailAndPassword(auth, $('email').value.trim(), $('password').value)
     } catch (err) {
-      $('login-error').textContent = 'Sign-in failed. Check the email and password.'
+      $('login-error').textContent = `Sign-in failed (${err?.code || 'unknown'}). Check the email and password.`
     }
   }
   fa.onAuthStateChanged(auth, (user) => (user ? enter(user.email) : showLogin()))
