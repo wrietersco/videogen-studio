@@ -18,7 +18,10 @@ import { applyAutopilot, decide, decideCreative, honorShape } from './autopilot'
 import { enhancePrompt, type EnhanceRequest } from './promptEnhancer'
 import { PromptTemplateStore, type TemplateInput } from './store/promptTemplates'
 import { ensureBrowser } from './rendererService/hyperframes'
-import { projectsDir, appRoot, libraryDir, builtinPackDir } from './paths'
+import { projectsDir, appRoot, libraryDir, builtinPackDir, footageDir } from './paths'
+import { FootageStore } from './footage/store'
+import { FootageService } from './footage/service'
+import { registerFootageIpc } from './footage/ipc'
 import { meter, readProjectUsage, type UsageRun } from './usage/meter'
 import { checkForUpdate, downloadUpdate, installUpdate } from './updater'
 
@@ -45,6 +48,14 @@ const media = new MediaRouter({
   provider: (id) => providerRegistry.get(id),
   autoImageProvider: () => providerRegistry.imageProvider(),
   onDecision: (projectId, message) => { if (store.readMeta(projectId)) store.appendEvent(projectId, `media · ${message}`) }
+})
+const footageStore = new FootageStore(footageDir)
+const footage = new FootageService({
+  store: footageStore,
+  provider: () => providerRegistry.active(),
+  whisperKey: () => keyOf('openai'),
+  chatModel: () => settings.models[settings.provider] || ({ openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash' } as Record<string, string>)[settings.provider],
+  emit: (e) => emit('footage:event', e)
 })
 const orchestrator = new Orchestrator(
   store,
@@ -453,6 +464,7 @@ app.whenReady().then(() => {
   })
   registerIpc()
   registerAssetIpc({ library, router: media, key: keyOf, isBusy: () => busy })
+  registerFootageIpc({ store: footageStore, service: footage, isBusy: () => busy, setBusy: (b) => { busy = b }, emit, window: () => win })
   createWindow()
   createTray()
   app.on('activate', () => {

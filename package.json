@@ -11,7 +11,7 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test": "vitest run tests/unit.test.ts tests/compose.test.ts tests/director.test.ts tests/usage.test.ts tests/library.test.ts tests/editing.test.ts tests/stock.test.ts tests/moneyguard.test.ts tests/autopilot.test.ts tests/geminiVideo.test.ts tests/clips.test.ts tests/customScene.test.ts tests/promptTools.test.ts",
+    "test": "vitest run tests/unit.test.ts tests/compose.test.ts tests/director.test.ts tests/usage.test.ts tests/library.test.ts tests/editing.test.ts tests/stock.test.ts tests/moneyguard.test.ts tests/autopilot.test.ts tests/geminiVideo.test.ts tests/clips.test.ts tests/customScene.test.ts tests/promptTools.test.ts tests/footage.test.ts",
     "test:e2e": "vitest run tests/pipeline.test.ts",
     "gen": "tsx scripts/gen.ts",
     "verify": "npm run typecheck && npm run test",

@@ -83,6 +83,33 @@ const api = {
     /** real path of a dropped File (Electron removed File.path) */
     pathForFile: (f: File) => webUtils.getPathForFile(f)
   },
+  footage: {
+    status: () => ipcRenderer.invoke('footage:status'),
+    list: () => ipcRenderer.invoke('footage:list'),
+    get: (id: string) => ipcRenderer.invoke('footage:get', id),
+    posters: (id: string) => ipcRenderer.invoke('footage:posters', id),
+    pickFolders: () => ipcRenderer.invoke('footage:pickFolders'),
+    pickMusic: () => ipcRenderer.invoke('footage:pickMusic'),
+    create: (name: string, folders: string[]) => ipcRenderer.invoke('footage:create', name, folders),
+    addFolders: (id: string, folders: string[]) => ipcRenderer.invoke('footage:addFolders', id, folders),
+    removeFolder: (id: string, folder: string) => ipcRenderer.invoke('footage:removeFolder', id, folder),
+    rename: (id: string, name: string) => ipcRenderer.invoke('footage:rename', id, name),
+    scan: (id: string) => ipcRenderer.invoke('footage:scan', id),
+    understand: (id: string) => ipcRenderer.invoke('footage:understand', id),
+    estimate: (id: string) => ipcRenderer.invoke('footage:estimate', id),
+    plan: (id: string, req: unknown) => ipcRenderer.invoke('footage:plan', id, req),
+    render: (id: string, plan: unknown, prompt: string) => ipcRenderer.invoke('footage:render', id, plan, prompt),
+    cancel: () => ipcRenderer.invoke('footage:cancel'),
+    removeEdit: (id: string, editId: string) => ipcRenderer.invoke('footage:removeEdit', id, editId),
+    remove: (id: string) => ipcRenderer.invoke('footage:delete', id),
+    play: (file: string) => ipcRenderer.invoke('footage:play', file),
+    reveal: (file: string) => ipcRenderer.invoke('footage:reveal', file),
+    onEvent: (cb: (event: unknown) => void) => {
+      const listener = (_e: unknown, payload: unknown) => cb(payload)
+      ipcRenderer.on('footage:event', listener)
+      return () => ipcRenderer.removeListener('footage:event', listener)
+    }
+  },
   stock: {
     search: (kind: string, query: string, orientation?: string) => ipcRenderer.invoke('stock:search', kind, query, orientation),
     download: (r: unknown, tags?: string[]) => ipcRenderer.invoke('stock:download', r, tags)

@@ -10,3 +10,4 @@ vendor/fonts/*.woff2
 release/
 samples-out/
 library/
+/footage/

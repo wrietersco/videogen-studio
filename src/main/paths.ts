@@ -41,3 +41,5 @@ export const projectsDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen S
 export const libraryDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'library') : resolve(appRoot, 'library')
 /** read-only starter pack shipped with the app */
 export const builtinPackDir = resolve(appRoot, 'resources', 'asset-pack')
+/** footage projects: indexes, keyframes and rendered edits (the user's own video folders stay where they are) */
+export const footageDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'footage') : resolve(appRoot, 'footage')

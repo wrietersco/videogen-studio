@@ -10,8 +10,10 @@ import type { StockResult } from '../../main/media/stock'
 import type { KeyId, MediaSettings } from '../../main/settings'
 
 import type { UpdateInfo } from '../../main/updater'
+import type { EditPlan, EditRecord, FootageEvent, FootageProject, FootageSummary, PlanRequest, PlanResult, UnderstandEstimate } from '@shared/footage'
 import type { EnhancedPrompt, PromptSection, PromptTemplate } from '@shared/promptTemplates'
 
+export type { EditPlan, EditRecord, FootageEvent, FootageProject, FootageSummary, PlanRequest, PlanResult, UnderstandEstimate }
 export type { UpdateInfo, EnhancedPrompt, PromptSection, PromptTemplate }
 export type { UsageEntry, UsageRun, ProjectUsage, AssetKind, AssetMeta, AssetSource, StockResult, KeyId, MediaSettings }
 export type { PipelineEvent, ProjectMeta, ProviderId, ModelInfo, PlatformId, StyleFamily, VideoSpec }
@@ -139,6 +141,29 @@ declare global {
         exportPack: () => Promise<{ exported: number; folder?: string }>
         importPack: () => Promise<{ imported: number }>
         pathForFile: (f: File) => string
+      }
+      footage: {
+        status: () => Promise<{ projectId: string; kind: 'scan' | 'understand' | 'render' } | null>
+        list: () => Promise<FootageSummary[]>
+        get: (id: string) => Promise<FootageProject | null>
+        posters: (id: string) => Promise<Record<string, string>>
+        pickFolders: () => Promise<string[]>
+        pickMusic: () => Promise<string | null>
+        create: (name: string, folders: string[]) => Promise<{ ok: true; project: FootageProject } | { ok: false; error: string }>
+        addFolders: (id: string, folders: string[]) => Promise<{ ok: true; project: FootageProject } | { ok: false; error: string }>
+        removeFolder: (id: string, folder: string) => Promise<{ ok: true; project: FootageProject } | { ok: false; error: string }>
+        rename: (id: string, name: string) => Promise<{ ok: true; project: FootageProject } | { ok: false; error: string }>
+        scan: (id: string) => Promise<{ ok: boolean; error?: string }>
+        understand: (id: string) => Promise<{ ok: boolean; error?: string }>
+        estimate: (id: string) => Promise<UnderstandEstimate>
+        plan: (id: string, req: PlanRequest) => Promise<{ ok: true; result: PlanResult } | { ok: false; error: string }>
+        render: (id: string, plan: EditPlan, prompt: string) => Promise<{ ok: boolean; error?: string }>
+        cancel: () => Promise<boolean>
+        removeEdit: (id: string, editId: string) => Promise<boolean>
+        remove: (id: string) => Promise<{ ok: boolean; error?: string }>
+        play: (file: string) => Promise<boolean>
+        reveal: (file: string) => Promise<boolean>
+        onEvent: (cb: (event: FootageEvent) => void) => () => void
       }
       stock: {
         search: (kind: AssetKind, query: string, orientation?: Orientation) => Promise<{ results: StockResult[]; errors: string[] }>

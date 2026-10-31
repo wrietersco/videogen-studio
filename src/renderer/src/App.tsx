@@ -5,13 +5,15 @@ import Library from './views/Library'
 import Settings from './views/Settings'
 import Editor from './views/Editor'
 import Assets from './views/Assets'
+import Footage from './views/Footage'
 import Updater from './components/Updater'
 
-type Tab = 'studio' | 'library' | 'assets' | 'editor' | 'settings'
+type Tab = 'studio' | 'footage' | 'library' | 'assets' | 'editor' | 'settings'
 
 /** Editor isn't a top-level tab any more — it opens from a video ("Change a scene") and lights up My videos. */
 const TABS: Array<{ id: Tab; label: string; icon: string; tip: string; on: string }> = [
   { id: 'studio', label: 'Create', icon: '✨', tip: 'Describe a video and watch it get made', on: 'bg-grape text-white shadow-[0_3px_0_#5b21b6]' },
+  { id: 'footage', label: 'Edit footage', icon: '🎬', tip: 'Cut, join and add music to videos you already have', on: 'bg-mint text-white shadow-[0_3px_0_#0b8a64]' },
   { id: 'library', label: 'My videos', icon: '🎞️', tip: 'Everything you have made', on: 'bg-berry text-white shadow-[0_3px_0_#c2185b]' },
   { id: 'assets', label: 'Library', icon: '🧺', tip: 'Pictures, clips, voices and music your videos reuse', on: 'bg-sky text-white shadow-[0_3px_0_#0b7cc0]' },
   { id: 'settings', label: 'Settings', icon: '⚙️', tip: 'Your AI keys, models and costs', on: 'bg-sunny text-ink shadow-[0_3px_0_#d49a00]' }
@@ -90,6 +92,7 @@ export default function App() {
       {/* content */}
       <div className="min-h-0 flex-1">
         {tab === 'studio' && <Studio onOpenEditor={() => openEditor()} onOpenSettings={() => setTab('settings')} />}
+        {tab === 'footage' && <Footage onOpenSettings={() => setTab('settings')} />}
         {tab === 'library' && <Library onOpenEditor={openEditor} />}
         {tab === 'editor' && (
           <Editor

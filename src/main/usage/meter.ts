@@ -25,7 +25,7 @@ export interface UsageEntry {
 }
 
 export interface UsageRun {
-  kind: 'generate' | 'revise' | 'rerender' | 'resume' | 'library'
+  kind: 'generate' | 'revise' | 'rerender' | 'resume' | 'library' | 'footage'
   startedAt: string
   endedAt?: string
   entries: UsageEntry[]
