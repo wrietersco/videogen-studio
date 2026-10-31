@@ -98,6 +98,7 @@ const api = {
     understand: (id: string) => ipcRenderer.invoke('footage:understand', id),
     estimate: (id: string) => ipcRenderer.invoke('footage:estimate', id),
     plan: (id: string, req: unknown) => ipcRenderer.invoke('footage:plan', id, req),
+    tighten: (id: string, plan: unknown) => ipcRenderer.invoke('footage:tighten', id, plan),
     render: (id: string, plan: unknown, prompt: string) => ipcRenderer.invoke('footage:render', id, plan, prompt),
     cancel: () => ipcRenderer.invoke('footage:cancel'),
     removeEdit: (id: string, editId: string) => ipcRenderer.invoke('footage:removeEdit', id, editId),

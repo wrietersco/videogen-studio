@@ -150,6 +150,17 @@ export function registerFootageIpc(d: FootageIpcDeps): void {
     }
   })
 
+  ipcMain.handle('footage:tighten', async (_e, id: string, rawPlan: unknown) => {
+    try {
+      const parsed = EditPlan.safeParse(rawPlan)
+      if (!parsed.success) return { ok: false, error: 'Those changes do not make a valid edit.' }
+      const result = await job(String(id), () => d.service.tighten(String(id), parsed.data))
+      return { ok: true, result }
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
   ipcMain.handle('footage:render', (_e, id: string, rawPlan: unknown, prompt: string) => {
     const parsed = EditPlan.safeParse(rawPlan)
     if (!parsed.success) return { ok: false, error: 'Those changes do not make a valid edit. Plan it again.' }

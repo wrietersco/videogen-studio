@@ -3,9 +3,11 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { planDuration, type EditPlan, type EditRecord, type FootageClip, type FootageEvent, type FootageProject, type PlanRequest, type PlanResult, type UnderstandEstimate } from '../../shared/footage'
 import type { LLMProvider } from '../providers/types'
+import { clampToLength } from './captions'
 import { planEdit } from './planner'
 import { renderPlan, RenderCancelled } from './render'
 import { clipIdFor, frameBuffer, listVideoFiles, scanClip } from './scan'
+import { tightenPlan } from './silence'
 import { FootageStore, slug } from './store'
 import { estimateUnderstanding, listenToClip, watchClip } from './understand'
 
@@ -164,7 +166,20 @@ export class FootageService {
   async plan(projectId: string, req: PlanRequest): Promise<PlanResult> {
     const p = this.project(projectId)
     const outcome = await planEdit(this.d.provider(), p.clips, req)
-    return { plan: outcome.plan, source: outcome.source, thumbs: await this.thumbs(p.clips, outcome.plan) }
+    const tight = req.tighten ? await this.tighten(projectId, outcome.plan) : null
+    const plan = tight?.plan ?? outcome.plan
+    return { plan, source: outcome.source, thumbs: await this.thumbs(p.clips, plan) }
+  }
+
+  /** cut the long silent pauses out of the parts where people speak */
+  async tighten(projectId: string, plan: EditPlan): Promise<{ plan: EditPlan; removedSec: number; thumbs: string[] }> {
+    this.cancelled = false
+    const p = this.project(projectId)
+    const out = await tightenPlan(plan, p.clips, () => this.cancelled)
+    // titles were timed on the longer cut: keep the ones that still fit
+    const total = planDuration(out.plan)
+    out.plan.titles = clampToLength(out.plan.titles, total)
+    return { plan: out.plan, removedSec: Math.round(out.removedSec * 10) / 10, thumbs: await this.thumbs(p.clips, out.plan) }
   }
 
   /** a small picture from the middle of each planned segment */

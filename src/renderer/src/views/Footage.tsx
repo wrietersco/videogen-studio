@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type EditPlan, type EditRecord, type FootageEvent, type FootageProject, type FootageSummary, type PlanRequest, type PlanResult, type UnderstandEstimate } from '../api'
 import { ShapePicker } from '../components/PromptTools'
 import { fmtUsd } from '@shared/pricing'
-import { fmtClock, planDuration, MUSIC_MOODS, type MusicChoice } from '@shared/footage'
+import { fmtClock, planDuration, segmentStarts, MUSIC_MOODS, type MusicChoice, type PlanTitle } from '@shared/footage'
 import { shapeOf, type ShapeId } from '@shared/shapes'
 import type { PlatformId } from '@shared/spec'
 
@@ -161,6 +161,9 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
   const [musicMode, setMusicMode] = useState<MusicMode>('editor')
   const [musicFile, setMusicFile] = useState<string | null>(null)
   const [loudness, setLoudness] = useState<EditPlan['loudness']>('social')
+  const [captions, setCaptions] = useState<EditPlan['captions']>('off')
+  const [wantTitles, setWantTitles] = useState(true)
+  const [tighten, setTighten] = useState(false)
 
   // the plan being reviewed and the render
   const [planned, setPlanned] = useState<{ n: number; plan: EditPlan; thumbs: string[]; source: PlanResult['source']; prompt: string } | null>(null)
@@ -247,7 +250,7 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
     setMade(null)
     setJob('plan')
     const music: PlanRequest['music'] = musicMode === 'editor' ? 'auto-mood' : musicMode === 'none' ? { mode: 'none', mood: 'upbeat' } : { mode: 'file', mood: 'upbeat', file: musicFile ?? undefined }
-    const res = await api.footage.plan(id, { prompt: prompt.trim(), shape, durationSec: seconds || undefined, music, loudness })
+    const res = await api.footage.plan(id, { prompt: prompt.trim(), shape, durationSec: seconds || undefined, music, loudness, captions, titles: wantTitles, tighten })
     setJob(null)
     if (!res.ok) return setError(res.error)
     setPlanned((old) => ({ n: (old?.n ?? 0) + 1, plan: res.result.plan, thumbs: res.result.thumbs, source: res.result.source, prompt: prompt.trim() }))
@@ -455,6 +458,33 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
             </Chip>
           </div>
 
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-sm font-bold">Subtitles</span>
+            <Chip on={captions === 'off'} onClick={() => setCaptions('off')}>
+              🚫 None
+            </Chip>
+            <Chip on={captions === 'clean'} onClick={() => setCaptions('clean')}>
+              💬 Clean
+            </Chip>
+            <Chip on={captions === 'bold'} onClick={() => setCaptions('bold')}>
+              🔥 Bold
+            </Chip>
+            <Chip on={captions === 'box'} onClick={() => setCaptions('box')}>
+              ⬛ On a box
+            </Chip>
+            <span className="text-xs text-ink/50">Written from what people say, so let the AI listen first.</span>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-sm font-bold">Extras</span>
+            <Chip on={wantTitles} onClick={() => setWantTitles((v) => !v)}>
+              🏷️ {wantTitles ? 'Titles on screen' : 'No titles'}
+            </Chip>
+            <Chip on={tighten} onClick={() => setTighten((v) => !v)}>
+              ✂️ {tighten ? 'Cut silent pauses' : 'Keep pauses'}
+            </Chip>
+          </div>
+
           <div className="mt-5 flex flex-wrap items-center gap-3">
             <button onClick={makePlan} disabled={!prompt.trim() || busy || !ok.length || (musicMode === 'file' && !musicFile)} className="btn-primary !px-6 !py-3">
               {job === 'plan' ? '⏳ The editor is choosing shots…' : '🪄 Plan my edit'}
@@ -586,6 +616,30 @@ function PlanReview({
     setPlan((p) => ({ ...p, segments: p.segments.filter((_, j) => j !== i) }))
     setThumbs((t) => t.filter((_, j) => j !== i))
   }
+  const [tightening, setTightening] = useState<string | null>(null)
+  const split = (i: number) => {
+    const s = plan.segments[i]
+    const mid = Math.round(((s.startSec + s.endSec) / 2) * 10) / 10
+    if (mid - s.startSec < 0.5 || s.endSec - mid < 0.5) return
+    setPlan((p) => ({ ...p, segments: [...p.segments.slice(0, i), { ...s, endSec: mid }, { ...s, startSec: mid, transition: 'cut' }, ...p.segments.slice(i + 1)] }))
+    setThumbs((t) => [...t.slice(0, i + 1), t[i] ?? '', ...t.slice(i + 1)])
+  }
+  const tightenNow = async () => {
+    setTightening(LISTENING)
+    const res = await api.footage.tighten(project.id, plan)
+    if (!res.ok) return setTightening(`⚠️ ${res.error}`)
+    setPlan(res.result.plan)
+    setThumbs(res.result.thumbs)
+    setTightening(res.result.removedSec >= 0.1 ? `Cut ${res.result.removedSec}s of silence.` : 'No long pauses found.')
+  }
+  const setTitle = (i: number, change: Partial<PlanTitle>) => setPlan((p) => ({ ...p, titles: p.titles.map((t, j) => (j === i ? { ...t, ...change } : t)) }))
+  const addTitle = () =>
+    setPlan((p) => {
+      const at = Math.min(Math.max(0, total - 2.5), p.titles.reduce((m, t) => Math.max(m, t.endSec), 0))
+      return { ...p, titles: [...p.titles, { text: 'Your title', startSec: Math.round(at * 10) / 10, endSec: Math.round(Math.min(total, at + 2.5) * 10) / 10, position: 'center' }] }
+    })
+  const starts = segmentStarts(plan)
+  const lines = plan.segments.reduce((n, s) => n + (s.keepAudio ? (clips.get(s.clipId)?.transcript?.length ?? 0) : 0), 0)
   const setMusic = (m: Partial<MusicChoice>) => setPlan((p) => ({ ...p, music: { ...p.music, ...m } }))
 
   return (
@@ -607,6 +661,32 @@ function PlanReview({
           💡 {n}
         </div>
       ))}
+
+      <div className="mt-4">
+        <div className="mb-1 text-[11px] font-bold uppercase tracking-wide text-ink/45">Timeline</div>
+        <div className="flex h-12 w-full gap-px overflow-hidden rounded-lg bg-ink/10" aria-label="Timeline of the edit">
+          {plan.segments.map((s, i) => (
+            <div
+              key={i}
+              style={{ flexGrow: Math.max(0.2, (s.endSec - s.startSec) / s.speed), flexBasis: 0, backgroundImage: thumbs[i] ? `url(${thumbs[i]})` : undefined }}
+              className={`relative min-w-[6px] bg-cover bg-center ${s.keepAudio ? '' : 'opacity-70'}`}
+              title={`${i + 1}. ${clips.get(s.clipId)?.name ?? ''} · ${fmtClock(starts[i] ?? 0)}`}
+            >
+              <span className="absolute left-0.5 top-0.5 rounded bg-black/55 px-1 text-[9px] font-black text-white">{i + 1}</span>
+              {s.transition === 'fade' && i > 0 && <span className="absolute inset-y-0 left-0 w-2 bg-gradient-to-r from-white/80 to-transparent" />}
+            </div>
+          ))}
+        </div>
+        {total > 0 && (
+          <div className="relative mt-1 h-4 w-full rounded bg-ink/5">
+            {plan.titles.map((t, i) => (
+              <div key={i} className="absolute top-0 h-4 overflow-hidden rounded bg-sunny px-1 text-[9px] font-bold leading-4 text-ink/80" style={{ left: `${(t.startSec / total) * 100}%`, width: `${Math.max(2, ((t.endSec - t.startSec) / total) * 100)}%` }} title={t.text}>
+                {t.text}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <div className="mt-4 space-y-2">
         {plan.segments.map((s, i) => {
@@ -660,6 +740,9 @@ function PlanReview({
                 <button onClick={() => move(i, 1)} disabled={i === plan.segments.length - 1} className="rounded px-1.5 text-ink/50 hover:bg-ink/5 disabled:opacity-25" aria-label="Move down">
                   ↓
                 </button>
+                <button onClick={() => split(i)} disabled={s.endSec - s.startSec < 1.2} className="rounded px-1.5 text-ink/50 hover:bg-ink/5 disabled:opacity-25" aria-label="Split this part in two" title="Split in two">
+                  ✂
+                </button>
                 <button onClick={() => remove(i)} className="rounded px-1.5 text-ink/40 hover:bg-coral-soft hover:text-coral" aria-label="Remove this part">
                   ✕
                 </button>
@@ -710,6 +793,54 @@ function PlanReview({
         </label>
       </div>
 
+      <div className="mt-3 space-y-3 rounded-xl bg-sunny-soft/60 px-4 py-3 text-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-1.5 text-xs font-semibold">
+            💬 Subtitles
+            <select value={plan.captions} onChange={(e) => setPlan((p) => ({ ...p, captions: e.target.value as EditPlan['captions'] }))} className="field px-1.5 py-1 text-xs">
+              <option value="off">None</option>
+              <option value="clean">Clean</option>
+              <option value="bold">Bold</option>
+              <option value="box">On a box</option>
+            </select>
+          </label>
+          {plan.captions !== 'off' && lines === 0 && <span className="text-[11px] font-semibold text-coral">No speech was transcribed in these parts, so there is nothing to caption. Let the AI listen to your videos first.</span>}
+          <button onClick={tightenNow} disabled={busy || tightening === LISTENING} className="btn-ghost !px-3 !py-1 !text-xs">
+            ✂️ Cut silent pauses
+          </button>
+          {tightening && <span className="text-[11px] font-semibold text-ink/60">{tightening}</span>}
+        </div>
+        <div>
+          <div className="flex items-center gap-2 text-xs font-bold">
+            🏷️ Titles on screen
+            <button onClick={addTitle} className="rounded-full border-2 border-sunny bg-white px-2 py-0.5 text-[11px] font-bold hover:bg-sunny-soft">
+              + Add a title
+            </button>
+          </div>
+          {plan.titles.map((t, i) => (
+            <div key={i} className="mt-1.5 flex flex-wrap items-center gap-2">
+              <input value={t.text} maxLength={90} onChange={(e) => setTitle(i, { text: e.target.value })} className="field min-w-[180px] flex-1 px-2 py-1 text-xs font-bold" aria-label="Title text" />
+              <label className="text-[11px] font-semibold text-ink/55">
+                from
+                <input type="number" step={0.1} min={0} max={total} value={t.startSec} onChange={(e) => setTitle(i, { startSec: clampNum(e.target.value, 0, Math.max(0, t.endSec - 0.5)) })} className="field ml-1 w-16 px-1.5 py-1 text-xs" />
+              </label>
+              <label className="text-[11px] font-semibold text-ink/55">
+                to
+                <input type="number" step={0.1} min={0} max={total} value={t.endSec} onChange={(e) => setTitle(i, { endSec: clampNum(e.target.value, t.startSec + 0.5, Math.max(t.startSec + 0.5, total)) })} className="field ml-1 w-16 px-1.5 py-1 text-xs" />
+              </label>
+              <select value={t.position} onChange={(e) => setTitle(i, { position: e.target.value as PlanTitle['position'] })} className="field px-1.5 py-1 text-xs" aria-label="Where on screen">
+                <option value="top">Top</option>
+                <option value="center">Middle</option>
+                <option value="bottom">Bottom</option>
+              </select>
+              <button onClick={() => setPlan((p) => ({ ...p, titles: p.titles.filter((_, j) => j !== i) }))} className="rounded px-1.5 text-ink/40 hover:bg-coral-soft hover:text-coral" aria-label="Remove this title">
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
       <div className="mt-4 flex flex-wrap gap-2">
         <button onClick={() => onMake(plan)} disabled={busy || !plan.segments.length} className="btn-primary !px-6 !py-3">
           🎬 Make this video
@@ -741,5 +872,6 @@ function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; chi
   )
 }
 
+const LISTENING = 'Listening for silent pauses…'
 const folderName = (p?: string) => (p ? p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p : '')
 const clampNum = (v: string, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round((parseFloat(v) || 0) * 10) / 10))

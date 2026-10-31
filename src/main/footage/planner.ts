@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { EditPlan, MUSIC_MOODS, planDuration, type FootageClip, type MusicChoice, type PlanRequest, type PlanSegment } from '../../shared/footage'
+import { EditPlan, MUSIC_MOODS, planDuration, type FootageClip, type MusicChoice, type PlanRequest, type PlanSegment, type PlanTitle } from '../../shared/footage'
 import type { LLMProvider } from '../providers/types'
 
 /**
@@ -28,6 +28,9 @@ const ModelPlan = z.object({
   ),
   music: z.enum(['none', 'auto']).default('auto'),
   musicMood: z.string().default('upbeat'),
+  titles: z
+    .array(z.object({ text: z.string(), start: z.number(), end: z.number(), position: z.string().optional() }))
+    .default([]),
   notes: z.array(z.string()).default([])
 })
 type ModelPlan = z.infer<typeof ModelPlan>
@@ -48,6 +51,7 @@ Rules:
 - music: 'none' for a brief that wants natural sound only, otherwise 'auto'; musicMood is one of ${MUSIC_MOODS.join(', ')}.
 - notes: up to 3 short plain-language remarks for the person about choices or things that were not possible. No technical terms.
 - title: a short title for the edit.
+- titles: on-screen text over the finished video, timed in seconds of the FINISHED edit (not of the clips). Only when "titles" in the request is "wanted": an opening title in the first 3 seconds (max 6 words), and optionally up to 3 short labels (names, places, key points) that the footage clearly supports. Each 2-4 seconds long, never overlapping, position top, center or bottom. Never invent facts. Use [] when titles are not wanted.
 Return only the JSON object.`
 
 function jsonSchema(): Record<string, unknown> {
@@ -117,6 +121,7 @@ export async function planEdit(provider: LLMProvider, clips: FootageClip[], req:
     brief: req.prompt,
     shape: req.shape,
     targetLengthSec: req.durationSec && req.durationSec > 0 ? req.durationSec : 'your choice',
+    titles: req.titles === false ? 'none' : 'wanted',
     music: req.music === 'auto-mood' ? 'your choice' : req.music.mode === 'none' ? 'none: the person wants natural sound only' : req.music.mode === 'file' ? 'the person will use their own track' : `an original score, mood ${req.music.mood}`,
     clips: catalog.clips
   }
@@ -187,8 +192,26 @@ export function sanitize(model: ModelPlan, refs: Map<string, FootageClip>, req: 
     segments,
     music: musicFor(req, model),
     loudness: req.loudness ?? 'social',
+    captions: req.captions ?? 'off',
+    titles: req.titles === false ? [] : sanitizeTitles(model.titles ?? [], total),
     notes
   })
+}
+
+/** model titles → a few short, non-overlapping on-screen texts inside the video */
+export function sanitizeTitles(raw: ModelPlan['titles'], totalSec: number): PlanTitle[] {
+  const out: PlanTitle[] = []
+  for (const t of [...raw].sort((a, b) => a.start - b.start)) {
+    const text = String(t.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 60)
+    const start = Math.max(0, Number(t.start))
+    const end = Math.min(totalSec, Number(t.end))
+    if (!text || !Number.isFinite(start) || !Number.isFinite(end) || end - start < 1 || start >= totalSec - 1) continue
+    if (out.length && start < out[out.length - 1].endSec) continue
+    const position = t.position === 'top' || t.position === 'bottom' ? t.position : 'center'
+    out.push({ text, startSec: round2(start), endSec: round2(Math.min(end, start + 5)), position })
+    if (out.length >= 4) break
+  }
+  return out
 }
 
 /** keep a spoken sentence whole: nudge a cut that lands inside a transcript line to its edge */
@@ -259,6 +282,7 @@ export function heuristicPlan(clips: FootageClip[], req: PlanRequest, note: stri
     segments: fitLength(segments, target),
     music: musicFor(req),
     loudness: req.loudness ?? 'social',
+    captions: req.captions ?? 'off',
     notes: [note]
   })
 }

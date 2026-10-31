@@ -116,6 +116,17 @@ export const MusicChoice = z.object({
 })
 export type MusicChoice = z.infer<typeof MusicChoice>
 
+export const CAPTION_STYLES = ['off', 'clean', 'bold', 'box'] as const
+
+/** text shown over the picture for a while, timed on the finished video */
+export const PlanTitle = z.object({
+  text: z.string().min(1).max(90),
+  startSec: z.number().min(0),
+  endSec: z.number().positive(),
+  position: z.enum(['top', 'center', 'bottom']).default('center')
+})
+export type PlanTitle = z.infer<typeof PlanTitle>
+
 export const EditPlan = z.object({
   title: z.string().default('My edit'),
   shape: z.enum(['9:16', '16:9', '4:5', '1:1']).default('9:16'),
@@ -126,6 +137,9 @@ export const EditPlan = z.object({
   /** social = −14 LUFS (TikTok, Reels, Shorts, YouTube) · quiet = −16 · off = leave levels alone */
   loudness: z.enum(['social', 'quiet', 'off']).default('social'),
   fadeInOut: z.boolean().default(true),
+  /** subtitles generated from what is said in the kept parts of the footage */
+  captions: z.enum(CAPTION_STYLES).default('off'),
+  titles: z.array(PlanTitle).max(12).default([]),
   /** plain-language remarks for the person (what was skipped, what could not be done) */
   notes: z.array(z.string()).default([])
 })
@@ -138,6 +152,11 @@ export interface PlanRequest {
   durationSec?: number
   music: MusicChoice | 'auto-mood'
   loudness?: EditPlan['loudness']
+  captions?: EditPlan['captions']
+  /** add on-screen titles (the editor writes them); false = none */
+  titles?: boolean
+  /** cut out silent pauses in the parts where people speak */
+  tighten?: boolean
 }
 
 export interface PlanResult {
@@ -174,6 +193,29 @@ export function planDuration(plan: Pick<EditPlan, 'segments'>): number {
 }
 
 export const FADE_SEC = 0.5
+
+/** where each segment starts on the finished video (crossfades overlap the previous part) */
+export function segmentStarts(plan: Pick<EditPlan, 'segments'>): number[] {
+  const starts: number[] = []
+  let length = 0
+  plan.segments.forEach((s, i) => {
+    const out = (s.endSec - s.startSec) / s.speed
+    if (i === 0) {
+      starts.push(0)
+      length = out
+      return
+    }
+    const t = s.transition === 'fade' ? Math.min(FADE_SEC, out * 0.5, length * 0.5) : 0
+    if (t >= 0.1) {
+      starts.push(length - t)
+      length += out - t
+    } else {
+      starts.push(length)
+      length += out
+    }
+  })
+  return starts
+}
 
 export function fmtClock(sec: number): string {
   const s = Math.max(0, Math.round(sec))

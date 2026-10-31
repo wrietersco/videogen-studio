@@ -157,6 +157,7 @@ declare global {
         understand: (id: string) => Promise<{ ok: boolean; error?: string }>
         estimate: (id: string) => Promise<UnderstandEstimate>
         plan: (id: string, req: PlanRequest) => Promise<{ ok: true; result: PlanResult } | { ok: false; error: string }>
+        tighten: (id: string, plan: EditPlan) => Promise<{ ok: true; result: { plan: EditPlan; removedSec: number; thumbs: string[] } } | { ok: false; error: string }>
         render: (id: string, plan: EditPlan, prompt: string) => Promise<{ ok: boolean; error?: string }>
         cancel: () => Promise<boolean>
         removeEdit: (id: string, editId: string) => Promise<boolean>

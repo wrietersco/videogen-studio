@@ -4,6 +4,7 @@ import { FADE_SEC, planDuration, shapeSize, type EditPlan, type FootageClip, typ
 import type { VideoSpec } from '../../shared/spec'
 import { writeWav } from '../audio/pcm'
 import { scoreMusic } from '../audio/score'
+import { buildAss, captionCues, clampToLength, filterPath } from './captions'
 import { ffmpegReason, runFfmpeg } from './ffmpeg'
 
 /**
@@ -56,7 +57,7 @@ export interface SegmentGraph {
 }
 
 /** the whole cut as one filter graph with outputs [outv] and [outa] */
-export function buildSegmentGraph(plan: EditPlan, clips: Map<string, FootageClip>): SegmentGraph {
+export function buildSegmentGraph(plan: EditPlan, clips: Map<string, FootageClip>, subtitleFile?: string): SegmentGraph {
   const { width: W, height: H } = shapeSize(plan.shape)
   const inputs: string[] = []
   const lines: string[] = []
@@ -112,7 +113,9 @@ export function buildSegmentGraph(plan: EditPlan, clips: Map<string, FootageClip
   }
   const edgeV = plan.fadeInOut ? `,fade=t=in:st=0:d=0.3,fade=t=out:st=${num(Math.max(0, length - 0.45))}:d=0.45` : ''
   const edgeA = plan.fadeInOut ? `,afade=t=in:st=0:d=0.3,afade=t=out:st=${num(Math.max(0, length - 0.45))}:d=0.45` : ''
-  lines.push(`[${cv}]null${edgeV}[outv]`, `[${ca}]anull${edgeA}[outa]`)
+  // text goes on before the fade, so it fades with the picture
+  const subs = subtitleFile ? `,subtitles=filename='${filterPath(subtitleFile)}'` : ''
+  lines.push(`[${cv}]null${subs}${edgeV}[outv]`, `[${ca}]anull${edgeA}[outa]`)
   return { inputs, filter: lines.join(';\n'), totalSec: length }
 }
 
@@ -147,7 +150,15 @@ export async function renderPlan(job: RenderJob): Promise<RenderOutcome> {
   rmSync(work, { recursive: true, force: true })
   mkdirSync(work, { recursive: true })
   try {
-    const graph = buildSegmentGraph(plan, byId)
+    let graph = buildSegmentGraph(plan, byId)
+    const cues = plan.captions === 'off' ? [] : clampToLength(captionCues(plan, byId), graph.totalSec)
+    const titles = clampToLength(plan.titles, graph.totalSec)
+    if (plan.captions !== 'off' && !cues.length) notes.push('There was no transcribed speech in the kept parts, so no captions were added. Let the AI listen to your videos first.')
+    if (cues.length || titles.length) {
+      const ass = join(work, 'text.ass')
+      writeFileSync(ass, buildAss(plan, cues, titles))
+      graph = buildSegmentGraph(plan, byId, ass)
+    }
     const scriptFile = join(work, 'graph.txt')
     writeFileSync(scriptFile, graph.filter)
     const videoOnly = join(work, 'video.mp4')
