@@ -45,7 +45,10 @@ browser     ──admin ID token──▶   /admin/*    superadmin API (vg_admin
    Run prints another, update that constant before building the app.
 4. Make yourself superadmin (sign up in the app or Firebase first):
    `gcloud auth application-default login` then `node scripts/add-admin.mjs you@example.com`.
-5. Open `<service URL>/console/` and sign in.
+5. Short console address (like Snap's `snapprojects-admin.web.app`): Firebase Hosting site
+   `videogen-admin` rewrites everything to this service — `cd hosting && firebase deploy --only hosting --project brain-3bc3a`.
+   Add `videogen-admin.web.app` to Firebase Auth → Authorized domains (done for brain-3bc3a).
+6. Open https://videogen-admin.web.app and sign in with Google.
 
 No `firestore.rules` change is needed: only this server (Admin SDK) touches
 `vg_*`, and the default deny already blocks every client.

@@ -1,0 +1,8 @@
+{
+  "hosting": {
+    "site": "videogen-admin",
+    "public": "public",
+    "redirects": [{ "source": "/", "destination": "/console/", "type": 302 }],
+    "rewrites": [{ "source": "**", "run": { "serviceId": "videogen-license-server", "region": "us-central1" } }]
+  }
+}
