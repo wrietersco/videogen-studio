@@ -16,8 +16,8 @@ import type { ManagedProvider, Route } from './route'
  */
 
 export const LICENSE_SERVER = (process.env.VIDEOGEN_LICENSE_SERVER ?? 'https://videogen-license-server-539536929675.us-central1.run.app').replace(/\/+$/, '')
-/** Firebase web API key for brain-3bc3a — public by design (it names the project, it grants nothing) */
-const FIREBASE_API_KEY = process.env.VIDEOGEN_FIREBASE_API_KEY ?? 'AIzaSyB-529nCnW_1XmiZroX6OweIfFIijw9aL0'
+/** brain-3bc3a's "Snap Projects Desktop" key: sign-in APIs only, no website restriction (the browser key only allows Snap's sites) */
+const FIREBASE_API_KEY = process.env.VIDEOGEN_FIREBASE_API_KEY ?? 'AIzaSyA9mG9hvX73vrypAH2mBMye0CF4hYpCC7s'
 /** local development against `npm run dev` in server/: tokens are minted here instead of by Firebase */
 const DEV_AUTH = process.env.VIDEOGEN_DEV_AUTH === '1' && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(LICENSE_SERVER)
 

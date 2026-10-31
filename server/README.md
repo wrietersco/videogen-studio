@@ -38,7 +38,8 @@ browser     ──admin ID token──▶   /admin/*    superadmin API (vg_admin
    (`printf '%s' "$KEY" | gcloud secrets create elevenlabs-live-key --data-file=-`).
    Grant the Cloud Run service account `roles/secretmanager.secretAccessor` on each.
 2. Firebase Console → Authentication: Email/Password is already on for Snap.
-3. Deploy: `cd server && npm install && FIREBASE_WEB_API_KEY=<web api key> ./deploy.sh`
+3. Deploy: `cd server && npm install && FIREBASE_WEB_API_KEY=<Snap Projects Desktop key> ./deploy.sh`
+   (not the Firebase browser key: it only allows Snap's websites as referrers)
    The URL must match `LICENSE_SERVER` in `src/main/license/session.ts`
    (`https://videogen-license-server-539536929675.us-central1.run.app`); if Cloud
    Run prints another, update that constant before building the app.
