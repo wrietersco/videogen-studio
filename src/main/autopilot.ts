@@ -76,6 +76,16 @@ export async function decideCreative(prompt: string, provider: LLMProvider): Pro
   }
 }
 
+/**
+ * The person chose the video's shape themselves: keep the agent's platform when
+ * it already has that shape (e.g. Reels for Tall), otherwise use theirs.
+ */
+export function honorShape(decision: CreativeDecision, chosen: PlatformId): CreativeDecision {
+  if (PLATFORM_PRESETS[decision.platform].aspectLabel === PLATFORM_PRESETS[chosen].aspectLabel) return decision
+  const [min, max] = PLATFORM_PRESETS[chosen].durationRange
+  return { ...decision, platform: chosen, durationHintSec: Math.max(min, Math.min(max, decision.durationHintSec)), reason: `${decision.reason} Shape ${PLATFORM_PRESETS[chosen].aspectLabel} kept as you chose.`.trim() }
+}
+
 const DOC_RE = /\b(histor\w*|documentar\w*|cinematic|film|story|stories|biograph\w*|myster\w*|war|empire|ancient|expedition|astronaut|desert|ocean|jungle|mountain|voyage|disaster|sinking|battle|journey|legend|nature|wildlife|city|landscape|portrait)\b/i
 const INFO_RE = /\b(explain\w*|how (does|do|to)|tips?|reasons?|steps?|compar\w+|vs\.?|stats?|percent\w*|data|science|health|money|saving|productivity|tutorial|guide|brain|memory|sleep)\b/i
 const MOTION_RE = /\b(walk\w*|run\w*|crash\w*|wave\w*|storm|erupt\w*|surge|surging|flying|fly|drive|driving|chase|explo\w+|flow\w*|spin\w*|cinematic|sunrise|sunset|fire|rain)\b/i

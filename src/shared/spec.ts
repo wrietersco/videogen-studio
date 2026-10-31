@@ -13,7 +13,8 @@ export const PlatformId = z.enum([
   'youtube-shorts',
   'instagram-reels',
   'instagram-feed',
-  'facebook-feed'
+  'facebook-feed',
+  'square'
 ])
 export type PlatformId = z.infer<typeof PlatformId>
 

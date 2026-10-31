@@ -14,7 +14,9 @@ import { DEFAULT_MEDIA, DEFAULT_SETTINGS, type KeyId, type Settings } from './se
 import { AssetLibrary } from './assets/library'
 import { registerAssetIpc, registerAssetScheme } from './assets/ipc'
 import { MediaRouter } from './media/router'
-import { applyAutopilot, decide, decideCreative } from './autopilot'
+import { applyAutopilot, decide, decideCreative, honorShape } from './autopilot'
+import { enhancePrompt, type EnhanceRequest } from './promptEnhancer'
+import { PromptTemplateStore, type TemplateInput } from './store/promptTemplates'
 import { ensureBrowser } from './rendererService/hyperframes'
 import { projectsDir, appRoot, libraryDir, builtinPackDir } from './paths'
 import { meter, readProjectUsage, type UsageRun } from './usage/meter'
@@ -54,6 +56,7 @@ const orchestrator = new Orchestrator(
 // ---------------- settings (encrypted key storage) ----------------
 
 const settingsPath = join(app.getPath('userData'), 'settings.json')
+const templates = new PromptTemplateStore(join(app.getPath('userData'), 'prompt-templates.json'))
 let settings: Settings = { ...DEFAULT_SETTINGS }
 /** autopilot's per-video settings; null outside a generate run (then the user's own settings apply) */
 let runSettings: Settings | null = null
@@ -314,11 +317,12 @@ function registerIpc(): void {
     return { meta, spec, html, dir: store.dir(id), thumbs: shown }
   })
 
-  ipcMain.handle('gen:generate', async (_e, opts: GenerateOptions) => {
+  ipcMain.handle('gen:generate', async (_e, opts: GenerateOptions & { shapeLocked?: boolean }) => {
     if (busy) return { ok: false, error: 'A generation job is already running' }
     return runJob('generate', null, async () => {
       try {
-        const creative = settings.autopilot ? await decideCreative(opts.prompt, providerRegistry.active()) : null
+        const decided = settings.autopilot ? await decideCreative(opts.prompt, providerRegistry.active()) : null
+        const creative = decided && opts.shapeLocked ? honorShape(decided, opts.platform) : decided
         if (creative) pipelineEvent({ stage: 'plan', status: 'creative', ...creative })
         const pilot = settings.autopilot ? decide({ prompt: opts.prompt, durationHintSec: creative?.durationHintSec ?? opts.durationHintSec, settings, imageAvailable: media.imageAvailable() }) : null
         if (pilot) runSettings = applyAutopilot(settings, pilot)
@@ -337,6 +341,23 @@ function registerIpc(): void {
       }
     })
   })
+  ipcMain.handle('prompt:enhance', async (_e, req: EnhanceRequest) => {
+    try {
+      return { ok: true, result: await enhancePrompt(providerRegistry.active(), req) }
+    } catch (err) {
+      return { ok: false, error: String((err as Error)?.message ?? err) }
+    }
+  })
+  ipcMain.handle('templates:list', () => templates.list())
+  ipcMain.handle('templates:save', (_e, t: TemplateInput) => {
+    try {
+      return { ok: true, template: templates.save(t) }
+    } catch (err) {
+      console.warn('[templates] save rejected', err)
+      return { ok: false, error: 'Give the template a name (up to 60 characters) and at least one section.' }
+    }
+  })
+  ipcMain.handle('templates:remove', (_e, id: string) => templates.remove(id))
   ipcMain.handle('gen:cancel', () => {
     orchestrator.cancel()
     return true

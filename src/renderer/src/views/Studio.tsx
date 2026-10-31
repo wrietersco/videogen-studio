@@ -1,19 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, type PipelineEvent, type PlatformId, type StyleFamily } from '../api'
+import { api, type EnhancedPrompt, type PipelineEvent, type PlatformId, type PromptTemplate, type StyleFamily } from '../api'
 import { ActivityFeed } from '../components/ActivityFeed'
+import { EnhanceReview, ShapePicker, TemplateBar } from '../components/PromptTools'
+import { PLATFORM_PRESETS } from '@shared/presets'
+import { templateSkeleton } from '@shared/promptTemplates'
 import { CostReceipt } from '../components/CostReceipt'
 import { ErrorCard } from '../components/friendly'
 import { estimateVideoCost, fmtUsd } from '@shared/pricing'
 import type { SettingsView } from '../api'
 
-/** shape = aspect ratio drawn as a tiny frame so people see the format, not "9:16" */
-const PLATFORMS: Array<{ id: PlatformId; label: string; emoji: string; hint: string; shape: 'tall' | 'square' | 'wide' }> = [
-  { id: 'tiktok', label: 'TikTok', emoji: '🎵', hint: 'Tall · punchy', shape: 'tall' },
-  { id: 'youtube-shorts', label: 'YT Shorts', emoji: '▶️', hint: 'Tall · snappy', shape: 'tall' },
-  { id: 'instagram-reels', label: 'Reels', emoji: '📸', hint: 'Tall · polished', shape: 'tall' },
-  { id: 'instagram-feed', label: 'Insta post', emoji: '🖼️', hint: 'Square · calm', shape: 'square' },
-  { id: 'youtube', label: 'YouTube', emoji: '📺', hint: 'Wide · explainer', shape: 'wide' },
-  { id: 'facebook-feed', label: 'Facebook', emoji: '👍', hint: 'Square · captions', shape: 'square' }
+/** the apps people know; each one implies a shape (see @shared/shapes) */
+const PLATFORMS: Array<{ id: PlatformId; label: string; emoji: string }> = [
+  { id: 'tiktok', label: 'TikTok', emoji: '🎵' },
+  { id: 'instagram-reels', label: 'Reels / Stories', emoji: '📸' },
+  { id: 'youtube-shorts', label: 'YT Shorts', emoji: '▶️' },
+  { id: 'youtube', label: 'YouTube', emoji: '📺' },
+  { id: 'instagram-feed', label: 'Insta post', emoji: '🖼️' },
+  { id: 'facebook-feed', label: 'Facebook', emoji: '👍' },
+  { id: 'square', label: 'X · LinkedIn · WhatsApp', emoji: '💬' }
 ]
 
 type StyleChoice = 'auto' | StyleFamily
@@ -60,6 +64,15 @@ type SceneCard = { kind: string; label: string; durationSec: number; thumb?: str
 export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor: () => void; onOpenSettings: () => void }) {
   const [prompt, setPrompt] = useState('')
   const [platform, setPlatform] = useState<PlatformId>('tiktok')
+  /** autopilot only: false = the agent picks the shape */
+  const [shapeLocked, setShapeLocked] = useState(false)
+  const [templates, setTemplates] = useState<PromptTemplate[]>([])
+  const [template, setTemplate] = useState<PromptTemplate | null>(null)
+  const [enhancing, setEnhancing] = useState(false)
+  const [enhanced, setEnhanced] = useState<{ n: number; result: EnhancedPrompt } | null>(null)
+  const [enhanceError, setEnhanceError] = useState<string | null>(null)
+  /** what the person typed before using an enhanced prompt, for one-click undo */
+  const [beforeEnhance, setBeforeEnhance] = useState<{ original: string; used: string } | null>(null)
   const [style, setStyle] = useState<StyleChoice>('auto')
   const [duration, setDuration] = useState(30)
   const [showMore, setShowMore] = useState(false)
@@ -78,6 +91,54 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
     api.getSettings().then(setCfg).catch(() => setError('Could not load your creative settings. Reopen Create to try again.'))
   }, [])
   const estimate = cfg ? estimateFor(cfg, duration) : null
+  useEffect(() => {
+    api.templates.list().then(setTemplates).catch(() => setTemplates([]))
+  }, [])
+  const auto = !!cfg?.autopilot
+  const platformLabel = PLATFORMS.find((p) => p.id === platform)?.label ?? PLATFORM_PRESETS[platform].label
+  const formatLabel = auto
+    ? shapeLocked ? `${platformLabel} ${PLATFORM_PRESETS[platform].aspectLabel}` : null
+    : [`${platformLabel} ${PLATFORM_PRESETS[platform].aspectLabel}`, `${duration}s`, style === 'auto' ? null : STYLES.find((x) => x.id === style)?.label].filter(Boolean).join(' · ')
+
+  const enhance = async () => {
+    if (!prompt.trim() || enhancing) return
+    setEnhancing(true)
+    setEnhanceError(null)
+    const res = await api
+      .enhancePrompt({
+        idea: prompt.trim(),
+        platform: auto && !shapeLocked ? undefined : platform,
+        styleHint: auto || style === 'auto' ? undefined : style,
+        durationSec: auto ? undefined : duration,
+        sections: template?.sections
+      })
+      .catch((err) => ({ ok: false as const, error: String(err?.message ?? err) }))
+    setEnhancing(false)
+    if (res.ok) setEnhanced((e) => ({ n: (e?.n ?? 0) + 1, result: res.result }))
+    else setEnhanceError(res.error)
+  }
+
+  const pickTemplate = (t: PromptTemplate | null) => {
+    setTemplate(t)
+    if (!t) return
+    if (t.platform) {
+      setPlatform(t.platform)
+      setShapeLocked(true)
+    }
+    if (t.style) setStyle(t.style)
+    if (t.durationSec) setDuration(t.durationSec)
+  }
+
+  const saveTemplate = async (name: string, sections: Array<{ label: string; hint: string }>, withFormat: boolean): Promise<string | null> => {
+    const res = await api.templates.save({
+      name,
+      sections,
+      ...(withFormat ? { platform, ...(auto ? {} : { durationSec: duration, ...(style === 'auto' ? {} : { style }) }) } : {})
+    })
+    if (!res.ok) return res.error
+    setTemplates(await api.templates.list())
+    return null
+  }
 
   useEffect(() => {
     unsubRef.current = api.onEvent((e) => {
@@ -157,7 +218,8 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
       prompt: prompt.trim(),
       platform,
       styleHint: style === 'auto' ? undefined : style,
-      durationHintSec: duration
+      durationHintSec: duration,
+      shapeLocked: !cfg.autopilot || shapeLocked
     })
     if (!res.ok) {
       setError(res.error ?? 'failed to start')
@@ -171,7 +233,8 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
 
   const step = done ? STEPS.length - 1 : stepFor(events)
   const started = running || events.length > 0
-  const wide = (creative?.platform ?? platform) === 'youtube'
+  const shown = PLATFORM_PRESETS[creative?.platform ?? platform]
+  const wide = shown.width > shown.height
 
   return (
     <div className="page-bg flex h-full">
@@ -193,7 +256,68 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) generate()
               }}
               placeholder="e.g. A fun 30-second video explaining why the sky is blue, for kids"
-              className="field mt-3 h-28 w-full resize-none p-4 text-[15px] leading-relaxed"
+              className={`field mt-3 w-full resize-y p-4 text-[15px] leading-relaxed ${prompt.split('\n').length > 4 ? 'h-56' : 'h-28'}`}
+            />
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                onClick={enhance}
+                disabled={!prompt.trim() || enhancing || running}
+                className="rounded-full border-2 border-grape/40 bg-grape-soft px-4 py-1.5 text-sm font-black text-grape transition-all hover:-translate-y-0.5 hover:border-grape active:scale-95 disabled:opacity-40 disabled:hover:translate-y-0"
+                title={prompt.trim() ? 'Rewrite your idea into a brief our video crew understands best — you review it first' : 'Type your idea first'}
+              >
+                {enhancing ? '⏳ Improving…' : '✨ Improve my prompt'}
+              </button>
+              <span className="text-xs text-ink/50">{enhancing ? 'Writing a clear brief from your idea…' : 'Turns a rough idea into a clear brief. You review it before anything is made.'}</span>
+              {beforeEnhance && prompt === beforeEnhance.used && (
+                <button onClick={() => { setPrompt(beforeEnhance.original); setBeforeEnhance(null) }} className="ml-auto text-xs font-bold text-grape hover:underline">
+                  ↩ Back to what I wrote
+                </button>
+              )}
+            </div>
+            {enhanceError && <div className="mt-2 rounded-xl bg-coral-soft px-3 py-2 text-xs font-semibold text-coral">⚠️ {enhanceError}</div>}
+            {template && (
+              <div className="slide-up mt-3 flex flex-wrap items-center gap-2 rounded-xl bg-sky-soft px-3 py-2 text-xs text-ink/75">
+                <span>
+                  {template.emoji} Using <strong>{template.name}</strong> — write your idea, then ✨ Improve fills in: {template.sections.map((x) => x.label).join(' · ')}
+                </span>
+                <button
+                  onClick={() => {
+                    if (!prompt.trim() || window.confirm('Replace what you wrote with the empty template?')) setPrompt(templateSkeleton(template))
+                  }}
+                  className="font-bold text-grape hover:underline"
+                >
+                  Fill it in myself
+                </button>
+                <button onClick={() => setTemplate(null)} className="ml-auto font-bold text-ink/50 hover:underline">
+                  Stop using it
+                </button>
+              </div>
+            )}
+            {enhanced && (
+              <EnhanceReview
+                key={enhanced.n}
+                result={enhanced.result}
+                formatLabel={formatLabel}
+                busy={enhancing}
+                onRetry={enhance}
+                onDismiss={() => setEnhanced(null)}
+                onUse={(text) => {
+                  setBeforeEnhance({ original: prompt, used: text })
+                  setPrompt(text)
+                  setEnhanced(null)
+                }}
+                onSaveTemplate={saveTemplate}
+              />
+            )}
+            <TemplateBar
+              templates={templates}
+              active={template}
+              onPick={pickTemplate}
+              onRemove={async (t) => {
+                await api.templates.remove(t.id)
+                if (template?.id === t.id) setTemplate(null)
+                setTemplates(await api.templates.list())
+              }}
             />
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <span className="text-xs font-bold text-ink/50">No idea? Try one:</span>
@@ -221,6 +345,17 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
               <div className="text-base font-black">🪄 Your agent chooses the creative settings</div>
               <p className="mt-2 text-sm leading-relaxed text-ink/65">Describe the audience, platform, length or style if they matter to you. Otherwise, the agent chooses them from your idea and selects the visuals for each scene.</p>
               <p className="mt-2 text-xs text-ink/55">Your selected AI providers and models stay the same. Generation can incur provider charges; the activity and receipt show what was used.</p>
+              <div className="mt-4 text-sm font-black">📐 What shape should the video be?</div>
+              <div className="mb-2 text-xs text-ink/55">Pick a shape or the app you'll post on — or let the agent decide.</div>
+              <ShapePicker
+                platform={platform}
+                apps={PLATFORMS}
+                agentOption={{ on: !shapeLocked, onPick: () => setShapeLocked(false) }}
+                onPlatform={(p) => {
+                  setPlatform(p)
+                  setShapeLocked(true)
+                }}
+              />
               {creative && <p className="mt-3 text-sm text-ink/75"><strong>Chosen for this video:</strong> {PLATFORMS.find((p) => p.id === creative.platform)?.label ?? creative.platform} · {creative.durationHintSec}s · {STYLES.find((s) => s.id === creative.styleHint)?.label ?? creative.styleHint}. {creative.reason}</p>}
               <button onClick={onOpenSettings} className="mt-3 text-xs font-bold text-grape hover:underline">Manage autonomous mode and AI settings</button>
             </section>
@@ -228,16 +363,9 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
           <>
           {/* 2 · platform */}
           <section className="card mt-4 p-5">
-            <StepTitle n={2} color="bg-berry" title="Where will you post it?" />
-            <div className="mt-3 grid grid-cols-6 gap-2">
-              {PLATFORMS.map((p) => (
-                <button key={p.id} onClick={() => setPlatform(p.id)} className={`tile flex flex-col items-center px-2 py-3 ${platform === p.id ? 'tile-on' : ''}`}>
-                  <ShapeIcon shape={p.shape} emoji={p.emoji} on={platform === p.id} />
-                  <div className="mt-2 text-sm font-bold">{p.label}</div>
-                  <div className="text-[11px] text-ink/50">{p.hint}</div>
-                </button>
-              ))}
-            </div>
+            <StepTitle n={2} color="bg-berry" title="What shape is your video?" />
+            <div className="mb-3 mt-1 text-xs text-ink/55">Pick a shape, or just pick the app you'll post on and we'll match it.</div>
+            <ShapePicker platform={platform} apps={PLATFORMS} onPlatform={(p) => setPlatform(p)} />
           </section>
 
           {/* 3 · vibe + length */}
@@ -337,7 +465,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
                         <div
                           key={i}
                           className={`pop-in relative overflow-hidden rounded-xl border-2 bg-paper transition-colors ${active ? 'border-berry shadow-[0_0_0_4px_rgba(255,79,154,0.2)]' : 'border-ink/10'}`}
-                          style={{ aspectRatio: wide ? '16/9' : '9/16', animationDelay: `${i * 110}ms` }}
+                          style={{ aspectRatio: `${shown.width}/${shown.height}`, animationDelay: `${i * 110}ms` }}
                         >
                           {s.thumb || s.plate ? (
                             <img src={s.thumb ?? s.plate} alt={`scene ${i + 1}`} className={`thumb-in h-full w-full object-cover ${s.thumb ? '' : 'opacity-70'}`} />
@@ -426,7 +554,9 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
               {!prompt.trim()
                 ? '👆 Type your idea above to get started'
                 : cfg?.autopilot
-                  ? '🧾 The agent chooses the format and media; actual provider charges appear as it works.'
+                  ? shapeLocked
+                    ? `🧾 Your ${PLATFORM_PRESETS[platform].aspectLabel} shape is kept; the agent chooses the rest. Actual provider charges appear as it works.`
+                    : '🧾 The agent chooses the format and media; actual provider charges appear as it works.'
                 : estimate
                   ? estimate.usd === 0
                     ? '🆓 Free with your current settings'
@@ -453,15 +583,6 @@ function StepTitle({ n, color, title }: { n: number; color: string; title: strin
     <div className="flex items-center gap-2.5">
       <span className={`step-dot ${color}`}>{n}</span>
       <span className="text-base font-black">{title}</span>
-    </div>
-  )
-}
-
-function ShapeIcon({ shape, emoji, on }: { shape: 'tall' | 'square' | 'wide'; emoji: string; on: boolean }) {
-  const size = shape === 'tall' ? 'h-11 w-7' : shape === 'square' ? 'h-9 w-8' : 'h-7 w-11'
-  return (
-    <div className="flex h-11 items-center">
-      <div className={`flex items-center justify-center rounded-md border-2 text-sm ${size} ${on ? 'border-grape bg-white' : 'border-ink/20 bg-paper'}`}>{emoji}</div>
     </div>
   )
 }

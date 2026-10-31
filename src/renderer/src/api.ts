@@ -10,8 +10,9 @@ import type { StockResult } from '../../main/media/stock'
 import type { KeyId, MediaSettings } from '../../main/settings'
 
 import type { UpdateInfo } from '../../main/updater'
+import type { EnhancedPrompt, PromptSection, PromptTemplate } from '@shared/promptTemplates'
 
-export type { UpdateInfo }
+export type { UpdateInfo, EnhancedPrompt, PromptSection, PromptTemplate }
 export type { UsageEntry, UsageRun, ProjectUsage, AssetKind, AssetMeta, AssetSource, StockResult, KeyId, MediaSettings }
 export type { PipelineEvent, ProjectMeta, ProviderId, ModelInfo, PlatformId, StyleFamily, VideoSpec }
 
@@ -42,6 +43,25 @@ export interface GenerateOptionsView {
   platform: VideoSpec['platform']
   styleHint?: VideoSpec['style']
   durationHintSec?: number
+  /** the person picked the shape; autopilot may change the app, never the shape */
+  shapeLocked?: boolean
+}
+
+export interface EnhanceRequestView {
+  idea: string
+  platform?: PlatformId
+  styleHint?: StyleFamily
+  durationSec?: number
+  sections?: PromptSection[]
+}
+
+export interface TemplateInputView {
+  name: string
+  emoji?: string
+  sections: PromptSection[]
+  platform?: PlatformId
+  style?: StyleFamily
+  durationSec?: number
 }
 
 export interface ProjectView {
@@ -63,6 +83,12 @@ declare global {
       }
       generate: (opts: GenerateOptionsView) => Promise<{ ok: boolean; error?: string }>
       cancel: () => Promise<boolean>
+      enhancePrompt: (req: EnhanceRequestView) => Promise<{ ok: true; result: EnhancedPrompt } | { ok: false; error: string }>
+      templates: {
+        list: () => Promise<PromptTemplate[]>
+        save: (t: TemplateInputView) => Promise<{ ok: true; template: PromptTemplate } | { ok: false; error: string }>
+        remove: (id: string) => Promise<boolean>
+      }
       busy: () => Promise<boolean>
       onEvent: (cb: (event: PipelineEvent) => void) => () => void
       onUsage: (cb: (p: { entry: UsageEntry; totalUsd: number; savedUsd: number }) => void) => () => void

@@ -13,6 +13,12 @@ const api = {
   },
   generate: (opts: unknown) => ipcRenderer.invoke('gen:generate', opts),
   cancel: () => ipcRenderer.invoke('gen:cancel'),
+  enhancePrompt: (req: unknown) => ipcRenderer.invoke('prompt:enhance', req),
+  templates: {
+    list: () => ipcRenderer.invoke('templates:list'),
+    save: (t: unknown) => ipcRenderer.invoke('templates:save', t),
+    remove: (id: string) => ipcRenderer.invoke('templates:remove', id)
+  },
   busy: () => ipcRenderer.invoke('gen:busy'),
   onEvent: (cb: (event: unknown) => void) => {
     const listener = (_e: unknown, payload: unknown) => cb(payload)

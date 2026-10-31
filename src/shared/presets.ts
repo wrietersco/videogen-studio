@@ -107,6 +107,20 @@ export const PLATFORM_PRESETS: Record<PlatformId, PlatformPreset> = {
     captionPosition: 'bottom',
     pacingBias: 'calm',
     notes: 'Sound-off viewing dominates; subtitles mandatory, calmer pacing.'
+  },
+  square: {
+    id: 'square',
+    label: 'Square post',
+    width: 1080,
+    height: 1080,
+    aspectLabel: '1:1',
+    durationRange: [10, 90],
+    defaultDuration: 30,
+    fps: 30,
+    safeZone: { top: 90, bottom: 150, left: 60, right: 60 },
+    captionPosition: 'bottom',
+    pacingBias: 'standard',
+    notes: 'Square feed post (Instagram grid, X, LinkedIn, WhatsApp); sound often off — strong captions, centred composition.'
   }
 }
 
