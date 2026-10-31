@@ -50,6 +50,43 @@ export async function isBlankReviewFrame(image: Buffer): Promise<boolean> {
   return channels.every(c => c.mean < 28 && c.stdev < 5)
 }
 
+/** The check reports either '#scene-3-…' ids or structural 'section:nth-of-type(3)' paths. */
+export function sceneNumberFromSelector(selector?: string): number | undefined {
+  const match = selector?.match(/^#scene-(\d+)\b/) ?? selector?.match(/\bsection:nth-of-type\((\d+)\)/)
+  return match ? Number(match[1]) : undefined
+}
+
+/**
+ * Small changes such as lamps switching off are easy to miss in 720px
+ * review frames. Measure the change between the first and last frames and
+ * crop the grid cell that changed most, so the reviewer sees real evidence.
+ */
+export async function motionCloseups(first: Buffer, last: Buffer): Promise<{ changedPercent: number; crops: Buffer[] } | undefined> {
+  const meta = await sharp(first).metadata()
+  const width = meta.width ?? 0, height = meta.height ?? 0
+  if (!width || !height) return undefined
+  const sw = 160, sh = Math.max(1, Math.round(160 * height / width))
+  const [a, b] = await Promise.all([first, last].map(f => sharp(f).resize(sw, sh, { fit: 'fill' }).removeAlpha().raw().toBuffer()))
+  if (a.length !== b.length) return undefined
+  const grid = 3, cells = new Array(grid * grid).fill(0)
+  let changed = 0
+  for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) {
+    const p = (y * sw + x) * 3
+    const delta = (Math.abs(a[p] - b[p]) + Math.abs(a[p + 1] - b[p + 1]) + Math.abs(a[p + 2] - b[p + 2])) / 3
+    if (delta < 18) continue
+    changed++
+    cells[Math.min(grid - 1, Math.floor(y * grid / sh)) * grid + Math.min(grid - 1, Math.floor(x * grid / sw))] += delta
+  }
+  const changedPercent = Math.round(changed / (sw * sh) * 1000) / 10
+  if (changedPercent < 0.2) return { changedPercent, crops: [] }
+  const best = cells.indexOf(Math.max(...cells))
+  const cw = width / grid, ch = height / grid
+  const left = Math.max(0, Math.round((best % grid) * cw - cw * 0.25)), top = Math.max(0, Math.round(Math.floor(best / grid) * ch - ch * 0.25))
+  const region = { left, top, width: Math.min(width - left, Math.round(cw * 1.5)), height: Math.min(height - top, Math.round(ch * 1.5)) }
+  const crops = await Promise.all([first, last].map(f => sharp(f).extract(region).resize({ width: 720 }).jpeg({ quality: 82 }).toBuffer()))
+  return { changedPercent, crops }
+}
+
 /** salvage the audio layer (clips + caption cues) embedded in an old composition */
 export function extractAudioLayer(html: string): AudioLayer {
   if (!html) return { clips: [], captions: [] }
@@ -688,7 +725,7 @@ export class Orchestrator {
               if (existsSync(platePath)) backgroundJpeg = await sharp(readFileSync(platePath)).resize({ width: 1080, height: 1920, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer()
             }
             if (backgroundVideo) backgroundJpeg = beforeImages[1]
-            const code = await authorCanvasCode(provider, current, isometricOnly ? `${prompt}\nAll scenes must be fully animated original 2D isometric motion graphics, with consistent perspective and visual identity. Draw all visuals using canvas shapes. Do not use photos, footage or generated imagery.` : prompt, sceneId, feedback, previousCode, backgroundJpeg, previousFrame, Boolean(backgroundVideo), continuityFrame, isometricOnly && index > 0 ? current.customVideos?.find(c => c.sceneId === current.scenes[index - 1].id)?.source : undefined)
+            const code = await authorCanvasCode(provider, current, isometricOnly ? `${prompt}\nAll scenes must be fully animated original 2D isometric motion graphics, with consistent perspective and visual identity. Draw all visuals using canvas shapes. Do not use photos, footage or generated imagery. Do not draw small words on signs, shopfronts or vehicles inside the artwork; show them with shapes, colours or simple icons. Show only this scene's beat: objects that only act in later scenes stay still or out of view.` : prompt, sceneId, feedback, previousCode, backgroundJpeg, previousFrame, Boolean(backgroundVideo), continuityFrame, isometricOnly && index > 0 ? current.customVideos?.find(c => c.sceneId === current.scenes[index - 1].id)?.source : undefined)
             previousCode = code
             const file = `assets/custom/${randomUUID()}.mp4`
             trialFile = join(dir, file)
@@ -706,8 +743,8 @@ export class Orchestrator {
           // their text contrast must not prevent reviewing the current scene.
           const unfinished = new Set(current.scenes.map((s, i) => ({ s, i })).filter(({ s }) => s.id !== sceneId && !candidate.customVideos?.some(c => c.sceneId === s.id)).map(({ i }) => i + 1))
           const remainingErrors = isometricOnly ? check.errors.filter(e => {
-            const match = e.category === 'contrast' && e.selector?.match(/^#scene-(\d+)-/)
-            return !match || !unfinished.has(Number(match[1]))
+            const scene = e.category === 'contrast' ? sceneNumberFromSelector(e.selector) : undefined
+            return scene === undefined || !unfinished.has(scene)
           }) : check.errors
           if (!check.ok && (!isometricOnly || remainingErrors.length || !check.errors.length)) throw new Error(`Render check: ${(remainingErrors.map(e => e.message).join('; ') || check.raw || 'check failed without diagnostics').slice(0, 500)}`)
           const candidateDir = join(dir, `.custom-candidate-${attempt}`)
@@ -716,12 +753,18 @@ export class Orchestrator {
           if (frames.length !== 3 || frames.some(f => !existsSync(f))) throw new Error('Could not render all candidate frames')
           const afterImages = await Promise.all(frames.map(f => sharp(readFileSync(f)).resize({ width: 720 }).jpeg({ quality: 80 }).toBuffer()))
           previousFrame = afterImages[1]
+          let motion: Awaited<ReturnType<typeof motionCloseups>>
+          try { motion = await motionCloseups(readFileSync(frames[0]), readFileSync(frames[2])) } catch { motion = undefined }
+          const closeupStart = 7 + (continuityFrame ? 1 : 0)
+          const motionEvidence = motion ? (motion.crops.length
+            ? `Measured: ${motion.changedPercent}% of the candidate frame changes between images 4 and 6. Images ${closeupStart} and ${closeupStart + 1} are enlarged close-ups of the region that changed most, at the early and late times. Small changes such as lights switching off, shutters moving or vehicles travelling are real animation: inspect the close-ups before concluding the candidate is static, and never call the frames unchanged when this measured change is present.`
+            : `Measured: only ${motion.changedPercent}% of the candidate frame changes between images 4 and 6.`) : undefined
           emit({ stage: 'custom', status: 'attempt', sceneIndex: index, attempt, phase: 'reviewing' })
           const verdict = await provider.generateJSON<{ useCandidate: boolean; score: number; originalScore: number; blockingIssue: boolean; reason: string }>({
             system: `${isometricOnly ? 'This is a code-only 2D isometric film: the candidate must clearly show animated isometric objects and processes, match the scene and maintain continuity. Ignore the generic original when evaluating the candidate; useCandidate should be true when the candidate is professional and meets the brief, even if the original looks better. ' : ''}You are the video editor. Images 1, 2 and 3 are the existing scene at early, middle and late times; images 4, 5 and 6 are the new custom illustration or coded animation at those same times. If image 7 is provided, it is the preceding approved scene and is the authoritative visual reference for any recurring emblem, character or product. The original scene in images 1-3 may be the inconsistent scene being repaired: do not treat its conflicting design as the established identity. Judge both original and candidate against image 7, and reject a candidate that changes that identity contrary to the brief. Preserve relevant moving footage and its subject; reject the candidate if footage or its motion is lost. The brief describes the whole film; assess the intended beat of this scene in the context of the surrounding scene plan rather than demanding that every scene contain every film-wide action. Compare them against the brief and narration. Rate both the original and candidate out of 10 using the same criteria; put the original rating in originalScore. Reserve 8 or above for professional, accurate and legible motion that communicates the scene. Set blockingIssue true for any inconsistent recurring identity when continuity is required, factual or scientific error, wrong subject, missing required content, clipped or overlapping labels, or illegible text, even when the candidate looks better than the original. ${isometricOnly ? 'Accept if it scores at least 8 and has no blocking issue, irrespective of the generic original.' : 'Accept only if it scores at least 8, has no blocking issue, and is clearly better than the original. Do not prefer a generic diagram over relevant photos or footage.'} Give concrete improvement notes.`,
-            prompt: JSON.stringify({ brief: prompt, scene, filmScenes: current.scenes, narration: current.narration.find(n => n.sceneId === sceneId)?.text, hasContinuityReference: Boolean(continuityFrame) }),
+            prompt: JSON.stringify({ brief: prompt, scene, filmScenes: current.scenes, narration: current.narration.find(n => n.sceneId === sceneId)?.text, hasContinuityReference: Boolean(continuityFrame), motionEvidence }),
             schemaName: 'CustomSceneReview', jsonSchema: { type: 'object', properties: { useCandidate: { type: 'boolean' }, score: { type: 'number' }, originalScore: { type: 'number' }, blockingIssue: { type: 'boolean' }, reason: { type: 'string' } }, required: ['useCandidate', 'score', 'originalScore', 'blockingIssue', 'reason'], additionalProperties: false },
-            images: [...beforeImages, ...afterImages, ...(continuityFrame ? [continuityFrame] : [])].map(image => ({ mimeType: 'image/jpeg', base64: image.toString('base64') })), temperature: 0.1, maxTokens: 500
+            images: [...beforeImages, ...afterImages, ...(continuityFrame ? [continuityFrame] : []), ...(motion?.crops ?? [])].map(image => ({ mimeType: 'image/jpeg', base64: image.toString('base64') })), temperature: 0.1, maxTokens: 500
           })
           feedback = String(verdict.reason ?? 'Improve the visual and match the scene more closely').slice(0, 600)
           if (verdict.useCandidate === true && verdict.blockingIssue === false && Number(verdict.score) >= 8) {
@@ -735,7 +778,14 @@ export class Orchestrator {
             break
           }
           const score = Number(verdict.score), originalScore = Number(verdict.originalScore)
-          if (verdict.blockingIssue === false && Number.isFinite(score) && Number.isFinite(originalScore) && score >= 1 && score <= 10 && originalScore >= 1 && originalScore <= 10 && score > originalScore && (!best || score > best.score)) {
+          // A code-only isometric film has no usable original to fall back to, so
+          // keep the strongest rendered attempt even if the reviewer found a flaw;
+          // otherwise one picky review would discard the whole film.
+          const keepable = isometricOnly
+            ? Number.isFinite(score) && score >= 6 && score <= 10
+            : verdict.blockingIssue === false && Number.isFinite(score) && Number.isFinite(originalScore) && score >= 1 && score <= 10 && originalScore >= 1 && originalScore <= 10 && score > originalScore
+          if (Number.isFinite(score)) feedback = `(score ${score}/10) ${feedback}`
+          if (keepable && (!best || score > best.score)) {
             if (best?.file && best.file !== trialFile) { try { unlinkSync(best.file) } catch {} }
             best = { spec: candidate, score, file: trialFile, reason: feedback, attempt, frame: afterImages[2] }
           }
@@ -745,7 +795,7 @@ export class Orchestrator {
         try { if (trialFile && trialFile !== best?.file && existsSync(trialFile)) unlinkSync(trialFile) } catch { /* a retained trial is harmless */ }
         this.store.appendEvent(projectId, `custom scene ${index + 1}: candidate ${attempt} rejected — ${feedback}`)
       }
-      if (!accepted && best && !this.cancelled && !isometricOnly) {
+      if (!accepted && best && !this.cancelled) {
         current = best.spec
         this.store.saveComposition(projectId, compose(current, vendorDir, fontsDir, audio))
         this.store.saveSpec(projectId, current)

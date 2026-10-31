@@ -107,6 +107,9 @@ const bytes=Uint8Array.from(atob('${childCode}'),c=>c.charCodeAt(0));
 const source=new TextDecoder().decode(bytes); let draw, error='';
 try { draw=new Function('ctx','t','w','h','assets',source) } catch(e) { error=String(e) }
 const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
+const probe=document.createElement('canvas').getContext('2d');const validColor=c=>{probe.fillStyle='#010203';probe.fillStyle=c;const a=probe.fillStyle;probe.fillStyle='#030201';probe.fillStyle=c;return a===probe.fillStyle};
+const origStop=CanvasGradient.prototype.addColorStop;
+CanvasGradient.prototype.addColorStop=function(o,c){let v=c;if(typeof v!=='string'||!validColor(v)){const m=/^#([0-9a-fA-F]+)/.exec(String(c));const hex=m?m[1]:'';const n=[8,6,4,3].find(k=>hex.length>=k);v=n?'#'+hex.slice(0,n):'rgba(0,0,0,0)'}return origStop.call(this,Math.min(1,Math.max(0,Number(o)||0)),v)};
 let background=null; const data='${background}';
 addEventListener('message',async e=>{ if(e.source!==parent || !e.data || e.data.kind!=='draw') return; try { if(error) throw Error(error); let frameBackground=background; if(e.data.background){frameBackground=new Image();await new Promise((resolve,reject)=>{frameBackground.onload=resolve;frameBackground.onerror=()=>reject(Error('Video frame could not be loaded'));frameBackground.src='data:image/jpeg;base64,'+e.data.background})} canvas.width=canvas.width;draw(ctx,e.data.time,canvas.width,canvas.height,{background:frameBackground});parent.postMessage({kind:'frame',id:e.data.id,png:canvas.toDataURL('image/png')},'*') } catch(err){ parent.postMessage({kind:'frame',id:e.data.id,error:String(err)},'*') } });
 if(data){background=new Image();background.onload=()=>parent.postMessage({kind:'ready'},'*');background.onerror=()=>{error='Background image could not be loaded';parent.postMessage({kind:'ready'},'*')};background.src='data:image/jpeg;base64,'+data}else parent.postMessage({kind:'ready'},'*');</script>`

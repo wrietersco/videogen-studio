@@ -170,9 +170,9 @@ export function buildThreeShowcase(
       g.fillStyle = rg; g.fillRect(x - r, y - r, r * 2, r * 2)
     }
     blob(120, 62, 130, 'rgba(255,255,255,A)', 0.95)   // softbox key
-    blob(396, 96, 110, '${accent}', 0.85)             // accent kicker
+    blob(396, 96, 110, '${hexToRgbaTemplate(accent)}', 0.85)             // accent kicker
     blob(58, 190, 100, 'rgba(150,200,255,A)', 0.55)   // cool rim
-    blob(300, 210, 120, '${accent}', 0.30)            // ground bounce tint
+    blob(300, 210, 120, '${hexToRgbaTemplate(accent)}', 0.30)            // ground bounce tint
     const envTex = new THREE.CanvasTexture(envCanvas)
     envTex.mapping = THREE.EquirectangularReflectionMapping
     const pmrem = new THREE.PMREMGenerator(renderer)
@@ -390,4 +390,13 @@ export function buildThreeParticles(
 
 function hexToLiteral(hex: string): string {
   return `0x${hex.replace('#', '').toUpperCase()}`
+}
+
+/** 'rgba(r,g,b,A)' template for the env-map blobs; a raw hex would have its own 'A' digits replaced. */
+export function hexToRgbaTemplate(hex: string): string {
+  let h = hex.replace('#', '')
+  if (/^[0-9a-f]{3}$/i.test(h)) h = h.split('').map(c => c + c).join('')
+  if (!/^[0-9a-f]{6}/i.test(h)) return 'rgba(255,255,255,A)'
+  const n = parseInt(h.slice(0, 6), 16)
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},A)`
 }
