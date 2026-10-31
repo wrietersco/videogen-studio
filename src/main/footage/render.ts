@@ -4,6 +4,8 @@ import { FADE_SEC, planDuration, shapeSize, type EditPlan, type FootageClip, typ
 import type { VideoSpec } from '../../shared/spec'
 import { writeWav } from '../audio/pcm'
 import { scoreMusic } from '../audio/score'
+import { subjectFocus } from './focus'
+import { probeFile } from './scan'
 import { buildAss, captionCues, clampToLength, filterPath } from './captions'
 import { ffmpegReason, runFfmpeg } from './ffmpeg'
 
@@ -78,7 +80,10 @@ export function buildSegmentGraph(plan: EditPlan, clips: Map<string, FootageClip
         `[bb${i}][fs${i}]overlay=(W-w)/2:(H-h)/2,${tail}[v${i}]`
       )
     } else {
-      lines.push(`[${i}:v:0]${setpts},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},${tail}[v${i}]`)
+      // keep the part of the picture where the subject is, rather than always the middle
+      const f = seg.focus
+      const at = f ? `:x='min(max(${num(f.x)}*iw-ow/2,0),iw-ow)':y='min(max(${num(f.y)}*ih-oh/2,0),ih-oh)'` : ''
+      lines.push(`[${i}:v:0]${setpts},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}${at},${tail}[v${i}]`)
     }
     if (seg.keepAudio && clip.hasAudio) {
       const gain = stemGainDb(clip)
@@ -124,6 +129,8 @@ export interface RenderJob {
   clips: FootageClip[]
   workDir: string
   outFile: string
+  /** makes an AI scene and returns the mp4 path (only needed when the plan has AI segments) */
+  makeClip?: (prompt: string, aspect: '9:16' | '16:9', sec: number) => Promise<string>
   isCancelled: () => boolean
   onProgress: (pct: number, phase: string) => void
 }
@@ -141,11 +148,44 @@ export class RenderCancelled extends Error {
 }
 
 export async function renderPlan(job: RenderJob): Promise<RenderOutcome> {
-  const { plan } = job
+  let plan = job.plan
   const byId = new Map(job.clips.map((c) => [c.id, c]))
-  const missing = plan.segments.find((s) => !byId.get(s.clipId) || byId.get(s.clipId)!.status !== 'ok' || !existsSync(byId.get(s.clipId)!.path))
+  const missing = plan.segments.find((s) => !s.ai && (!byId.get(s.clipId) || byId.get(s.clipId)!.status !== 'ok' || !existsSync(byId.get(s.clipId)!.path)))
   if (missing) throw new Error('One of the video files in this edit has been moved or deleted. Rescan the folders and plan again.')
   const notes: string[] = []
+  const target = shapeSize(plan.shape)
+  if (plan.segments.some((s) => s.ai)) {
+    if (!job.makeClip) throw new Error('Making AI scenes needs a Gemini key: add one in Settings, or remove the AI scenes from the edit.')
+    const aspect = target.height > target.width ? '9:16' : '16:9'
+    const done: PlanSegment[] = []
+    for (const [i, seg] of plan.segments.entries()) {
+      if (!seg.ai) {
+        done.push(seg)
+        continue
+      }
+      if (job.isCancelled()) throw new RenderCancelled()
+      job.onProgress(Math.min(20, 2 + i), `Making an AI scene (${done.filter((x) => x.ai).length + 1})`)
+      const file = await job.makeClip(seg.ai.prompt, aspect, Math.max(3, Math.min(10, Math.round(seg.endSec - seg.startSec))))
+      const probe = await probeFile(file)
+      if (!probe) throw new Error('The AI scene could not be read. Try again.')
+      const id = seg.clipId
+      byId.set(id, { id, path: file, name: 'AI scene', folder: '', sizeBytes: 0, mtimeMs: 0, durationSec: probe.durationSec, width: probe.width, height: probe.height, fps: probe.fps, hasAudio: false, shots: [], watched: true, listened: true, status: 'ok' })
+      done.push({ ...seg, startSec: 0, endSec: Math.min(Math.max(1, seg.endSec - seg.startSec), probe.durationSec), keepAudio: false })
+    }
+    plan = { ...plan, segments: done }
+  }
+  // work out where to crop each picture that has to change shape
+  if (plan.reframe !== 'blur') {
+    const segs: PlanSegment[] = []
+    for (const seg of plan.segments) {
+      const c = byId.get(seg.clipId)!
+      const differs = Math.abs(Math.log(c.width / Math.max(1, c.height) / (target.width / target.height))) > 0.05
+      if (!seg.focus && differs && !shouldBlur(plan, c, target)) segs.push({ ...seg, focus: await subjectFocus(c.path, seg.startSec, seg.endSec) })
+      else segs.push(seg)
+      if (job.isCancelled()) throw new RenderCancelled()
+    }
+    plan = { ...plan, segments: segs }
+  }
   const work = job.workDir
   rmSync(work, { recursive: true, force: true })
   mkdirSync(work, { recursive: true })

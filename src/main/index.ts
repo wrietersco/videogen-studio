@@ -55,7 +55,14 @@ const footage = new FootageService({
   provider: () => providerRegistry.active(),
   whisperKey: () => keyOf('openai'),
   chatModel: () => settings.models[settings.provider] || ({ openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash' } as Record<string, string>)[settings.provider],
-  emit: (e) => emit('footage:event', e)
+  emit: (e) => emit('footage:event', e),
+  aiReady: () => keyOf('gemini').length > 0,
+  makeClip: async (prompt, aspect, sec) => {
+    const asset = await media.clipToLibrary(prompt, aspect === '9:16' ? 'portrait' : 'landscape', { durationSec: sec })
+    const file = library.path(asset.id)
+    if (!file) throw new Error('The AI scene was made but could not be found in the library')
+    return file
+  }
 })
 const orchestrator = new Orchestrator(
   store,

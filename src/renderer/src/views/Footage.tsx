@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type EditPlan, type EditRecord, type FootageEvent, type FootageProject, type FootageSummary, type PlanRequest, type PlanResult, type UnderstandEstimate } from '../api'
 import { ShapePicker } from '../components/PromptTools'
 import { fmtUsd } from '@shared/pricing'
-import { fmtClock, planDuration, segmentStarts, MUSIC_MOODS, type MusicChoice, type PlanTitle } from '@shared/footage'
+import { AI_CLIP_MAX, AI_CLIP_MAX_SEC, AI_CLIP_MIN_SEC, AI_CLIP_USD_PER_SEC, aiClipsIn, aiCostUsd, fmtClock, planDuration, segmentStarts, MUSIC_MOODS, type MusicChoice, type PlanSegment, type PlanTitle } from '@shared/footage'
 import { shapeOf, type ShapeId } from '@shared/shapes'
 import type { PlatformId } from '@shared/spec'
 
@@ -164,11 +164,18 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
   const [captions, setCaptions] = useState<EditPlan['captions']>('off')
   const [wantTitles, setWantTitles] = useState(true)
   const [tighten, setTighten] = useState(false)
+  const [shortsN, setShortsN] = useState(1)
+  const [aiScenes, setAiScenes] = useState(false)
+  const [caps, setCaps] = useState<{ ai: boolean }>({ ai: false })
 
-  // the plan being reviewed and the render
-  const [planned, setPlanned] = useState<{ n: number; plan: EditPlan; thumbs: string[]; source: PlanResult['source']; prompt: string } | null>(null)
+  // the plans being reviewed (several when shorts were asked for) and the render
+  const [planned, setPlanned] = useState<{ n: number; shorts: Array<{ plan: EditPlan; thumbs: string[] }>; source: PlanResult['source']; prompt: string } | null>(null)
+  /** what each review currently holds, so "make all" uses the person's changes */
+  const edited = useRef<EditPlan[]>([])
+  /** plans still waiting their turn after "make all" */
+  const queue = useRef<{ plans: EditPlan[]; prompt: string }>({ plans: [], prompt: '' })
   const [renderPct, setRenderPct] = useState<{ pct: number; phase: string } | null>(null)
-  const [made, setMade] = useState<EditRecord | null>(null)
+  const [madeList, setMadeList] = useState<EditRecord[]>([])
   const planRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
@@ -182,6 +189,7 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
 
   useEffect(() => {
     void load()
+    api.footage.capabilities().then(setCaps)
     // opened while a scan or render is already running (e.g. straight after creating the project)
     api.footage.status().then((st) => {
       if (st?.projectId === id) {
@@ -190,6 +198,18 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
       }
     })
   }, [load, id])
+
+  /** start a render; right after another one ends the app may need a moment before it accepts the next */
+  const startRender = (plan: EditPlan, why: string, tries = 0) => {
+    void api.footage.render(id, plan, why).then((res) => {
+      if (res.ok) return
+      if (tries < 6) setTimeout(() => startRender(plan, why, tries + 1), 700)
+      else {
+        queue.current.plans = []
+        setError(res.error ?? 'Could not start')
+      }
+    })
+  }
 
   useEffect(
     () =>
@@ -212,14 +232,17 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
           if (e.status === 'started') {
             setJob('render')
             setRenderPct({ pct: 0, phase: 'Starting' })
-            setMade(null)
           } else if (e.status === 'progress') setRenderPct({ pct: e.pct ?? 0, phase: e.phase ?? '' })
           else {
             setJob(null)
             setRenderPct(null)
             if (e.status === 'failed') setError(e.error ?? 'The video could not be made')
             if (e.status === 'cancelled') setNotice('Stopped. Nothing was saved.')
-            if (e.status === 'done' && e.edit) setMade(e.edit)
+            if (e.status === 'done' && e.edit) setMadeList((l) => [...l, e.edit!])
+            // "make all": start the next one, or stop the line if this one did not finish
+            const next = e.status === 'done' ? queue.current.plans.shift() : undefined
+            if (e.status !== 'done') queue.current.plans = []
+            if (next) startRender(next, queue.current.prompt)
             void load()
           }
         }
@@ -247,13 +270,15 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
   const makePlan = async () => {
     setError(null)
     setNotice(null)
-    setMade(null)
+    setMadeList([])
+    queue.current.plans = []
     setJob('plan')
     const music: PlanRequest['music'] = musicMode === 'editor' ? 'auto-mood' : musicMode === 'none' ? { mode: 'none', mood: 'upbeat' } : { mode: 'file', mood: 'upbeat', file: musicFile ?? undefined }
-    const res = await api.footage.plan(id, { prompt: prompt.trim(), shape, durationSec: seconds || undefined, music, loudness, captions, titles: wantTitles, tighten })
+    const res = await api.footage.plan(id, { prompt: prompt.trim(), shape, durationSec: seconds || undefined, music, loudness, captions, titles: wantTitles, tighten, shorts: shortsN, aiClips: aiScenes && caps.ai })
     setJob(null)
     if (!res.ok) return setError(res.error)
-    setPlanned((old) => ({ n: (old?.n ?? 0) + 1, plan: res.result.plan, thumbs: res.result.thumbs, source: res.result.source, prompt: prompt.trim() }))
+    setPlanned((old) => ({ n: (old?.n ?? 0) + 1, shorts: res.result.shorts ?? [{ plan: res.result.plan, thumbs: res.result.thumbs }], source: res.result.source, prompt: prompt.trim() }))
+    edited.current = (res.result.shorts ?? [{ plan: res.result.plan }]).map((x) => x.plan)
     setTimeout(() => planRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
   }
 
@@ -459,6 +484,30 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
           </div>
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-sm font-bold">How many videos?</span>
+            <Chip on={shortsN === 1} onClick={() => setShortsN(1)}>
+              🎬 One video
+            </Chip>
+            <Chip on={shortsN === 3} onClick={() => setShortsN(3)}>
+              ✂️ 3 shorts
+            </Chip>
+            <Chip on={shortsN === 5} onClick={() => setShortsN(5)}>
+              ✂️ 5 shorts
+            </Chip>
+            <span className="text-xs text-ink/50">{shortsN > 1 ? 'The best separate moments, each one a video that stands on its own. “How long” above is for each.' : 'Pick several to turn one long recording into many shorts.'}</span>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-sm font-bold">AI scenes</span>
+            <Chip on={aiScenes && caps.ai && shortsN === 1} onClick={() => caps.ai && shortsN === 1 && setAiScenes((v) => !v)}>
+              ✨ {aiScenes && caps.ai && shortsN === 1 ? 'Add where footage is missing' : 'Footage only'}
+            </Chip>
+            <span className="text-xs text-ink/50">
+              {!caps.ai ? 'Needs a Gemini key in Settings.' : shortsN > 1 ? 'Available when making one video.' : `Made by AI, about $${(AI_CLIP_USD_PER_SEC * 5).toFixed(2)} for a 5-second scene. You see the cost before anything is made.`}
+            </span>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
             <span className="mr-1 text-sm font-bold">Subtitles</span>
             <Chip on={captions === 'off'} onClick={() => setCaptions('off')}>
               🚫 None
@@ -496,14 +545,42 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
         {/* 3 · plan */}
         {planned && (
           <div ref={planRef}>
-            <PlanReview
-              key={planned.n}
-              project={project}
-              initial={planned}
-              busy={busy}
-              onReplan={makePlan}
-              onMake={(plan) => run(() => api.footage.render(id, plan, planned.prompt))}
-            />
+            {planned.shorts.map((sh, i) => (
+              <PlanReview
+                key={`${planned.n}-${i}`}
+                project={project}
+                initial={{ plan: sh.plan, thumbs: sh.thumbs, source: planned.source }}
+                heading={planned.shorts.length > 1 ? `Short ${i + 1} of ${planned.shorts.length}` : undefined}
+                canAi={caps.ai && planned.shorts.length === 1}
+                busy={busy}
+                onChange={(plan) => {
+                  edited.current[i] = plan
+                }}
+                onReplan={makePlan}
+                onMake={(plan) => {
+                  setMadeList([])
+                  void run(() => api.footage.render(id, plan, planned.prompt))
+                }}
+              />
+            ))}
+            {planned.shorts.length > 1 && (
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  disabled={busy}
+                  onClick={() => {
+                    const all = planned.shorts.map((sh, i) => edited.current[i] ?? sh.plan).filter((p) => p.segments.length)
+                    if (!all.length) return
+                    setMadeList([])
+                    queue.current = { plans: all.slice(1), prompt: planned.prompt }
+                    startRender(all[0], planned.prompt)
+                  }}
+                  className="btn-primary !px-6 !py-3"
+                >
+                  🎬 Make all {planned.shorts.length} shorts
+                </button>
+                <span className="text-xs text-ink/50">They are made one after another.</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -524,24 +601,31 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
           </section>
         )}
 
-        {made && (
+        {madeList.length > 0 && (
           <section className="pop-in mt-4 rounded-3xl border-2 border-mint/40 bg-mint-soft p-5">
             <div className="flex items-center gap-3">
               <div className="text-4xl">🎉</div>
               <div className="min-w-0">
-                <div className="text-lg font-black">Your video is ready!</div>
-                <div className="truncate text-xs text-ink/55">
-                  “{made.title}” · {fmtClock(made.durationSec)} · {made.shape}
-                </div>
+                <div className="text-lg font-black">{madeList.length > 1 ? `${madeList.length} videos are ready!` : 'Your video is ready!'}</div>
               </div>
             </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button onClick={() => api.footage.play(made.file)} className="btn-primary !px-5 !py-2.5 !text-sm">
-                ▶ Watch it
-              </button>
-              <button onClick={() => api.footage.reveal(made.file)} className="btn-ghost !py-2.5">
-                📁 Show the file
-              </button>
+            <div className="mt-3 space-y-2">
+              {madeList.map((made) => (
+                <div key={made.id} className="flex flex-wrap items-center gap-3 rounded-xl bg-white/70 px-3 py-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-bold">{made.title}</div>
+                    <div className="truncate text-xs text-ink/55">
+                      {fmtClock(made.durationSec)} · {made.shape}
+                    </div>
+                  </div>
+                  <button onClick={() => api.footage.play(made.file)} className="btn-primary !px-4 !py-1.5 !text-sm">
+                    ▶ Watch it
+                  </button>
+                  <button onClick={() => api.footage.reveal(made.file)} className="btn-ghost !py-1.5">
+                    📁 Show the file
+                  </button>
+                </div>
+              ))}
             </div>
           </section>
         )}
@@ -590,18 +674,25 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
 function PlanReview({
   project,
   initial,
+  heading,
+  canAi,
   busy,
+  onChange,
   onReplan,
   onMake
 }: {
   project: FootageProject
   initial: { plan: EditPlan; thumbs: string[]; source: PlanResult['source'] }
+  heading?: string
+  canAi: boolean
   busy: boolean
+  onChange: (plan: EditPlan) => void
   onReplan: () => void
   onMake: (plan: EditPlan) => void
 }) {
   const [plan, setPlan] = useState(initial.plan)
   const [thumbs, setThumbs] = useState(initial.thumbs)
+  useEffect(() => onChange(plan), [plan]) // eslint-disable-line react-hooks/exhaustive-deps
   const clips = new Map(project.clips.map((c) => [c.id, c]))
   const total = planDuration(plan)
   const patch = (i: number, change: Partial<EditPlan['segments'][number]>) => setPlan((p) => ({ ...p, segments: p.segments.map((s, j) => (j === i ? { ...s, ...change } : s)) }))
@@ -617,6 +708,13 @@ function PlanReview({
     setThumbs((t) => t.filter((_, j) => j !== i))
   }
   const [tightening, setTightening] = useState<string | null>(null)
+  const aiCount = aiClipsIn(plan)
+  const aiCost = aiCostUsd(plan)
+  const addAi = () => {
+    if (aiCount >= AI_CLIP_MAX) return
+    setPlan((p) => ({ ...p, segments: [...p.segments, { clipId: `ai-${aiClipsIn(p) + 1}`, startSec: 0, endSec: 5, speed: 1, keepAudio: false, transition: 'cut', why: 'Made by AI', ai: { prompt: '' } }] }))
+    setThumbs((t) => [...t, ''])
+  }
   const split = (i: number) => {
     const s = plan.segments[i]
     const mid = Math.round(((s.startSec + s.endSec) / 2) * 10) / 10
@@ -626,7 +724,7 @@ function PlanReview({
   }
   const tightenNow = async () => {
     setTightening(LISTENING)
-    const res = await api.footage.tighten(project.id, plan)
+    const res = await api.footage.tighten(project.id, cleanPlan(plan))
     if (!res.ok) return setTightening(`⚠️ ${res.error}`)
     setPlan(res.result.plan)
     setThumbs(res.result.thumbs)
@@ -645,7 +743,7 @@ function PlanReview({
   return (
     <section className="card slide-up mt-4 p-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <StepTitle n={3} color="bg-berry" title="Review the edit" />
+        <StepTitle n={3} color="bg-berry" title={heading ? `Review: ${heading}` : 'Review the edit'} />
         <div className="text-xs text-ink/55">
           {initial.source === 'ai' ? '🤖 Chosen by the AI editor' : '📐 Spread evenly across your footage'} · change anything, then make it
         </div>
@@ -669,7 +767,7 @@ function PlanReview({
             <div
               key={i}
               style={{ flexGrow: Math.max(0.2, (s.endSec - s.startSec) / s.speed), flexBasis: 0, backgroundImage: thumbs[i] ? `url(${thumbs[i]})` : undefined }}
-              className={`relative min-w-[6px] bg-cover bg-center ${s.keepAudio ? '' : 'opacity-70'}`}
+              className={`relative min-w-[6px] bg-cover bg-center ${s.ai ? 'bg-grape/40' : s.keepAudio ? '' : 'opacity-70'}`}
               title={`${i + 1}. ${clips.get(s.clipId)?.name ?? ''} · ${fmtClock(starts[i] ?? 0)}`}
             >
               <span className="absolute left-0.5 top-0.5 rounded bg-black/55 px-1 text-[9px] font-black text-white">{i + 1}</span>
@@ -692,6 +790,45 @@ function PlanReview({
         {plan.segments.map((s, i) => {
           const clip = clips.get(s.clipId)
           const max = clip?.durationSec ?? s.endSec
+          if (s.ai) {
+            return (
+              <div key={`${s.clipId}-${i}`} className="flex flex-wrap items-center gap-3 rounded-xl border-2 border-grape/30 bg-grape-soft/40 p-2">
+                <span className="w-5 text-center text-xs font-black text-ink/40">{i + 1}</span>
+                <div className="flex h-14 w-24 shrink-0 items-center justify-center rounded-lg bg-grape/15 text-xs font-black text-grape">✨ AI scene</div>
+                <textarea
+                  value={s.ai.prompt}
+                  onChange={(e) => patch(i, { ai: { prompt: e.target.value.slice(0, 600) } })}
+                  placeholder="Describe the scene: what we see and how the camera moves"
+                  className="field min-w-[200px] flex-1 resize-y px-2 py-1 text-xs"
+                  rows={2}
+                  aria-label="What the AI scene shows"
+                />
+                <select value={Math.round(s.endSec - s.startSec)} onChange={(e) => patch(i, { endSec: Number(e.target.value) })} className="field px-1.5 py-1 text-xs" aria-label="Length of the AI scene">
+                  {Array.from({ length: AI_CLIP_MAX_SEC - AI_CLIP_MIN_SEC + 1 }, (_, k) => AI_CLIP_MIN_SEC + k).map((v) => (
+                    <option key={v} value={v}>
+                      {v} seconds · ${(v * AI_CLIP_USD_PER_SEC).toFixed(2)}
+                    </option>
+                  ))}
+                </select>
+                {i > 0 && (
+                  <button onClick={() => patch(i, { transition: s.transition === 'fade' ? 'cut' : 'fade' })} className={`rounded-full border-2 px-2 py-0.5 text-[11px] font-bold ${s.transition === 'fade' ? 'border-sky bg-sky-soft' : 'border-ink/15 bg-white text-ink/50'}`}>
+                    {s.transition === 'fade' ? '🌫️ Fade' : '✂️ Cut'}
+                  </button>
+                )}
+                <div className="flex gap-0.5">
+                  <button onClick={() => move(i, -1)} disabled={i === 0} className="rounded px-1.5 text-ink/50 hover:bg-ink/5 disabled:opacity-25" aria-label="Move up">
+                    ↑
+                  </button>
+                  <button onClick={() => move(i, 1)} disabled={i === plan.segments.length - 1} className="rounded px-1.5 text-ink/50 hover:bg-ink/5 disabled:opacity-25" aria-label="Move down">
+                    ↓
+                  </button>
+                  <button onClick={() => remove(i)} className="rounded px-1.5 text-ink/40 hover:bg-coral-soft hover:text-coral" aria-label="Remove this part">
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )
+          }
           return (
             <div key={`${s.clipId}-${i}`} className="flex flex-wrap items-center gap-3 rounded-xl border-2 border-ink/10 bg-paper p-2">
               <span className="w-5 text-center text-xs font-black text-ink/40">{i + 1}</span>
@@ -842,9 +979,14 @@ function PlanReview({
       </div>
 
       <div className="mt-4 flex flex-wrap gap-2">
-        <button onClick={() => onMake(plan)} disabled={busy || !plan.segments.length} className="btn-primary !px-6 !py-3">
-          🎬 Make this video
+        <button onClick={() => onMake(cleanPlan(plan))} disabled={busy || !plan.segments.length || plan.segments.some((x) => x.ai && x.ai.prompt.trim().length < 3)} className="btn-primary !px-6 !py-3">
+          🎬 Make this video{aiCount > 0 ? ` · AI scenes about $${aiCost.toFixed(2)}` : ''}
         </button>
+        {canAi && aiCount < AI_CLIP_MAX && (
+          <button onClick={addAi} disabled={busy} className="btn-ghost !py-3">
+            ✨ Add an AI scene
+          </button>
+        )}
         <button onClick={onReplan} disabled={busy} className="btn-ghost !py-3">
           🔁 Plan again
         </button>
@@ -872,6 +1014,11 @@ function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; chi
   )
 }
 
+/** AI scenes need unique ids in order (parts may have been moved or removed) */
+const cleanPlan = (plan: EditPlan): EditPlan => {
+  let n = 0
+  return { ...plan, segments: plan.segments.map((s): PlanSegment => (s.ai ? { ...s, clipId: `ai-${++n}`, ai: { prompt: s.ai.prompt.trim() } } : s)) }
+}
 const LISTENING = 'Listening for silent pauses…'
 const folderName = (p?: string) => (p ? p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p : '')
 const clampNum = (v: string, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round((parseFloat(v) || 0) * 10) / 10))

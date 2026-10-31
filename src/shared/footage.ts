@@ -104,7 +104,11 @@ export const PlanSegment = z.object({
   keepAudio: z.boolean().default(true),
   /** how this shot joins the one before it */
   transition: z.enum(['cut', 'fade']).default('cut'),
-  why: z.string().default('')
+  why: z.string().default(''),
+  /** a scene the AI makes instead of using footage; clipId is then 'ai-<n>' and endSec is the length asked for */
+  ai: z.object({ prompt: z.string().min(3).max(600) }).optional(),
+  /** where the subject is (0-1 across, 0-1 down), used when the picture has to be cropped; absent = worked out at render */
+  focus: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) }).optional()
 })
 export type PlanSegment = z.infer<typeof PlanSegment>
 
@@ -153,11 +157,26 @@ export interface PlanRequest {
   music: MusicChoice | 'auto-mood'
   loudness?: EditPlan['loudness']
   captions?: EditPlan['captions']
+  /** let the editor add AI-made scenes where the footage has nothing for the brief (costs money) */
+  aiClips?: boolean
+  /** cut this many separate shorts from the footage instead of one video (1 = one video) */
+  shorts?: number
   /** add on-screen titles (the editor writes them); false = none */
   titles?: boolean
   /** cut out silent pauses in the parts where people speak */
   tighten?: boolean
 }
+
+/** limits for scenes the AI makes (each costs real money) */
+export const AI_CLIP_MAX = 4
+export const AI_CLIP_MIN_SEC = 3
+export const AI_CLIP_MAX_SEC = 8
+/** typical price of a generated second of video, for the estimate shown before rendering */
+export const AI_CLIP_USD_PER_SEC = 0.1
+export const MAX_SHORTS = 6
+
+export const aiClipsIn = (plan: Pick<EditPlan, 'segments'>): number => plan.segments.filter((s) => s.ai).length
+export const aiCostUsd = (plan: Pick<EditPlan, 'segments'>): number => plan.segments.filter((s) => s.ai).reduce((a, s) => a + (s.endSec - s.startSec) * AI_CLIP_USD_PER_SEC, 0)
 
 export interface PlanResult {
   plan: EditPlan
@@ -165,6 +184,8 @@ export interface PlanResult {
   source: 'ai' | 'basic'
   /** one small picture per segment (data URLs), same order */
   thumbs: string[]
+  /** present when several shorts were asked for: one plan each (plan/thumbs above are the first) */
+  shorts?: Array<{ plan: EditPlan; thumbs: string[] }>
 }
 
 export interface UnderstandEstimate {

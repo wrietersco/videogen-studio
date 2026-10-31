@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { planDuration, type EditPlan, type EditRecord, type FootageClip, type FootageEvent, type FootageProject, type PlanRequest, type PlanResult, type UnderstandEstimate } from '../../shared/footage'
 import type { LLMProvider } from '../providers/types'
 import { clampToLength } from './captions'
-import { planEdit } from './planner'
+import { planEdit, planShorts } from './planner'
 import { renderPlan, RenderCancelled } from './render'
 import { clipIdFor, frameBuffer, listVideoFiles, scanClip } from './scan'
 import { tightenPlan } from './silence'
@@ -18,6 +18,10 @@ export interface FootageDeps {
   whisperKey: () => string
   chatModel: () => string | undefined
   emit: (e: FootageEvent) => void
+  /** makes an AI scene (Gemini) and returns the mp4 path; absent = no AI scenes */
+  makeClip?: (prompt: string, aspect: '9:16' | '16:9', sec: number) => Promise<string>
+  /** is an AI video key set up right now */
+  aiReady?: () => boolean
 }
 
 export class FootageCancelled extends Error {
@@ -165,7 +169,16 @@ export class FootageService {
 
   async plan(projectId: string, req: PlanRequest): Promise<PlanResult> {
     const p = this.project(projectId)
-    const outcome = await planEdit(this.d.provider(), p.clips, req)
+    if (req.shorts && req.shorts > 1) {
+      const many = await planShorts(this.d.provider(), p.clips, req)
+      const shorts: NonNullable<PlanResult['shorts']> = []
+      for (const plan of many.plans) {
+        const t = req.tighten ? (await this.tighten(projectId, plan)).plan : plan
+        shorts.push({ plan: t, thumbs: await this.thumbs(p.clips, t) })
+      }
+      return { plan: shorts[0].plan, source: many.source, thumbs: shorts[0].thumbs, shorts }
+    }
+    const outcome = await planEdit(this.d.provider(), p.clips, { ...req, aiClips: Boolean(req.aiClips && this.aiOn()) })
     const tight = req.tighten ? await this.tighten(projectId, outcome.plan) : null
     const plan = tight?.plan ?? outcome.plan
     return { plan, source: outcome.source, thumbs: await this.thumbs(p.clips, plan) }
@@ -201,6 +214,15 @@ export class FootageService {
     return out
   }
 
+  /** what this install can do beyond editing footage */
+  capabilities(): { ai: boolean } {
+    return { ai: this.aiOn() }
+  }
+
+  private aiOn(): boolean {
+    return Boolean(this.d.makeClip && (this.d.aiReady?.() ?? true))
+  }
+
   posters(projectId: string): Record<string, string> {
     const p = this.project(projectId)
     const dir = this.d.store.dir(projectId)
@@ -223,6 +245,7 @@ export class FootageService {
         clips: p.clips,
         workDir: join(this.d.store.dir(projectId), 'work'),
         outFile: file,
+        makeClip: this.d.makeClip,
         isCancelled: () => this.cancelled,
         onProgress
       })

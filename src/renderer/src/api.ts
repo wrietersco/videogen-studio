@@ -144,6 +144,7 @@ declare global {
       }
       footage: {
         status: () => Promise<{ projectId: string; kind: 'scan' | 'understand' | 'render' } | null>
+        capabilities: () => Promise<{ ai: boolean }>
         list: () => Promise<FootageSummary[]>
         get: (id: string) => Promise<FootageProject | null>
         posters: (id: string) => Promise<Record<string, string>>

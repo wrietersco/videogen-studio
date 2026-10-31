@@ -713,21 +713,21 @@ export class MediaRouter {
   async clipToLibrary(
     prompt: string,
     orientation: 'portrait' | 'landscape' | 'square' = 'landscape',
-    opts: { fresh?: boolean; projectId?: string; /** JPEG of the frame this shot starts from */ image?: Buffer } = {}
+    opts: { fresh?: boolean; projectId?: string; /** JPEG of the frame this shot starts from */ image?: Buffer; /** 3-10 whole seconds; absent = the model's default length */ durationSec?: number } = {}
   ): Promise<AssetMeta> {
     if (!this.omni.configured()) throw new Error('Add a Gemini key in Settings to make video clips')
     const lib = this.d.library
     const aspect = orientation === 'portrait' ? '9:16' : '16:9'
     const model = this.clipModel()
     const from = opts.image ? createHash('sha1').update(opts.image).digest('hex').slice(0, 8) : ''
-    const key = createHash('sha1').update(`${model}|${aspect}|${prompt}|${from}`).digest('hex').slice(0, 16)
+    const key = createHash('sha1').update(`${model}|${aspect}|${prompt}|${from}${opts.durationSec ? `|${opts.durationSec}s` : ''}`).digest('hex').slice(0, 16)
     const hit = this.reuse && !opts.fresh ? lib.findByKey('video', key) : null
     if (hit) {
       if (opts.projectId) lib.markUsed(hit.id, opts.projectId)
       meter.record({ kind: 'video', provider: 'gemini', model, usage: { outputTokens: (hit.durationSec ?? 8) * 5792 }, saved: true, note: `reused ${hit.id}` })
       return hit
     }
-    const { video, usd } = await this.omni.clip({ prompt, aspect, model, image: opts.image && { mimeType: 'image/jpeg', base64: opts.image.toString('base64') } })
+    const { video, usd } = await this.omni.clip({ prompt, aspect, model, ...(opts.durationSec ? { durationSec: opts.durationSec } : {}), image: opts.image && { mimeType: 'image/jpeg', base64: opts.image.toString('base64') } })
     const a = lib.add(video, '.mp4', {
       kind: 'video',
       source: 'generated',

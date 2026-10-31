@@ -85,6 +85,7 @@ const api = {
   },
   footage: {
     status: () => ipcRenderer.invoke('footage:status'),
+    capabilities: () => ipcRenderer.invoke('footage:capabilities'),
     list: () => ipcRenderer.invoke('footage:list'),
     get: (id: string) => ipcRenderer.invoke('footage:get', id),
     posters: (id: string) => ipcRenderer.invoke('footage:posters', id),

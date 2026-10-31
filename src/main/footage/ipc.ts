@@ -64,6 +64,7 @@ export function registerFootageIpc(d: FootageIpcDeps): void {
       })
 
   ipcMain.handle('footage:status', () => current)
+  ipcMain.handle('footage:capabilities', () => d.service.capabilities())
   ipcMain.handle('footage:list', () => d.store.list())
   ipcMain.handle('footage:get', (_e, id: string): FootageProject | null => d.store.read(String(id)))
   ipcMain.handle('footage:posters', (_e, id: string) => {
