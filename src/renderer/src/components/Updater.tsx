@@ -4,8 +4,9 @@ import { fmtBytes } from './ui'
 
 /**
  * Updates from GitHub. `banner` mode checks quietly at launch and only shows
- * itself when a newer version exists; `card` mode (Settings) always shows the
- * current version with a "Check for updates" button.
+ * itself when a newer version exists; `card` mode (Settings, and the welcome
+ * screen so people can update before signing in) always shows the current
+ * version with a "Check for updates" button, and checks once on its own.
  */
 
 type Phase = 'idle' | 'checking' | 'downloading' | 'ready' | 'installing'
@@ -40,6 +41,7 @@ export default function Updater({ mode }: { mode: 'banner' | 'card' }) {
         off()
       }
     }
+    void check(true)
     return off
   }, [])
 

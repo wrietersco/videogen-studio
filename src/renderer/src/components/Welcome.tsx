@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_POLICY, PLAN_IDS, type PlanId, type PlanPolicy } from '@shared/plans'
 import { api, type AccountResult, type AccountState } from '../api'
+import Updater from './Updater'
 
 /**
  * The welcome screen people see before signing in: what the app makes, the
@@ -343,8 +344,10 @@ export function AccountGate({ status, onDone, onSkip }: { status: AccountState; 
               ))}
             </div>
           </div>
-          <div className="pop-in">
+          <div className="pop-in space-y-3">
             <AuthCard status={status} onDone={onDone} onSkip={onSkip} />
+            {/* updating never needs an account */}
+            <Updater mode="card" />
           </div>
         </section>
 
