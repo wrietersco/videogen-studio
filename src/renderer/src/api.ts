@@ -14,7 +14,7 @@ import type { EditPlan, EditRecord, FootageEvent, FootageProject, FootageSummary
 import type { EnhancedPrompt, PromptSection, PromptTemplate } from '@shared/promptTemplates'
 import type { AccountStatus } from '../../main/license/session'
 import type { AccessMode } from '../../main/license/access'
-import type { EntitlementView, PlanId } from '@shared/plans'
+import type { EntitlementView, PlanId, Policy } from '@shared/plans'
 
 export type { EntitlementView, PlanId, AccessMode }
 export type AccountState = AccountStatus & { mode: AccessMode }
@@ -141,6 +141,11 @@ declare global {
         signUp: (email: string, password: string) => Promise<AccountResult>
         signIn: (email: string, password: string) => Promise<AccountResult>
         signOut: () => Promise<AccountResult>
+        /** opens Google sign-in in the system browser; resolves when the person finishes there */
+        google: () => Promise<AccountResult>
+        cancelGoogle: () => Promise<void>
+        /** live plans from the server, null when offline */
+        plans: () => Promise<{ plans: Policy['plans']; trial: Policy['trial'] } | null>
         refresh: () => Promise<AccountResult>
         activate: (key: string) => Promise<AccountResult>
         leave: () => Promise<AccountResult>

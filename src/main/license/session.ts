@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createServer } from 'node:http'
 import { hostname, release } from 'node:os'
 import type { EntitlementView } from '@shared/plans'
 import type { ManagedProvider, Route } from './route'
@@ -19,6 +20,8 @@ export const LICENSE_SERVER = (process.env.VIDEOGEN_LICENSE_SERVER ?? 'https://v
 /** brain-3bc3a's "Snap Projects Desktop" key: sign-in APIs only, no website restriction (the browser key only allows Snap's sites) */
 const FIREBASE_API_KEY = process.env.VIDEOGEN_FIREBASE_API_KEY ?? 'AIzaSyA9mG9hvX73vrypAH2mBMye0CF4hYpCC7s'
 /** local development against `npm run dev` in server/: tokens are minted here instead of by Firebase */
+/** the hosted page that runs Google sign-in in the system browser and hands the session back to this app */
+const GOOGLE_SIGNIN_PAGE = process.env.VIDEOGEN_SIGNIN_PAGE ?? 'https://videogen-studio.web.app/signin/'
 const DEV_AUTH = process.env.VIDEOGEN_DEV_AUTH === '1' && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(LICENSE_SERVER)
 
 export interface AccountStatus {
@@ -60,6 +63,8 @@ export interface SessionDeps {
   decrypt: (stored: string) => string
   /** told whenever the plan or sign-in changes, so settings and providers can follow */
   onChange: (status: AccountStatus) => void
+  /** open a URL in the system browser */
+  openExternal: (url: string) => void
 }
 
 const FIREBASE_ERRORS: Record<string, string> = {
@@ -188,6 +193,91 @@ export class AccountSession {
       await this.sendVerification().catch(() => undefined)
     }
     return this.afterSignIn()
+  }
+
+  private googleAbort: (() => void) | null = null
+
+  /**
+   * Google sign-in, Snap Projects' way: the system browser opens the hosted
+   * sign-in page, Google signs the person in there, and the page posts the
+   * Firebase session to a one-time listener on 127.0.0.1 that only accepts
+   * this attempt's random state. Nothing is typed into the app.
+   */
+  async signInWithGoogle(): Promise<AccountStatus> {
+    if (DEV_AUTH) {
+      this.devToken('google-dev@example.com')
+      return this.afterSignIn()
+    }
+    this.googleAbort?.()
+    const state = randomBytes(24).toString('base64url')
+    const tokens = await new Promise<{ idToken: string; refreshToken: string }>((resolve, reject) => {
+      const server = createServer((req, res) => {
+        const done = (status: number, title: string, text: string) => {
+          res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'" })
+          res.end(`<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:16px system-ui;display:grid;place-items:center;height:90vh;background:#fff8ef;color:#2b1d4e"><div style="text-align:center"><div style="font-size:42px">🎬</div><h2>${title}</h2><p>${text}</p></div>`)
+        }
+        if (req.method !== 'POST' || req.url !== '/auth/google/callback') return done(404, 'Not found', '')
+        let body = ''
+        req.on('data', (c: Buffer) => {
+          body += c.toString('utf8')
+          if (body.length > 64 * 1024) req.destroy()
+        })
+        req.on('end', () => {
+          const form = new URLSearchParams(body)
+          const got = Buffer.from(form.get('state') ?? '')
+          const want = Buffer.from(state)
+          const idToken = form.get('id_token') ?? ''
+          const refreshToken = form.get('refresh_token') ?? ''
+          if (got.length !== want.length || !timingSafeEqual(got, want) || !idToken || !refreshToken) {
+            return done(400, 'Sign-in link expired', 'Start again from VideoGen Studio.')
+          }
+          done(200, "You're signed in", 'You can close this tab and go back to VideoGen Studio.')
+          finish()
+          resolve({ idToken, refreshToken })
+        })
+      })
+      const timer = setTimeout(() => {
+        finish()
+        reject(new AccountError('google_timeout', 'Google sign-in timed out. Try again.'))
+      }, 5 * 60_000)
+      const finish = () => {
+        clearTimeout(timer)
+        this.googleAbort = null
+        server.close()
+      }
+      this.googleAbort = () => {
+        finish()
+        reject(new AccountError('google_cancelled', 'Google sign-in was cancelled.'))
+      }
+      server.on('error', () => {
+        finish()
+        reject(new AccountError('google_failed', 'Could not start Google sign-in on this computer.'))
+      })
+      server.listen(0, '127.0.0.1', () => {
+        const port = (server.address() as { port: number }).port
+        const url = new URL(GOOGLE_SIGNIN_PAGE)
+        url.searchParams.set('callback', `http://127.0.0.1:${port}/auth/google/callback`)
+        url.searchParams.set('state', state)
+        this.d.openExternal(url.toString())
+      })
+    })
+    const claims = tokenClaims(tokens.idToken)
+    this.takeTokens({ idToken: tokens.idToken, refreshToken: tokens.refreshToken, expiresIn: Math.max(60, Number(claims.exp ?? 0) - Math.floor(Date.now() / 1000)), localId: String(claims.user_id ?? claims.sub ?? ''), email: String(claims.email ?? '') })
+    return this.afterSignIn()
+  }
+
+  /** the live price list (public); null when offline */
+  async plans(): Promise<unknown | null> {
+    try {
+      const res = await fetch(`${LICENSE_SERVER}/v1/plans`, { signal: AbortSignal.timeout(8000) })
+      return res.ok ? await res.json() : null
+    } catch {
+      return null
+    }
+  }
+
+  cancelGoogle(): void {
+    this.googleAbort?.()
   }
 
   async signIn(email: string, password: string): Promise<AccountStatus> {

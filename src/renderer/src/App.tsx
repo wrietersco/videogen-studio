@@ -7,7 +7,8 @@ import Editor from './views/Editor'
 import Assets from './views/Assets'
 import Footage from './views/Footage'
 import Updater from './components/Updater'
-import { AccountGate, PlanBadge, useAccount } from './components/Account'
+import { PlanBadge, useAccount } from './components/Account'
+import { AccountGate } from './components/Welcome'
 
 type Tab = 'studio' | 'footage' | 'library' | 'assets' | 'editor' | 'settings'
 

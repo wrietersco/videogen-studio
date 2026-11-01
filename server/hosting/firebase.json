@@ -1,8 +1,16 @@
 {
-  "hosting": {
-    "site": "videogen-admin",
-    "public": "public",
-    "redirects": [{ "source": "/", "destination": "/console/", "type": 302 }],
-    "rewrites": [{ "source": "**", "run": { "serviceId": "videogen-license-server", "region": "us-central1" } }]
-  }
+  "hosting": [
+    {
+      "site": "videogen-admin",
+      "public": "public",
+      "redirects": [{ "source": "/", "destination": "/console/", "type": 302 }],
+      "rewrites": [{ "source": "**", "run": { "serviceId": "videogen-license-server", "region": "us-central1" } }]
+    },
+    {
+      "site": "videogen-studio",
+      "public": "public",
+      "redirects": [{ "source": "/", "destination": "https://github.com/wrietersco/videogen-studio/releases/latest", "type": 302 }],
+      "rewrites": [{ "source": "/signin", "run": { "serviceId": "videogen-license-server", "region": "us-central1" } }, { "source": "/signin/**", "run": { "serviceId": "videogen-license-server", "region": "us-central1" } }, { "source": "/console/config.json", "run": { "serviceId": "videogen-license-server", "region": "us-central1" } }]
+    }
+  ]
 }

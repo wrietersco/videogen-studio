@@ -335,3 +335,51 @@ describe('desktop access', () => {
     }
   })
 })
+
+// ---------------- desktop: Google sign-in hand-off ----------------
+
+describe('Google sign-in hand-off', () => {
+  it('accepts the session only from the page that knows this attempt\'s state', async () => {
+    const store = new MemoryStore()
+    const jwt = (claims: Record<string, unknown>) => `x.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.y`
+    const idToken = jwt({ user_id: 'g-user', email: 'g@example.com', email_verified: true, exp: Math.floor(Date.now() / 1000) + 3600 })
+    const verifier = { verify: async (t: string) => { if (t !== idToken) throw new Error('bad'); return { uid: 'g-user', email: 'g@example.com', emailVerified: true } } }
+    const handler = createApp({ store, verifier, secret: async () => null })
+    const server = createServer((req, res) => void handler(req, res))
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    process.env.VIDEOGEN_LICENSE_SERVER = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    const { mkdtempSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { vi } = await import('vitest')
+    vi.resetModules()
+    const { AccountSession } = await import('../src/main/license/session')
+    try {
+      const session = new AccountSession({
+        dir: mkdtempSync(join(tmpdir(), 'vg-acct-')),
+        appVersion: 'test',
+        encrypt: (s) => `plain:${s}`,
+        decrypt: (s) => s.replace(/^plain:/, ''),
+        onChange: () => undefined,
+        openExternal: (link) => {
+          const u = new URL(link)
+          const callback = u.searchParams.get('callback')!
+          expect(callback).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/auth\/google\/callback$/)
+          void (async () => {
+            // a forged post with the wrong state is turned away
+            const forged = await fetch(callback, { method: 'POST', body: new URLSearchParams({ state: 'x'.repeat(32), id_token: 'evil', refresh_token: 'evil' }) })
+            expect(forged.status).toBe(400)
+            await fetch(callback, { method: 'POST', body: new URLSearchParams({ state: u.searchParams.get('state')!, id_token: idToken, refresh_token: 'r-token' }) })
+          })()
+        }
+      })
+      const status = await session.signInWithGoogle()
+      expect(status.signedIn).toBe(true)
+      expect(status.email).toBe('g@example.com')
+      expect(status.view?.entitlements.plan).toBeDefined()
+    } finally {
+      delete process.env.VIDEOGEN_LICENSE_SERVER
+      await new Promise((r) => server.close(r))
+    }
+  })
+})

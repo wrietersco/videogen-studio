@@ -101,6 +101,7 @@ const account = new AccountSession({
   appVersion: app.getVersion(),
   encrypt: (plain) => encryptKey(plain),
   decrypt: (stored) => decryptKey(stored),
+  openExternal: (url) => void shell.openExternal(url),
   onChange: (status) => {
     applyAccess()
     emit('account:changed', accountPayload(status))
@@ -392,6 +393,9 @@ function registerIpc(): void {
   }
   ipcMain.handle('account:signUp', (_e, email: string, password: string) => accountCall(() => account.signUp(String(email ?? ''), String(password ?? ''))))
   ipcMain.handle('account:signIn', (_e, email: string, password: string) => accountCall(() => account.signIn(String(email ?? ''), String(password ?? ''))))
+  ipcMain.handle('account:plans', () => account.plans())
+  ipcMain.handle('account:google', () => accountCall(() => account.signInWithGoogle()))
+  ipcMain.handle('account:cancelGoogle', () => account.cancelGoogle())
   ipcMain.handle('account:signOut', () => {
     if (busy) return { ok: false as const, code: 'busy', error: 'A video is being made — sign out once it finishes' }
     return accountCall(() => account.signOut())

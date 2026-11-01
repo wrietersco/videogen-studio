@@ -650,11 +650,13 @@ export function createApp(deps: AppDeps) {
   // ---------------- console (static) ----------------
 
   const CONSOLE_FILES: Record<string, string> = { '': 'index.html', 'index.html': 'index.html', 'console.js': 'console.js', 'console.css': 'console.css' }
+  /** the desktop app's Google sign-in page (opened in the system browser) */
+  const SIGNIN_FILES: Record<string, string> = { '': 'signin.html', 'signin.js': 'signin.js', 'signin.css': 'signin.css' }
   const TYPES: Record<string, string> = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8' }
 
-  async function serveConsole(res: ServerResponse, rest: string): Promise<void> {
+  async function serveConsole(res: ServerResponse, rest: string, signin = false): Promise<void> {
     if (rest === 'config.json') return sendJson(res, 200, deps.consoleConfig ?? {})
-    const file = CONSOLE_FILES[rest]
+    const file = (signin ? SIGNIN_FILES : CONSOLE_FILES)[rest]
     if (!file || !deps.consoleDir) throw new HttpError(404, 'not_found', 'Not found.')
     const body = await readFile(normalize(join(deps.consoleDir, file)))
     res.writeHead(200, {
@@ -663,7 +665,7 @@ export function createApp(deps: AppDeps) {
       'Cache-Control': 'no-cache',
       'Content-Security-Policy':
         // Google sign-in needs Google's script host and the project's auth frame
-        `default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com; style-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; frame-src https://${deps.consoleConfig?.authDomain ?? 'localhost'} https://accounts.google.com; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`
+        `default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com; style-src 'self'; img-src 'self' data: https://*.googleusercontent.com; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; frame-src https://${deps.consoleConfig?.authDomain ?? 'localhost'} https://accounts.google.com; frame-ancestors 'none'; base-uri 'none'; ${signin ? "form-action http://127.0.0.1:*" : "form-action 'none'"}`
     })
     res.end(body)
   }
@@ -679,6 +681,14 @@ export function createApp(deps: AppDeps) {
         limit(`plans:${req.socket.remoteAddress ?? ''}`, 60)
         const pol = await policy()
         return sendJson(res, 200, { plans: pol.plans, trial: pol.trial })
+      }
+      if (path === '/signin' || path.startsWith('/signin/')) {
+        if (path === '/signin') {
+          // keep the query: it carries the app's callback and state
+          res.writeHead(301, { ...SECURITY_HEADERS, Location: `/signin/${url.search}` })
+          return void res.end()
+        }
+        return await serveConsole(res, path.slice('/signin/'.length), true)
       }
       if (path === '/console' || path.startsWith('/console/')) {
         if (path === '/console') {
