@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useInsider } from './Account'
 import { fmtUsd, PRICES_AS_OF } from '@shared/pricing'
 import { api, type ProjectUsage, type UsageEntry } from '../api'
 
@@ -53,7 +54,12 @@ function sumUsage(es: UsageEntry[]): UsageEntry['usage'] {
   return out
 }
 
-export function CostReceipt({ projectId, live, compact }: { projectId?: string | null; live?: boolean; compact?: boolean }) {
+export function CostReceipt(props: { projectId?: string | null; live?: boolean; compact?: boolean }) {
+  // provider costs and model names are for superadmins and own-key licences only
+  return useInsider() ? <Receipt {...props} /> : null
+}
+
+function Receipt({ projectId, live, compact }: { projectId?: string | null; live?: boolean; compact?: boolean }) {
   const [entries, setEntries] = useState<UsageEntry[]>([])
   const [history, setHistory] = useState<ProjectUsage | null>(null)
 

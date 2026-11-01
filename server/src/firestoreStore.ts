@@ -22,6 +22,7 @@ import { sha256 } from './upstream'
  *
  *   vg_config/policy
  *   vg_admins/{uid}
+ *   vg_admin_emails/{email}  superadmins by (verified) email
  *   vg_users/{uid}            + devices/{deviceId}
  *   vg_licenses/{id}          keyHash, never the key
  *   vg_usage/{subject}_{YYYY-MM}
@@ -45,6 +46,11 @@ export class FirestoreStore implements Store {
   async getAdmin(uid: string) {
     const d = await this.col('admins').doc(uid).get()
     return d.exists ? ({ uid, ...(d.data() as Omit<AdminRecord, 'uid'>) } as AdminRecord) : null
+  }
+
+  async getAdminByEmail(email: string) {
+    const d = await this.col('admin_emails').doc(email.toLowerCase()).get()
+    return d.exists ? ({ uid: '', email: email.toLowerCase(), ...(d.data() as Omit<AdminRecord, 'uid' | 'email'>) } as AdminRecord) : null
   }
 
   async getUser(uid: string) {

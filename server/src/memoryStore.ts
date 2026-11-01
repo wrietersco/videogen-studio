@@ -36,6 +36,10 @@ export class MemoryStore implements Store {
   async getAdmin(uid: string) {
     return this.copy(this.admins.get(uid) ?? null)
   }
+  adminEmails = new Map<string, AdminRecord>()
+  async getAdminByEmail(email: string) {
+    return this.copy(this.adminEmails.get(email.toLowerCase()) ?? null)
+  }
 
   async getUser(uid: string) {
     return this.copy(this.users.get(uid) ?? null)

@@ -272,6 +272,25 @@ describe('licence server', () => {
     expect(store.auditLog.map((a) => a.action)).toEqual(expect.arrayContaining(['license_created', 'license_activated', 'license_updated']))
   })
 
+  it('makes an email-registered superadmin unrestricted, but only with that email verified', async () => {
+    store.adminEmails.set('owner@example.com', { uid: '', email: 'owner@example.com', role: 'superadmin' })
+    const owner = 'dev:owner:owner@example.com:verified'
+    const s = await call('/v1/account/sync', { token: owner, body: { device: { id: DEVICE, name: 'PC' } } })
+    expect(s.json.account.superadmin).toBe(true)
+    expect(s.json.entitlements.label).toBe('Superadmin')
+    expect(s.json.entitlements.aiVideosPerMonth).toBeNull()
+    expect(s.json.entitlements.models.chat).toEqual(expect.arrayContaining(['gpt-6-luna', 'gpt-6.1-terra', 'gpt-6.1-sol']))
+    for (let i = 0; i < 28; i++) expect((await call('/v1/videos/start', { token: owner, device: DEVICE, body: { projectKey: `owner-${i}` } })).json.counted).toBe(true)
+    expect((await call('/v1/ai/openai/chat/completions', { token: owner, device: DEVICE, project: 'owner-1', body: { model: 'gpt-6.1-sol', messages: [] } })).status).toBe(200)
+    expect((await call('/admin/me', { token: owner })).status).toBe(200)
+    // the same address, unverified, is nobody special
+    const fake = 'dev:impostor:owner@example.com'
+    expect((await call('/admin/me', { token: fake })).status).toBe(403)
+    const f = await call('/v1/account/sync', { token: fake, body: { device: { id: DEVICE, name: 'PC' } } })
+    expect(f.json.account.superadmin).toBe(false)
+    expect(f.json.entitlements.aiAllowed).toBe(false)
+  })
+
   it('rotating a key retires the old one', async () => {
     const created = await call('/admin/licenses', { token: token('boss'), body: { plan: 'plus' } })
     const rotated = await call('/admin/licenses/rotate', { token: token('boss'), body: { id: created.json.license.id } })

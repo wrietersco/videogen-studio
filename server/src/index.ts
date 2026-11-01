@@ -70,6 +70,8 @@ async function main(): Promise<void> {
     const m = new MemoryStore()
     // local console sign-in: dev:admin:admin@example.com:verified
     m.admins.set('admin', { uid: 'admin', email: 'admin@example.com', role: 'superadmin' })
+    // the desktop app's dev sign-in as admin@example.com is a superadmin too
+    m.adminEmails.set('admin@example.com', { uid: '', email: 'admin@example.com', role: 'superadmin' })
     store = m
     verifier = devVerifier
     console.warn('[server] in-memory store — data is lost on restart')

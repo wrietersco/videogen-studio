@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useInsider } from '../components/Account'
 import { KIND_LABEL, SOURCE_BADGE, type AssetKind, type AssetMeta, type AssetSource } from '@shared/assets'
 import { fmtUsd } from '@shared/pricing'
 import { api, type Orientation, type StockResult } from '../api'
@@ -19,6 +20,7 @@ const thumbUrl = (id: string) => `vgasset://thumb/${encodeURIComponent(id)}`
 type Panel = null | 'stock' | 'make'
 
 export default function Assets() {
+  const insider = useInsider()
   const [assets, setAssets] = useState<AssetMeta[]>([])
   const [stats, setStats] = useState<Awaited<ReturnType<typeof api.assets.stats>> | null>(null)
   const [kind, setKind] = useState<AssetKind | 'all'>('all')
@@ -180,7 +182,7 @@ export default function Assets() {
         <MakePanel
           onClose={() => setPanel(null)}
           onMade={(a) => {
-            say(`✨ Made “${a.title.slice(0, 40)}”${a.costUsd ? ` for ${fmtUsd(a.costUsd)}` : ''}`)
+            say(`✨ Made “${a.title.slice(0, 40)}”${a.costUsd && insider ? ` for ${fmtUsd(a.costUsd)}` : ''}`)
             refresh()
           }}
           onError={(m) => {
@@ -229,6 +231,7 @@ function AssetCard({ a, onOpen, delay }: { a: AssetMeta; onOpen: () => void; del
 }
 
 function AssetDrawer({ a, onClose, onChanged, onDeleted }: { a: AssetMeta; onClose: () => void; onChanged: (a: AssetMeta) => void; onDeleted: () => void }) {
+  const insider = useInsider()
   const [title, setTitle] = useState(a.title)
   const [tags, setTags] = useState(a.tags.join(', '))
   const editable = a.source !== 'builtin'
@@ -295,7 +298,7 @@ function AssetDrawer({ a, onClose, onChanged, onDeleted }: { a: AssetMeta; onClo
           </dd>
           <dt className="text-ink/60">Size</dt>
           <dd>{fmtBytes(a.bytes)}</dd>
-          {a.provider && (
+          {insider && a.provider && (
             <>
               <dt className="text-ink/60">Made with</dt>
               <dd>
@@ -303,7 +306,7 @@ function AssetDrawer({ a, onClose, onChanged, onDeleted }: { a: AssetMeta; onClo
               </dd>
             </>
           )}
-          {typeof a.costUsd === 'number' && (
+          {insider && typeof a.costUsd === 'number' && (
             <>
               <dt className="text-ink/60">Cost</dt>
               <dd>{fmtUsd(a.costUsd)}</dd>
@@ -495,6 +498,7 @@ function splitShots(text: string): string[] {
 }
 
 function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: (a: AssetMeta) => void; onError: (m: string) => void }) {
+  const insider = useInsider()
   const [kind, setKind] = useState<'image' | 'video' | 'voice' | 'music'>('image')
   const [prompt, setPrompt] = useState('')
   const [orientation, setOrientation] = useState<Orientation>('portrait')
@@ -553,7 +557,7 @@ function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: 
       )}
       {shots.length > 1 && (
         <div className="mt-2 rounded-xl border border-ink/10 bg-ink/5 p-3 text-xs text-ink/70">
-          🎞️ Found {shots.length} shots — each one starts from the last frame of the one before, then they’re joined into one clip. About {fmtUsd(shots.length * 0.8)} and {shots.length * 2}+ minutes.
+          🎞️ Found {shots.length} shots — each one starts from the last frame of the one before, then they’re joined into one clip.{insider ? ` About ${fmtUsd(shots.length * 0.8)} and` : ' About'} {shots.length * 2}+ minutes.
         </div>
       )}
       <button onClick={go} disabled={busy || !prompt.trim()} className="btn-primary mt-4 w-full !py-3">
@@ -566,7 +570,7 @@ function MakePanel({ onClose, onMade, onError }: { onClose: () => void; onMade: 
           ) : made.kind === 'video' ? (
             <video src={fileUrl(made.id)} controls className="h-24 rounded-lg" />
           ) : <audio src={fileUrl(made.id)} controls className="h-8 flex-1" />}
-          <div className="text-xs text-mint">Saved to your library {made.costUsd ? `· ${fmtUsd(made.costUsd)}` : ''}</div>
+          <div className="text-xs text-mint">Saved to your library {made.costUsd && insider ? `· ${fmtUsd(made.costUsd)}` : ''}</div>
         </div>
       )}
     </Modal>

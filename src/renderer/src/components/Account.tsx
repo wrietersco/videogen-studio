@@ -1,12 +1,27 @@
 import { useEffect, useState } from 'react'
 import { DEFAULT_POLICY, type PlanId, type PlanPolicy } from '@shared/plans'
-import { modelName, PricingCards } from './Welcome'
+import { directorLabel, modelName, PricingCards } from './Welcome'
 import { api, type AccountResult, type AccountState } from '../api'
 
 /**
  * Sign-in, onboarding and the plan. The server decides what an account may
  * do; these screens only show its answer and send the person's choices.
  */
+
+/**
+ * Who sees what's under the hood (model names, provider costs, API keys):
+ * superadmins, and licences the superadmin allowed to run on their own keys
+ * (they pay their provider, so they see the bill). Everyone else sees plans,
+ * videos and counts, never models or dollars.
+ */
+export function seesInternals(status: AccountState | null): boolean {
+  return Boolean(status?.view?.account.superadmin) || status?.mode === 'own-keys'
+}
+
+export function useInsider(): boolean {
+  const [status] = useAccount()
+  return seesInternals(status)
+}
 
 export function useAccount(): [AccountState | null, (s: AccountState) => void] {
   const [status, setStatus] = useState<AccountState | null>(null)
@@ -91,7 +106,7 @@ export function PlanPanel({ status, onChange }: { status: AccountState; onChange
                 </div>
               )}
               <div className="mt-2 text-[12px] text-ink/60">
-                Writes and directs with <b>{modelName(ent.chatModel)}</b> · {ent.clipsPerVideo ? `${ent.clipsPerVideo} animated clip${ent.clipsPerVideo > 1 ? 's' : ''} per video` : 'no animated clips'} · up to {ent.maxVideoSeconds}s · programmatic videos unlimited
+                {ent.superadmin ? <>Superadmin · every model, no limits · writes and directs with <b>{modelName(ent.chatModel)}</b> · </> : <><b>{directorLabel(ent.chatModel)}</b> · </>}{ent.clipsPerVideo ? `${ent.clipsPerVideo} animated clip${ent.clipsPerVideo > 1 ? 's' : ''} per video` : 'no animated clips'} · up to {ent.maxVideoSeconds}s · programmatic videos unlimited
               </div>
             </div>
           )}
@@ -156,7 +171,7 @@ export function PlanPanel({ status, onChange }: { status: AccountState; onChange
       {error && <div className="rounded-xl bg-coral-soft px-3 py-2 text-xs font-semibold text-coral">⚠️ {error}</div>}
       {note && <div className="rounded-xl bg-mint-soft px-3 py-2 text-xs font-semibold text-mint">{note}</div>}
 
-      {ent && <PricingCards plans={plans} current={ent.soldPlan} onPick={(id) => void api.account.contactSales(plans[id].label)} pickLabel={(id) => (id === 'free' ? 'Switch to Free' : `Get ${plans[id].label}`)} />}
+      {ent && <PricingCards plans={plans} current={ent.superadmin ? undefined : ent.soldPlan} onPick={(id) => void api.account.contactSales(plans[id].label)} pickLabel={(id) => (id === 'free' ? 'Switch to Free' : `Get ${plans[id].label}`)} />}
 
       {view?.devices && view.devices.length > 0 && (
         <details>

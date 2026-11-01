@@ -14,8 +14,13 @@ if (!email.includes('@')) {
   process.exit(1)
 }
 initializeApp({ projectId: process.env.FIRESTORE_PROJECT_ID ?? 'brain-3bc3a' })
-const user = await getAuth().getUserByEmail(email)
-if (!user.emailVerified) await getAuth().updateUser(user.uid, { emailVerified: true })
-await getFirestore().collection('vg_admins').doc(user.uid).set({ email, role: 'superadmin', addedAt: new Date().toISOString() })
-await getFirestore().collection('vg_audit').add({ at: new Date().toISOString(), actor: 'add-admin script', action: 'admin_added', target: user.uid, details: { email } })
-console.log(`${email} (${user.uid}) is now a VideoGen superadmin.`)
+const now = new Date().toISOString()
+// by email, so it also works for someone who has not signed in yet (they must sign in with this email verified)
+await getFirestore().collection('vg_admin_emails').doc(email).set({ role: 'superadmin', addedAt: now })
+const user = await getAuth().getUserByEmail(email).catch(() => null)
+if (user) {
+  if (!user.emailVerified) await getAuth().updateUser(user.uid, { emailVerified: true })
+  await getFirestore().collection('vg_admins').doc(user.uid).set({ email, role: 'superadmin', addedAt: now })
+}
+await getFirestore().collection('vg_audit').add({ at: now, actor: 'add-admin script', action: 'admin_added', target: user?.uid ?? email, details: { email } })
+console.log(user ? `${email} (${user.uid}) is now a VideoGen superadmin.` : `${email} will be a VideoGen superadmin as soon as it signs in (no account yet).`)

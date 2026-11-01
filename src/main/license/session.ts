@@ -36,7 +36,7 @@ export interface AccountStatus {
 }
 
 export interface AccountView {
-  account: { uid: string; email: string; emailVerified: boolean; status: string; displayName: string }
+  account: { uid: string; email: string; emailVerified: boolean; status: string; displayName: string; superadmin?: boolean }
   license: { id: string; keyHint: string; plan: string; seats: number; customerName: string; status: string; paidThrough: string | null } | null
   entitlements: EntitlementView
   devices?: Array<{ id: string; name: string; platform: string; appVersion: string; lastSeenAt: string }>

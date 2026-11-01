@@ -15,6 +15,10 @@ type Plans = Record<PlanId, PlanPolicy>
 const MODEL_NAME: Record<string, string> = { 'gpt-6-luna': 'GPT-6 Luna', 'gpt-6.1-terra': 'GPT-6.1 Terra', 'gpt-6.1-sol': 'GPT-6.1 Sol' }
 export const modelName = (id: string) => MODEL_NAME[id] ?? id
 
+/** what customers are told about the writing model: a tier, never the model's name */
+const DIRECTOR_TIER: Record<string, string> = { 'gpt-6-luna': 'Smart AI director', 'gpt-6.1-terra': 'Advanced AI director', 'gpt-6.1-sol': 'Our most capable AI director' }
+export const directorLabel = (id: string) => DIRECTOR_TIER[id] ?? 'AI director'
+
 export const PLAN_LOOK: Record<PlanId, { icon: string; tag: string; blurb: string; accent: string; soft: string; button: string; ring: string }> = {
   free: { icon: '🌱', tag: 'Try everything', blurb: 'Explore the studio and make your first AI videos.', accent: 'text-mint', soft: 'bg-mint-soft', button: 'bg-ink text-white shadow-[0_3px_0_#15092f]', ring: 'ring-ink/10' },
   plus: { icon: '⭐', tag: 'For regular creators', blurb: 'A steady flow of AI videos with richer pictures and music.', accent: 'text-sky', soft: 'bg-sky-soft', button: 'bg-sky text-white shadow-[0_3px_0_#0b7cc0]', ring: 'ring-sky/40' },
@@ -32,7 +36,7 @@ const MEDIA_LINE: Record<PlanId, string> = {
 function planPoints(id: PlanId, p: PlanPolicy): Array<{ on: boolean; text: string }> {
   return [
     { on: true, text: 'Unlimited programmatic videos' },
-    { on: true, text: `Directed by ${modelName(p.chatModel)}` },
+    { on: true, text: directorLabel(p.chatModel) },
     { on: true, text: MEDIA_LINE[id] },
     { on: p.clipsPerVideo > 0, text: p.clipsPerVideo ? `${p.clipsPerVideo} animated clip${p.clipsPerVideo > 1 ? 's' : ''} per video` : 'Animated clips' },
     { on: true, text: `AI videos up to ${p.maxVideoSeconds >= 120 ? `${Math.round(p.maxVideoSeconds / 60)} min` : `${p.maxVideoSeconds}s`}` }
@@ -110,7 +114,7 @@ function Compare({ plans }: { plans: Plans }) {
   const rows: Array<[string, (p: PlanPolicy, id: PlanId) => string]> = [
     ['Programmatic videos', () => 'Unlimited'],
     ['AI videos a month', (p) => (p.aiVideosPerMonth === null ? 'Unlimited' : String(p.aiVideosPerMonth))],
-    ['Writes & directs with', (p) => modelName(p.chatModel)],
+    ['AI director', (p) => directorLabel(p.chatModel)],
     ['Pictures, voices & music', (_p, id) => MEDIA_LINE[id]],
     ['Animated clips per video', (p) => (p.clipsPerVideo ? String(p.clipsPerVideo) : '—')],
     ['Longest AI video', (p) => (p.maxVideoSeconds >= 120 ? `${Math.round(p.maxVideoSeconds / 60)} min` : `${p.maxVideoSeconds}s`)],

@@ -8,6 +8,7 @@ import {
   DEFAULT_POLICY,
   entitlements,
   entitlementView,
+  superadminEntitlements,
   withProviders,
   mergePolicy,
   monthKey,
@@ -149,11 +150,19 @@ export function createApp(deps: AppDeps) {
     subject: string
   }
 
+  /** listed in vg_admins by uid, or in vg_admin_emails by an email Google/Firebase has verified */
+  async function isSuperadmin(c: Caller): Promise<boolean> {
+    if ((await store.getAdmin(c.uid))?.role === 'superadmin') return true
+    return c.emailVerified && Boolean(c.email) && (await store.getAdminByEmail(c.email))?.role === 'superadmin'
+  }
+
   async function context(c: Caller, user: UserRecord): Promise<Ctx> {
     const pol = await policy()
     const lic = user.licenseId ? await store.getLicense(user.licenseId) : null
     const account = { ...user, email: c.email, emailVerified: c.emailVerified }
-    const ent = withProviders(entitlements(pol, account, lic, now()), await availableProviders())
+    let ent = entitlements(pol, account, lic, now())
+    if (await isSuperadmin(c)) ent = superadminEntitlements(pol, ent)
+    ent = withProviders(ent, await availableProviders())
     return { caller: c, user, license: lic, policy: pol, ent, subject: subjectOf(user.uid, lic?.id) }
   }
 
@@ -177,7 +186,8 @@ export function createApp(deps: AppDeps) {
         email: ctx.caller.email,
         emailVerified: ctx.caller.emailVerified,
         status: ctx.user.status,
-        displayName: ctx.user.displayName ?? ''
+        displayName: ctx.user.displayName ?? '',
+        superadmin: Boolean(ctx.ent.superadmin)
       },
       license: ctx.license
         ? {
@@ -405,9 +415,8 @@ export function createApp(deps: AppDeps) {
   async function admin(req: IncomingMessage): Promise<{ email: string; uid: string }> {
     const c = await caller(req, true)
     limit(`admin:${c.uid}`, 120)
-    const record = await store.getAdmin(c.uid)
-    if (!record || record.role !== 'superadmin') throw new HttpError(403, 'not_admin', 'This account is not a VideoGen superadmin.')
     if (!c.emailVerified) throw new HttpError(403, 'email_unverified', 'Verify this admin email address first.')
+    if (!(await isSuperadmin(c))) throw new HttpError(403, 'not_admin', 'This account is not a VideoGen superadmin.')
     return { email: c.email, uid: c.uid }
   }
 

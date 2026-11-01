@@ -327,6 +327,8 @@ export interface Entitlements {
   aiAllowed: boolean
   /** why AI is off, for people */
   aiBlockedReason: string
+  /** a superadmin: sees models and costs, and nothing is limited */
+  superadmin?: boolean
 }
 
 /**
@@ -389,6 +391,37 @@ export function providerOfModel(model: string): 'openai' | 'gemini' | 'elevenlab
 export function withProviders(ent: Entitlements, available: ReadonlySet<string>): Entitlements {
   const models = Object.fromEntries(PLAN_MEDIA_KINDS.map((k) => [k, ent.models[k].filter((m) => available.has(providerOfModel(m)))])) as Entitlements['models']
   return { ...ent, models, chatModel: models.chat.includes(ent.chatModel) ? ent.chatModel : models.chat[models.chat.length - 1] ?? ent.chatModel, clipsPerVideo: models.video.length ? ent.clipsPerVideo : 0 }
+}
+
+/**
+ * Superadmins: every model of every plan, no monthly count, no dollar fuses,
+ * own keys allowed, never blocked by billing. Granted only by the server from
+ * its own allow-list (vg_admins / vg_admin_emails), never by the app.
+ */
+export const UNRESTRICTED = 1_000_000
+
+export function superadminEntitlements(policy: Policy, base: Entitlements): Entitlements {
+  const all = (kind: PlanMediaKind) => [...new Set(PLAN_IDS.flatMap((id) => policy.plans[id].models[kind]))]
+  const models = Object.fromEntries(PLAN_MEDIA_KINDS.map((k) => [k, all(k)])) as Entitlements['models']
+  return {
+    ...base,
+    plan: 'ultra',
+    label: 'Superadmin',
+    access: { state: 'active', reason: '', paidThrough: null, graceEndsAt: null },
+    trial: { active: false, endsAt: null, daysLeft: 0 },
+    aiVideosPerMonth: null,
+    chatModel: policy.plans.ultra.chatModel,
+    models,
+    clipsPerVideo: Math.max(...PLAN_IDS.map((id) => policy.plans[id].clipsPerVideo)),
+    maxVideoSeconds: 1800,
+    costCapUsdPerVideo: UNRESTRICTED,
+    costCapUsdPerMonth: UNRESTRICTED,
+    utilityUsdPerDay: UNRESTRICTED,
+    allowOwnKeys: true,
+    aiAllowed: true,
+    aiBlockedReason: '',
+    superadmin: true
+  }
 }
 
 // ---------------- usage + the gates ----------------

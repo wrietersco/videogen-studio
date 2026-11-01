@@ -75,6 +75,8 @@ export interface Store {
   savePolicy(policy: unknown): Promise<void>
 
   getAdmin(uid: string): Promise<AdminRecord | null>
+  /** superadmins registered by email before (or without) knowing their uid */
+  getAdminByEmail(email: string): Promise<AdminRecord | null>
 
   getUser(uid: string): Promise<UserRecord | null>
   /** create-or-merge; `create` fields are written only when the user is new */

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useInsider } from '../components/Account'
 import { api, type EditPlan, type EditRecord, type FootageEvent, type FootageProject, type FootageSummary, type PlanRequest, type PlanResult, type UnderstandEstimate } from '../api'
 import { ShapePicker } from '../components/PromptTools'
 import { fmtUsd } from '@shared/pricing'
@@ -145,6 +146,7 @@ function ProjectList({ projects, onOpen, onChanged }: { projects: FootageSummary
 // ------------------------------------------------------------------ one project
 
 function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () => void; onOpenSettings: () => void }) {
+  const insider = useInsider()
   const [project, setProject] = useState<FootageProject | null>(null)
   const [posters, setPosters] = useState<Record<string, string>>({})
   const [estimate, setEstimate] = useState<UnderstandEstimate | null>(null)
@@ -405,9 +407,9 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
               ) : (
                 <div className="mt-3 flex flex-wrap items-center gap-3">
                   <button onClick={() => run(() => api.footage.understand(id))} disabled={busy || !understandable} className="btn-primary !px-5 !py-2 !text-sm">
-                    👀 Watch &amp; listen{estimate ? ` · about ${estimate.usd === 0 ? 'nothing' : fmtUsd(estimate.usd)}` : ''}
+                    👀 Watch &amp; listen{estimate && insider ? ` · about ${estimate.usd === 0 ? 'nothing' : fmtUsd(estimate.usd)}` : ''}
                   </button>
-                  {estimate && <span className="text-xs text-ink/50">{estimate.shots} shots{estimate.speechMinutes > 0 ? ` · ${estimate.speechMinutes} min of sound` : ''}, billed to your own key</span>}
+                  {estimate && <span className="text-xs text-ink/50">{estimate.shots} shots{estimate.speechMinutes > 0 ? ` · ${estimate.speechMinutes} min of sound` : ''}{insider ? ', billed to your own key' : ''}</span>}
                 </div>
               )}
               <div className="mt-2 text-[11px] text-ink/45">

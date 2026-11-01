@@ -3,7 +3,7 @@ import { MEDIA_MODELS, PRICES_AS_OF, RATES, modelTags, type MediaModel } from '@
 import { api, type KeyId, type MediaSettings, type ModelInfo, type ProviderId, type ProviderStatus, type SettingsView } from '../api'
 import { Chip, Meter, Section } from '../components/ui'
 import Updater from '../components/Updater'
-import { PlanPanel, useAccount } from '../components/Account'
+import { PlanPanel, seesInternals, useAccount } from '../components/Account'
 import { PLAN_IDS, DEFAULT_POLICY } from '@shared/plans'
 
 /**
@@ -95,7 +95,9 @@ export default function Settings() {
   const onPlan = account?.mode === 'plan'
   /** the licence lets this account use its own keys instead of the plan */
   const ownKeysAllowed = Boolean(ent?.allowOwnKeys)
-  const showOwnKeys = !account?.signedIn || ownKeysAllowed
+  /** model names, provider prices and API keys are for superadmins and own-key licences only */
+  const insider = seesInternals(account)
+  const showOwnKeys = insider && (ownKeysAllowed || Boolean(ent?.superadmin))
   /** first plan that includes a model, for the lock badge */
   const planWith = (kind: 'image' | 'voice' | 'music' | 'video', model: string) => {
     const id = PLAN_IDS.find((p) => DEFAULT_POLICY.plans[p].models[kind].includes(model))
@@ -144,7 +146,7 @@ export default function Settings() {
         <div className="flex items-end justify-between">
           <div>
             <h1 className="text-3xl font-black tracking-tight">⚙️ Settings</h1>
-            <p className="mt-1 text-[15px] text-ink/60">{onPlan ? 'Your plan runs the AI for you. Choose who makes each part from what your plan includes.' : 'Connect your AI accounts and choose who makes what. You pay the providers directly, and every video shows you what it cost.'}</p>
+            <p className="mt-1 text-[15px] text-ink/60">{!insider ? 'Your plan, your account and how the studio works for you.' : onPlan ? 'Your plan runs the AI for you. Choose who makes each part from what your plan includes.' : 'Connect your AI accounts and choose who makes what. You pay the providers directly, and every video shows you what it cost.'}</p>
           </div>
           {saved && <span className="pop-in rounded-full bg-mint-soft px-3 py-1 text-xs font-bold text-mint">{saved}</span>}
         </div>
@@ -244,7 +246,7 @@ export default function Settings() {
         )}
 
         {/* the plan's chat models */}
-        {onPlan && ent && (
+        {insider && onPlan && ent && (
           <Section icon="🧠" title="Who writes & directs your AI videos" hint="The models your plan includes. Programmatic videos use the free engine." tone="violet">
             <div className="grid grid-cols-2 gap-2 lg:grid-cols-3">
               {ent.models.chat.map((id) => {
@@ -263,7 +265,7 @@ export default function Settings() {
         )}
 
         {/* brain */}
-        {!onPlan && (
+        {insider && !onPlan && (
         <Section icon="🧠" title="Who writes & directs your videos" hint="This AI writes the script, plans each scene and checks the result." tone="violet">
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             {providers.map((p) => {
@@ -319,6 +321,7 @@ export default function Settings() {
         )}
 
         {/* media models */}
+        {insider && (
         <Section
           icon="🎨"
           title="Pictures, voices, music & clips"
@@ -390,6 +393,7 @@ export default function Settings() {
             })}
           </div>
         </Section>
+        )}
 
         {/* advanced — tucked away, the defaults are good */}
         <details className="card group p-6">
