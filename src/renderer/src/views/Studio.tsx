@@ -562,7 +562,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
                 title="Made on your PC from templates and free stock — no AI"
               >
                 ⚙️ Programmatic
-                <span className="block text-[11px] font-semibold opacity-80">Free · unlimited · no AI</span>
+                <span className="block text-[11px] font-semibold opacity-80">Free · basic graphics · no AI</span>
               </button>
             </div>
           )}
@@ -588,7 +588,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
               {!prompt.trim()
                 ? '👆 Type your idea above to get started'
                 : programmatic
-                  ? '🆓 Programmatic: free, unlimited, made on your PC'
+                  ? '🆓 Basic graphics made on your PC; visuals may not illustrate the subject.'
                 : account?.mode === 'plan'
                   ? `🎟️ Uses 1 of your ${aiLeft ?? '∞'} AI videos this month · editing it later is included`
                 : cfg?.autopilot

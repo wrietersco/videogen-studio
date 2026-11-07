@@ -41,6 +41,13 @@ describe('scene transitions', () => {
 })
 
 describe('mock planner', () => {
+  it('does not fabricate statistics or pretend a requested duration is always 60 seconds', async () => {
+    for (const style of ['social', 'explainer'] as const) {
+      const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'A 30 second video about coffee', platform: 'tiktok', styleHint: style, durationHintSec: 30 })
+      expect(spec.scenes.some(scene => scene.kind === 'stat')).toBe(false)
+      expect(JSON.stringify(spec.scenes)).not.toMatch(/87%|10×|In 60 seconds|common sense/i)
+    }
+  })
   it('fits a short prompt using its supplied beats without fabricated statistics', async () => {
     const prompt = 'Create an 8 second vertical animated video about the water cycle, with evaporation, clouds and rain.'
     const spec = await new Planner(new MockProvider()).plan({ userPrompt: prompt, platform: 'youtube-shorts', styleHint: 'explainer', durationHintSec: 8 })

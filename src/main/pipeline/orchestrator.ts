@@ -1409,6 +1409,10 @@ export function applyDeterministicFixes(spec: VideoSpec, qa: CheckReport): Video
   // contrast → bump foreground toward pure white / background toward black
   if (/contrast/i.test(messages)) {
     next.palette = { ...next.palette, fg: '#FFFFFF', bg: darken(next.palette.bg) }
+    // Directed captions and headlines use the film accent rather than the
+    // palette foreground. Brighten it too; otherwise a contrast retry leaves
+    // exactly the same low-contrast accent over the photograph.
+    if (next.design) next.design = { ...next.design, accent: '#FFFFFF' }
     changed = true
   }
 

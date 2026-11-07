@@ -19,6 +19,7 @@ Creative guidance:
 - Think like a director: strong hook first, one idea per scene, satisfying close.
 - For a whole-film isometric animation, use several concise scenes of at most 12 seconds each so the motion can be authored and reviewed scene by scene. Every scene must advance to a different action or stage; do not repeat the same process in the opening and following scene. Specify the subjects and actions, not generic title cards.
 - For a process, plan visually distinct steps that can each be shown; do not cram several physical actions into one scene and assume a single still will show them. Condense narration or omit nonessential setup to fit the requested length.
+- Keep headlines, sublines, kickers and other visible text concise; do not put camera instructions, visual-style directions or continuity notes into text the audience will read.
 - Respect the platform preset given in the prompt (duration range, aspect, pacing bias).
 - Pick palette/typography that serve the topic and mood; be intentional, never random.
 - Scene kinds must match the chosen style family (3D scenes for motion3d, punchy text for social, structured flow for explainer).
@@ -95,7 +96,7 @@ export class Planner {
       const target = Math.max(preset.durationRange[0], Math.min(preset.durationRange[1], input.durationHintSec))
       if (first.durationSec > target + 0.25 && this.provider.id !== 'mock') {
         try {
-          const retry = await this.provider.generateJSON<unknown>({ ...req, prompt: JSON.stringify({ ...payload, correction: `The prior plan became ${first.durationSec}s, exceeding the ${target}s request. Replan for at most ${target} seconds with at most ${Math.max(2, Math.floor(target / 3))} concise scenes. Condense the narration to at most ${Math.floor(target * 1.8)} words total. Show the essential visual steps; omit anything that does not fit. Keep the scene durations and text readable.` }), temperature: 0.3 })
+          const retry = await this.provider.generateJSON<unknown>({ ...req, prompt: JSON.stringify({ ...payload, correction: `The prior plan became ${first.durationSec}s, exceeding the ${target}s request. Replan for at most ${target} seconds with at most ${Math.max(2, Math.floor(target / 3))} concise scenes. Condense the narration to at most ${Math.floor(target * 1.8)} words total. Use at most two words in each headline and four words in each subline, no more than two brief bullets, and keep production directions out of on-screen text. Put the essential subject and action in those words and rely on the original brief to describe the visual treatment. Show the essential visual steps; omit anything that does not fit. Keep the scene durations and text readable.` }), temperature: 0.3 })
           const revised = this.clampToPlatform(enforceChoices(this.validate(retry)))
           if (Math.abs(revised.durationSec - target) < Math.abs(first.durationSec - target)) return revised
         } catch { /* keep the valid original plan */ }
