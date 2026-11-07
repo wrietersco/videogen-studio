@@ -21,6 +21,7 @@ import { authorCustomScene, chooseCustomScenes } from '../director/customScene'
 import { authorCanvasCode, needsCanvasCode, renderCanvasCode } from '../director/canvasCode'
 import { randomUUID } from 'node:crypto'
 import sharp from 'sharp'
+import { lastFrame } from '../assets/probe'
 
 
 /** Explicit whole-film isometric briefs use a code-only visual pipeline. */
@@ -91,10 +92,15 @@ export async function motionCloseups(first: Buffer, last: Buffer): Promise<{ cha
 export function extractAudioLayer(html: string): AudioLayer {
   if (!html) return { clips: [], captions: [] }
   const clips: AudioLayer['clips'] = []
-  for (const m of html.matchAll(
-    /<audio class="clip" src="([^"]+)" data-start="([\d.]+)" data-duration="([\d.]+)" data-track-index="(\d+)" data-volume="([\d.]+)"><\/audio>/g
-  )) {
-    clips.push({ file: m[1], startSec: parseFloat(m[2]), durationSec: parseFloat(m[3]), trackIndex: parseInt(m[4], 10), volume: parseFloat(m[5]) })
+  for (const match of html.matchAll(/<audio\b([^>]*)><\/audio>/g)) {
+    const attrs = match[1]
+    const attr = (name: string) => new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(attrs)?.[1]
+    if (!attr('class')?.split(/\s+/).includes('clip')) continue
+    const file = attr('src'), start = attr('data-start'), duration = attr('data-duration'), track = attr('data-track-index'), volume = attr('data-volume')
+    if (file === undefined || start === undefined || duration === undefined || track === undefined || volume === undefined) continue
+    const startSec = Number(start), durationSec = Number(duration), trackIndex = Number(track), gain = Number(volume)
+    if (![startSec, durationSec, trackIndex, gain].every(Number.isFinite)) continue
+    clips.push({ file, startSec, durationSec, trackIndex, volume: gain })
   }
   let captions: AudioLayer['captions'] = []
   const capMatch = html.match(/const CAPTIONS = (\[.*?\]);/s)
@@ -761,7 +767,7 @@ export class Orchestrator {
             : `Measured: only ${motion.changedPercent}% of the candidate frame changes between images 4 and 6.`) : undefined
           emit({ stage: 'custom', status: 'attempt', sceneIndex: index, attempt, phase: 'reviewing' })
           const verdict = await provider.generateJSON<{ useCandidate: boolean; score: number; originalScore: number; blockingIssue: boolean; reason: string }>({
-            system: `${isometricOnly ? 'This is a code-only 2D isometric film: the candidate must clearly show animated isometric objects and processes, match the scene and maintain continuity. Ignore the generic original when evaluating the candidate; useCandidate should be true when the candidate is professional and meets the brief, even if the original looks better. ' : ''}You are the video editor. Images 1, 2 and 3 are the existing scene at early, middle and late times; images 4, 5 and 6 are the new custom illustration or coded animation at those same times. If image 7 is provided, it is the preceding approved scene and is the authoritative visual reference for any recurring emblem, character or product. The original scene in images 1-3 may be the inconsistent scene being repaired: do not treat its conflicting design as the established identity. Judge both original and candidate against image 7, and reject a candidate that changes that identity contrary to the brief. Preserve relevant moving footage and its subject; reject the candidate if footage or its motion is lost. The brief describes the whole film; assess the intended beat of this scene in the context of the surrounding scene plan rather than demanding that every scene contain every film-wide action. Compare them against the brief and narration. Rate both the original and candidate out of 10 using the same criteria; put the original rating in originalScore. Reserve 8 or above for professional, accurate and legible motion that communicates the scene. Set blockingIssue true for any inconsistent recurring identity when continuity is required, factual or scientific error, wrong subject, missing required content, clipped or overlapping labels, or illegible text, even when the candidate looks better than the original. ${isometricOnly ? 'Accept if it scores at least 8 and has no blocking issue, irrespective of the generic original.' : 'Accept only if it scores at least 8, has no blocking issue, and is clearly better than the original. Do not prefer a generic diagram over relevant photos or footage.'} Give concrete improvement notes.`,
+            system: `${isometricOnly ? 'This is a code-only 2D isometric film: the candidate must clearly show animated isometric objects and processes, match the scene and maintain continuity. Ignore the generic original when evaluating the candidate; useCandidate should be true when the candidate is professional and meets the brief, even if the original looks better. ' : ''}You are the video editor. Images 1, 2 and 3 are the existing scene at early, middle and late times; images 4, 5 and 6 are the new custom illustration or coded animation at those same times. If image 7 is provided, it is the preceding approved scene and is the authoritative visual reference for any recurring emblem, character or product. The original scene in images 1-3 may be the inconsistent scene being repaired: do not treat its conflicting design as the established identity. Judge both original and candidate against image 7, and reject a candidate that changes that identity contrary to the brief. Preserve relevant moving footage and its subject; reject the candidate if footage or its motion is lost. The brief describes the whole film; assess the intended beat of this scene in the context of the surrounding scene plan rather than demanding that every scene contain every film-wide action. Compare them against the brief and narration. Rate both the original and candidate out of 10 using the same criteria; put the original rating in originalScore. Reserve 8 or above for professional, accurate and legible motion that communicates the scene. Set blockingIssue true for any inconsistent recurring identity when continuity is required, factual or scientific error, disconnected or unsupported machinery that makes the depicted process physically unclear, wrong subject, missing required content, clipped or overlapping labels, or illegible text, even when the candidate looks better than the original. ${isometricOnly ? 'Accept if it scores at least 8 and has no blocking issue, irrespective of the generic original.' : 'Accept only if it scores at least 8, has no blocking issue, and is clearly better than the original. Do not prefer a generic diagram over relevant photos or footage.'} Give concrete improvement notes.`,
             prompt: JSON.stringify({ brief: prompt, scene, filmScenes: current.scenes, narration: current.narration.find(n => n.sceneId === sceneId)?.text, hasContinuityReference: Boolean(continuityFrame), motionEvidence }),
             schemaName: 'CustomSceneReview', jsonSchema: { type: 'object', properties: { useCandidate: { type: 'boolean' }, score: { type: 'number' }, originalScore: { type: 'number' }, blockingIssue: { type: 'boolean' }, reason: { type: 'string' } }, required: ['useCandidate', 'score', 'originalScore', 'blockingIssue', 'reason'], additionalProperties: false },
             images: [...beforeImages, ...afterImages, ...(continuityFrame ? [continuityFrame] : []), ...(motion?.crops ?? [])].map(image => ({ mimeType: 'image/jpeg', base64: image.toString('base64') })), temperature: 0.1, maxTokens: 500
@@ -996,6 +1002,25 @@ export class Orchestrator {
     const dir = this.store.dir(projectId)
     let made = 0
     let missed = 0
+    const attachClip = async (sceneId: string, sceneDuration: number, plate: NonNullable<VideoSpec['crafts'][number]['plate']>, hit: { buffer: Buffer; durationSec?: number }) => {
+      const relative = `assets/plates/${sceneId}.mp4`
+      const clipPath = join(dir, relative)
+      mkdirSync(join(dir, 'assets', 'plates'), { recursive: true })
+      writeFileSync(clipPath, hit.buffer)
+      let file = plate.file, depthFile = plate.depthFile
+      // Continue from the actual last frame rather than cutting to a different
+      // image of the subject; the director's still may differ in lighting,
+      // camera angle or even equipment identity.
+      if (hit.durationSec && hit.durationSec < sceneDuration) {
+        const frame = lastFrame(clipPath)
+        if (!frame) throw new Error('short clip has no usable closing frame')
+        file = `assets/plates/${sceneId}-clip-still.jpg`
+        depthFile = `assets/plates/${sceneId}-clip-depth.png`
+        writeFileSync(join(dir, file), frame)
+        await sharp({ create: { width: 16, height: 16, channels: 3, background: '#808080' } }).png().toFile(join(dir, depthFile))
+      }
+      return { ...plate, motion: true, file, depthFile, clipFile: relative, clipDurationSec: hit.durationSec }
+    }
     const attempted = new Set<string>()
     for (const scene of spec.scenes) {
       if (this.cancelled) break
@@ -1011,15 +1036,14 @@ export class Orchestrator {
           camera: plate.camera,
           imageStyle: spec.design.imageStyle,
           still,
+          allowShortClip: true,
           width: preset.width,
           height: preset.height,
           durationSec: scene.durationSec,
           projectId
         })
         if (!r) throw new Error('no clip source')
-        mkdirSync(join(dir, 'assets', 'plates'), { recursive: true })
-        writeFileSync(join(dir, 'assets', 'plates', `${scene.id}.mp4`), r.buffer)
-        c.plate = { ...plate, clipFile: `assets/plates/${scene.id}.mp4` }
+        c.plate = await attachClip(scene.id, scene.durationSec, plate, r)
         made += 1
       } catch (err) {
         this.store.appendEvent(projectId, `clip for ${scene.id} skipped: ${String((err as Error)?.message ?? err).slice(0, 160)}`)
@@ -1035,11 +1059,9 @@ export class Orchestrator {
       const c = crafts.get(scene.id), plate = c?.plate
       if (!c || c.background !== 'plate' || !plate || plate.clipFile || attempted.has(scene.id)) continue
       try {
-        const hit = await media.motionClip({ prompt: plate.prompt, subjectLabel: plate.subjectLabel, camera: plate.camera, imageStyle: spec.design.imageStyle, width: preset.width, height: preset.height, durationSec: scene.durationSec, projectId, libraryOnly: true })
+        const hit = await media.motionClip({ prompt: plate.prompt, subjectLabel: plate.subjectLabel, camera: plate.camera, imageStyle: spec.design.imageStyle, width: preset.width, height: preset.height, durationSec: scene.durationSec, projectId, libraryOnly: true, allowShortClip: true })
         if (!hit) continue
-        mkdirSync(join(dir, 'assets', 'plates'), { recursive: true })
-        writeFileSync(join(dir, 'assets', 'plates', `${scene.id}.mp4`), hit.buffer)
-        c.plate = { ...plate, motion: true, clipFile: `assets/plates/${scene.id}.mp4` }
+        c.plate = await attachClip(scene.id, scene.durationSec, plate, hit)
         this.store.appendEvent(projectId, `clip for ${scene.id}: reused a suitable library clip after another beat had no match`)
         made++; missed--
       } catch { /* retain the existing still and try the next beat */ }
@@ -1289,7 +1311,7 @@ export class Orchestrator {
     let directed = false
     const isometricOnly = isIsometricOnlyBrief(meta.prompt)
     if (isometricOnly && (spec.crafts.length || spec.customScenes?.length)) {
-      spec = { ...spec, crafts: [], customScenes: [], customVideos: [] }
+      spec = { ...spec, crafts: [], customScenes: [] }
       this.store.saveSpec(projectId, spec)
     }
     if (!isometricOnly && opts.craft !== 'classic' && (!spec.design || spec.crafts.length < spec.scenes.length)) {

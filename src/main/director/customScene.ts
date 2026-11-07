@@ -3,13 +3,20 @@ import type { LLMProvider } from '../providers/types'
 import type { VideoSpec } from '@shared/spec'
 
 const tags = new Set(['svg', 'g', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'tspan', 'defs', 'linearGradient', 'radialGradient', 'stop', 'clipPath'])
-const attrs = new Set(['xmlns', 'viewBox', 'width', 'height', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r', 'rx', 'ry', 'd', 'points', 'fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-linecap', 'stroke-linejoin', 'opacity', 'transform', 'id', 'offset', 'stop-color', 'stop-opacity', 'gradientUnits', 'gradientTransform', 'clip-path', 'font-family', 'font-size', 'font-weight', 'text-anchor', 'dominant-baseline', 'letter-spacing'])
+const attrs = new Set(['xmlns', 'viewBox', 'width', 'height', 'x', 'y', 'dx', 'dy', 'x1', 'y1', 'x2', 'y2', 'cx', 'cy', 'r', 'rx', 'ry', 'd', 'points', 'fill', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-linecap', 'stroke-linejoin', 'opacity', 'transform', 'id', 'offset', 'stop-color', 'stop-opacity', 'gradientUnits', 'gradientTransform', 'clip-path', 'font-family', 'font-size', 'font-weight', 'text-anchor', 'dominant-baseline', 'letter-spacing'])
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
 /** Strict allowlist: generated code is an inert SVG image, never browser script or an external resource. */
 export function validateSceneSvg(input: string): string {
-  if (input.length > 100000 || /<!|<\?/i.test(input)) throw new Error('Invalid SVG document')
-  const doc = parseDocument(input, { xmlMode: true, decodeEntities: true })
+  if (input.length > 100000) throw new Error('Invalid SVG document')
+  // Models commonly include harmless XML comments or a standard XML header.
+  // Strip only those forms; DTDs, entities and all other instructions remain
+  // prohibited before the strict element/attribute allowlist is applied.
+  const cleaned = input
+    .replace(/^\s*<\?xml\s+version=(['"])1\.[01]\1(?:\s+encoding=(['"])utf-8\2)?\s*\?>/i, '')
+    .replace(/<!--(?:(?!--)[\s\S])*-->/g, '')
+  if (/<!|<\?/i.test(cleaned)) throw new Error('Invalid SVG document')
+  const doc = parseDocument(cleaned, { xmlMode: true, decodeEntities: true })
   let count = 0
   const render = (node: any): string => {
     if (node.type === 'text') return esc(node.data ?? '')
@@ -17,7 +24,7 @@ export function validateSceneSvg(input: string): string {
     const fields = Object.entries(node.attribs as Record<string, string>).map(([key, value]) => {
       if (key === 'xmlns' && value !== 'http://www.w3.org/2000/svg') throw new Error('Unsupported SVG namespace')
       if (key === 'id' && !/^[A-Za-z][\w.-]*$/.test(value)) throw new Error('Invalid SVG id')
-      if (!attrs.has(key) || value.length > 10000 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value) || (key !== 'xmlns' && /(?:javascript:|data:|https?:|file:|@import|expression\s*\()/i.test(value))) throw new Error('Unsupported SVG attribute')
+      if (!attrs.has(key) || value.length > 10000 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value) || (key !== 'xmlns' && /(?:javascript:|data:|https?:|file:|@import|expression\s*\()/i.test(value))) throw new Error(`Unsupported SVG attribute: ${key.slice(0, 80)}`)
       if (/url\s*\(/i.test(value) && !/^url\(#[A-Za-z][\w.-]*\)$/.test(value)) throw new Error('External SVG reference')
       return ` ${key}="${esc(value)}"`
     }).join('')
@@ -52,7 +59,7 @@ export async function authorCustomScene(provider: LLMProvider, spec: VideoSpec, 
   if (!scene) throw new Error('Unknown scene')
   const request = {
     system: 'Write one original SVG scene as source code for a professional video. Return only an SVG element with a viewBox. Make it visually specific to the scene and coherent with the film. If an image of the preceding approved scene is supplied, preserve the identity and design of recurring characters, emblems and products. Use strong hierarchy and composition; avoid template dashboards, long text, and illegible type. Keep all important content inside 90% of the frame. Group up to six successive visual actions in <g id="motion1">, <g id="motion2"> and so on, in narrative order; the renderer will reveal those groups over the scene. Keep the background and static context outside those groups. Supported elements: svg, g, path, rect, circle, ellipse, line, polyline, polygon, text, tspan, defs, linearGradient, radialGradient, stop, clipPath. No script, external resources, links, CSS, foreignObject, image or animation elements. Use only explicit SVG attributes.',
-    prompt: JSON.stringify({ brief: prompt, scene, narration: spec.narration.find(n => n.sceneId === sceneId)?.text, palette: spec.palette, platform: spec.platform, feedback, previousSvg }),
+    prompt: JSON.stringify({ brief: prompt, scene, narration: spec.narration.find(n => n.sceneId === sceneId)?.text, palette: spec.palette, platform: spec.platform, allowedAttributes: [...attrs], feedback, previousSvg }),
     images: continuityFrame ? [{ mimeType: 'image/jpeg', base64: continuityFrame.toString('base64') }] : undefined,
     temperature: 0.6, maxTokens: 6000
   }

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { resolve, join } from 'node:path'
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { resolve, join, dirname } from 'node:path'
+import { tmpdir } from 'node:os'
 import { appRoot } from '../paths'
 
 /**
@@ -71,7 +72,7 @@ export function ensureBrowser(): Promise<boolean> {
 }
 
 export class RenderService {
-  private active = new Map<string, ReturnType<typeof spawn>>()
+  private active = new Map<string, { child?: ReturnType<typeof spawn>; cancelled: boolean }>()
 
   async render(
     projectDir: string,
@@ -79,18 +80,35 @@ export class RenderService {
     opts: { fps?: number; quality?: string; gpu?: boolean; onProgress?: (p: RenderProgress) => void },
     jobKey = 'default'
   ): Promise<RenderResult> {
+    const job = { cancelled: false } as { child?: ReturnType<typeof spawn>; cancelled: boolean }
+    this.active.set(jobKey, job)
     await ensureBrowser()
+    if (job.cancelled) {
+      if (this.active.get(jobKey) === job) this.active.delete(jobKey)
+      return { ok: false, error: 'render cancelled' }
+    }
     // Determinism strategy (measured empirically):
     //  - Chrome's GPU rasterization varies run-to-run  -> --no-browser-gpu default
     //  - multi-worker capture varies text antialiasing  -> single worker for
     //    standard/delivery (byte-stable re-renders), parallel workers only for drafts
     const quality = opts.quality ?? 'standard'
+    // HyperFrames nests a transaction directory under its output. On Windows,
+    // that extra path can exceed FFmpeg's path limit even when the final path
+    // is usable. Render to a short private directory, then publish the result.
+    let tempDir: string | undefined
+    try {
+      if (process.platform === 'win32') tempDir = mkdtempSync(join(tmpdir(), 'vg-'))
+    } catch (err) {
+      if (this.active.get(jobKey) === job) this.active.delete(jobKey)
+      return { ok: false, error: `Could not create temporary render directory: ${String(err)}` }
+    }
+    const renderOutput = tempDir ? join(tempDir, 'video.mp4') : output
     const args = [
       ...hfArgs(),
       'render',
       projectDir,
       '--output',
-      output,
+      renderOutput,
       '--quiet',
       ...(opts.gpu ? [] : ['--no-browser-gpu']),
       ...(quality === 'draft' ? ['--workers', 'auto'] : ['--workers', '1']),
@@ -104,7 +122,7 @@ export class RenderService {
         cwd: projectDir,
         windowsHide: true
       })
-      this.active.set(jobKey, child)
+      job.child = child
 
       let stderr = ''
       child.stdout?.on('data', (chunk: Buffer) => {
@@ -123,25 +141,50 @@ export class RenderService {
       child.stderr?.on('data', (chunk: Buffer) => {
         stderr += chunk.toString()
       })
-      child.on('error', (err) => {
-        this.active.delete(jobKey)
-        resolvePromise({ ok: false, error: `render spawn failed: ${err.message}` })
-      })
+      let finished = false
+      const finish = (result: RenderResult) => {
+        if (finished) return
+        finished = true
+        if (this.active.get(jobKey) === job) this.active.delete(jobKey)
+        if (tempDir) { try { rmSync(tempDir, { recursive: true, force: true }) } catch { /* best effort */ } }
+        resolvePromise(result)
+      }
+      child.on('error', (err) => finish({ ok: false, error: `render spawn failed: ${err.message}` }))
       child.on('close', (code) => {
-        this.active.delete(jobKey)
         const durationSec = (Date.now() - started) / 1000
-        if (code === 0 && existsSync(output)) {
-          resolvePromise({ ok: true, output, durationSec })
+        if (job.cancelled) {
+          finish({ ok: false, error: 'render cancelled', durationSec })
+          return
+        }
+        if (code === 0 && existsSync(renderOutput)) {
+          if (tempDir) {
+            let staged: string | undefined
+            try {
+              // Stage beside the destination so the final rename is atomic and
+              // preserves any existing render if copying fails.
+              const stageDir = mkdtempSync(join(dirname(output), '.vg-'))
+              staged = stageDir
+              const stageFile = join(stageDir, 'video.mp4')
+              copyFileSync(renderOutput, stageFile)
+              renameSync(stageFile, output)
+            } catch (err) {
+              finish({ ok: false, error: `Could not save rendered video: ${String(err)}`, durationSec })
+              return
+            } finally {
+              if (staged) { try { rmSync(staged, { recursive: true, force: true }) } catch { /* best effort */ } }
+            }
+          }
+          finish({ ok: true, output, durationSec })
         } else {
-          resolvePromise({ ok: false, error: stderr.slice(-2000) || `render exited ${code}` , durationSec })
+          finish({ ok: false, error: stderr.slice(-2000) || `render exited ${code}` , durationSec })
         }
       })
     })
   }
 
   cancel(jobKey = 'default'): void {
-    const child = this.active.get(jobKey)
-    if (child) child.kill()
+    const job = this.active.get(jobKey)
+    if (job) { job.cancelled = true; job.child?.kill() }
   }
 
   /**
@@ -180,7 +223,9 @@ export class RenderService {
     ]
     return new Promise((resolvePromise) => {
       const child = spawn(hfBin(), args, {
-        env: toolEnv(),
+        // The detached warm-check helper keeps the installed executable locked
+        // for five minutes after the app closes, blocking Windows updates.
+        env: { ...toolEnv(), CI: '1' },
         cwd: projectDir,
         windowsHide: true
       })

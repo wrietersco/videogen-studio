@@ -117,6 +117,23 @@ type SceneDraft = { kind: Scene['kind']; content: Record<string, unknown>; weigh
 
 function buildArc(topic: string, style: StyleFamily, totalSec: number, rng: () => number): SceneDraft[] {
   const T = titleCase(topic)
+  // A short offline brief cannot fit the six-scene default arc or its long
+  // captions. Use the subject and any explicitly supplied beats, without
+  // inventing statistics or claims, so readability does not stretch the film.
+  if (totalSec <= 12) {
+    const [subject, details] = topic.split(/,?\s+with\s+/i, 2)
+    const short = (value: string) => titleCase(value.trim().split(/\s+/).slice(0, 4).join(' '))
+    const title = short(subject) || short(topic)
+    if (style === 'motion3d') return [
+      { kind: 'particles', weight: 1, content: { headline: title, density: 'medium' } },
+      { kind: 'showcase3d', weight: 1, content: { objectStyle: 'torusknot', material: 'chrome', motion: 'dollyOrbit', headline: title } }
+    ]
+    const beats = details?.split(/\s*,\s*|\s+and\s+/i).map(short).filter(Boolean).slice(0, 3) ?? []
+    if (!beats.length) return [{ kind: 'title', weight: 1, content: { headline: title } }]
+    return beats.map((beat, i) => i === 0
+      ? { kind: 'title', weight: 1, content: { headline: title, subline: beat } }
+      : { kind: 'statement', weight: 1, content: { headline: beat } })
+  }
   const hooks = [
     `Stop scrolling.`,
     `You're doing ${topic} wrong.`,

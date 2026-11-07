@@ -47,10 +47,11 @@ export async function decideCreative(prompt: string, provider: LLMProvider): Pro
       : /\b(tiktok)\b/i.test(prompt) ? 'tiktok'
       : /\b(reels?)\b/i.test(prompt) ? 'instagram-reels'
       : /\b(instagram (post|feed))\b/i.test(prompt) ? 'instagram-feed'
-      : /\bfacebook\b/i.test(prompt) ? 'facebook-feed' : 'youtube'
+      : /\bfacebook\b/i.test(prompt) ? 'facebook-feed'
+      : /\b(vertical|portrait)\b|\b9\s*:\s*16\b/i.test(prompt) ? 'youtube-shorts' : 'youtube'
     const styleHint: StyleFamily = /\b(3d|logo reveal|particles?)\b/i.test(prompt) ? 'motion3d'
       : /\b(hype|meme|viral|punchy)\b/i.test(prompt) ? 'social' : 'explainer'
-    const seconds = /\b(\d{1,3})\s*(seconds?|secs?|s)\b/i.exec(prompt)
+    const seconds = /\b(\d{1,3})\s*[-–]?\s*(seconds?|secs?|s)\b/i.exec(prompt)
     const requested = seconds ? Number(seconds[1]) : PLATFORM_PRESETS[platform].defaultDuration
     const [min, max] = PLATFORM_PRESETS[platform].durationRange
     return { platform, styleHint, durationHintSec: Math.max(min, Math.min(max, requested)), look: chooseLook(prompt, true).look, reason: 'format inferred from the prompt' }

@@ -6,7 +6,7 @@ import { Planner } from '../src/main/pipeline/planner'
 import { compose } from '../src/main/composer'
 import { resolve } from 'node:path'
 import type { LLMProvider } from '../src/main/providers/types'
-import { Orchestrator, isBlankReviewFrame, isIsometricOnlyBrief, canReuseNarrationTiming } from '../src/main/pipeline/orchestrator'
+import { Orchestrator, extractAudioLayer, isBlankReviewFrame, isIsometricOnlyBrief, canReuseNarrationTiming } from '../src/main/pipeline/orchestrator'
 import { ProjectStore } from '../src/main/store/projectStore'
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -16,6 +16,10 @@ import sharp from 'sharp'
 const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#123456"/><g id="motion1"><circle cx="50" cy="50" r="20" fill="#fff"/></g></svg>'
 
 describe('custom scene authoring', () => {
+  it('preserves the mixed soundtrack when a scene revision reads the composition', () => {
+    const html = '<audio id="audio-clip-1" class="clip" src="assets/audio/mix.m4a" data-start="0" data-duration="40.00" data-track-index="0" data-volume="1"></audio>'
+    expect(extractAudioLayer(html).clips).toEqual([{ file: 'assets/audio/mix.m4a', startSec: 0, durationSec: 40, trackIndex: 0, volume: 1 }])
+  })
   it('routes whole-film isometric briefs without capturing mixed-media briefs', () => {
     expect(isIsometricOnlyBrief('Make a full 2D isometric video, no AI images or video')).toBe(true)
     expect(isIsometricOnlyBrief('An isometric animated factory explainer')).toBe(true)
@@ -63,6 +67,29 @@ describe('custom scene authoring', () => {
     expect(internal.runCustomScenes).toHaveBeenCalledOnce()
     expect(internal.runPlates).not.toHaveBeenCalled()
   })
+  it('preserves saved animation when resuming an isometric project with obsolete artwork', async () => {
+    const provider = new MockProvider()
+    const spec = await new Planner(provider).plan({ userPrompt: 'full isometric factory', platform: 'tiktok' })
+    const store = new ProjectStore(mkdtempSync(join(tmpdir(), 'isometric-resume-')))
+    const project = store.create('full isometric factory', 'test')
+    const saved = { sceneId: spec.scenes[0].id, file: 'assets/custom/scene.mp4', source: 'saved code' }
+    spec.customVideos = [saved]
+    spec.crafts = [{} as (typeof spec.crafts)[number]]
+    store.saveSpec(project.id, spec)
+    const orchestrator = new Orchestrator(store, () => provider)
+    const internal = orchestrator as any
+    internal.runCompose = vi.fn(async () => ({ clips: [], captions: [], hasNarration: false }))
+    internal.runQaLoop = vi.fn(async () => ({ ok: true, errors: [], warnings: [] }))
+    internal.runCustomScenes = vi.fn(async (_id: string, resumed: typeof spec) => {
+      expect(resumed.customVideos).toEqual([saved])
+      expect(resumed.crafts).toEqual([])
+      return resumed
+    })
+    internal.captureThumbs = vi.fn(async () => {})
+    internal.runRender = vi.fn(async () => ({ output: 'test.mp4' }))
+    await orchestrator.resume(project.id, { quality: 'draft' })
+    expect(store.readSpec(project.id)?.customVideos).toEqual([saved])
+  })
   it('fails explicitly when a code-only isometric film has no writing model', async () => {
     const provider = new MockProvider()
     const spec = await new Planner(provider).plan({ userPrompt: 'isometric factory', platform: 'tiktok' })
@@ -105,6 +132,8 @@ describe('custom scene authoring', () => {
     const noise = Buffer.from(still)
     for (let pixel = 0; pixel < 10; pixel++) noise.fill(101, pixel * 3, pixel * 3 + 3)
     expect(hasVisibleMotion([still, noise])).toBe(false)
+    const slow = Array.from({ length: 8 }, (_, i) => { const frame = Buffer.from(still); for (let pixel = 0; pixel < 80; pixel++) frame.fill(100 + i * 4, pixel * 3, pixel * 3 + 3); return frame })
+    expect(hasVisibleMotion(slow)).toBe(true)
   })
   it('gives the author the previous approved scene code for exact design continuity', async () => {
     const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'isometric shop', platform: 'tiktok' })
@@ -121,7 +150,12 @@ describe('custom scene authoring', () => {
   })
   it('accepts vector code and rejects executable and external content', () => {
     expect(validateSceneSvg(svg)).toContain('<circle')
+    expect(validateSceneSvg(`<?xml version="1.0" encoding="utf-8"?><!-- layout -->${svg}`)).toContain('<circle')
+    expect(validateSceneSvg('<svg viewBox="0 0 10 10"><text x="0" y="0"><tspan dx="1" dy="2">A</tspan></text></svg>')).toContain('dy="2"')
     for (const bad of [
+      '<!DOCTYPE svg [<!ENTITY xxe SYSTEM "file:///secret">]><svg viewBox="0 0 1 1">&xxe;</svg>',
+      '<?xml-stylesheet href="https://example.com/x.css"?><svg viewBox="0 0 1 1"></svg>',
+      '<!-- invalid -- comment --><svg viewBox="0 0 1 1"></svg>',
       '<svg viewBox="0 0 1 1"><script>alert(1)</script></svg>',
       '<svg viewBox="0 0 1 1"><rect onload="alert(1)"/></svg>',
       '<svg viewBox="0 0 1 1"><image href="https://example.com/a"/></svg>',
