@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -56,6 +56,18 @@ describe('engine-chosen clip scenes', () => {
     expect(html).not.toContain('scene-1-ring')
   })
 
+  it('ends short footage over its still before the source runs out', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'coffee brewing', platform: 'tiktok' })
+    spec.scenes[0].durationSec = 7
+    spec.design = { look: 'documentary', series: 'COFFEE', imageStyle: '', accent: '#fff', accent2: '#aaa' }
+    spec.crafts = spec.scenes.map((s, i) => guardCraft(heuristicCraft(spec, spec.design!, i), s.id, { platesAvailable: false, narration: '' }))
+    spec.crafts[0] = { ...spec.crafts[0], background: 'plate', plate: { prompt: 'coffee', camera: 'push', subject: 'center', subjectLabel: 'coffee', motion: true, clipFile: 'assets/plates/clip.mp4', clipDurationSec: 3.5, file: 'assets/plates/still.jpg', depthFile: 'assets/plates/depth.png' } }
+    const composed = compose(spec, resolve('vendor'), resolve('vendor', 'fonts'))
+    const tag = /<video[^>]*scene-1-clip[^>]*>/.exec(composed.html)?.[0] ?? ''
+    expect(tag).toContain('data-duration="3.500"')
+    expect(composed.html).toContain('scene-1-plate"')
+  })
+
   it('adds the clip ceiling to the pre-flight estimate only when Gemini clips are on', () => {
     const base = { chatModel: 'gemini-3.8-flash', durationSec: 40, directed: true }
     const diff = estimateVideoCost({ ...base, videoModel: 'gemini-omni-1.1-flash' }) - estimateVideoCost(base)
@@ -64,6 +76,48 @@ describe('engine-chosen clip scenes', () => {
 })
 
 describe('motion clips via the media router', () => {
+  it('creates a closing still when a short clip has no existing backdrop', async () => {
+    const { Orchestrator } = await import('../src/main/pipeline/orchestrator')
+    const { ProjectStore } = await import('../src/main/store/projectStore')
+    const root = mkdtempSync(join(tmpdir(), 'vg-short-backdrop-'))
+    const sample = join(root, 'clip.mp4')
+    execFileSync(ffmpegBin(), ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=blue:s=64x96:r=10:d=3.5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', sample])
+    const store = new ProjectStore(join(root, 'projects'))
+    const project = store.create('coffee', 'Coffee')
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'coffee', platform: 'tiktok' })
+    spec.scenes[0].durationSec = 7
+    spec.design = { look: 'documentary', series: 'COFFEE', imageStyle: '', accent: '#fff', accent2: '#aaa' }
+    spec.crafts = spec.scenes.map((scene, i) => craft(scene.id, i === 0))
+    const media = { clipsAvailable: () => true, motionClip: async () => ({ buffer: readFileSync(sample), assetId: 'clip', source: 'stock', durationSec: 3.5 }) } as unknown as MediaRouter
+    const orch = new Orchestrator(store, () => new MockProvider(), () => null, media)
+    const crafts = new Map(spec.crafts.map(c => [c.sceneId, c]))
+    expect(await (orch as any).runClips(project.id, spec, crafts, () => {})).toBe(1)
+    const plate = crafts.get(spec.scenes[0].id)?.plate
+    expect(plate?.clipDurationSec).toBe(3.5)
+    expect(existsSync(join(project.dir, plate!.file!))).toBe(true)
+    expect(existsSync(join(project.dir, plate!.depthFile!))).toBe(true)
+    // A pre-existing still may depict a different setup; use the footage's
+    // closing frame in that case too, so the transition remains continuous.
+    const priorFile = plate!.file!, priorDepth = plate!.depthFile!
+    const second = { ...plate!, file: priorDepth, depthFile: priorFile, clipFile: undefined, motion: true }
+    crafts.set(spec.scenes[0].id, { ...crafts.get(spec.scenes[0].id)!, plate: second })
+    expect(await (orch as any).runClips(project.id, spec, crafts, () => {})).toBe(1)
+    expect(crafts.get(spec.scenes[0].id)?.plate?.file).toBe(priorFile)
+  }, 60_000)
+  it('uses a relevant short library clip only when a still can cover the rest of the scene', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vg-short-clip-'))
+    const file = join(dir, 'clip.mp4')
+    execFileSync(ffmpegBin(), ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=blue:s=64x96:r=10:d=3.5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', file])
+    const lib = new AssetLibrary(join(dir, 'library'), null)
+    const saved = lib.add(readFileSync(file), '.mp4', { kind: 'video', source: 'generated', title: 'coffee brewing', tags: ['coffee', 'brewing'], prompt: 'coffee brewing', durationSec: 3.5, width: 64, height: 96, license: { name: 'Generated', requiresAttribution: false } })
+    const router = new MediaRouter({ library: lib, settings: () => ({ ...DEFAULT_SETTINGS, autopilot: true, media: { ...DEFAULT_SETTINGS.media, video: 'stock' } }), key: () => '', provider: () => new MockProvider(), autoImageProvider: () => null })
+    ;(router as unknown as { scoreVideo: () => Promise<number> }).scoreVideo = async () => 9
+    const req = { prompt: 'coffee brewing', subjectLabel: 'coffee brewing', width: 64, height: 96, durationSec: 7, projectId: 'p1', libraryOnly: true }
+    expect(await router.motionClip(req)).toBeNull()
+    const selected = await router.motionClip({ ...req, allowShortClip: true })
+    expect(selected?.assetId).toBe(saved.id)
+    expect(selected?.durationSec).toBe(3.5)
+  }, 60_000)
   it('reassigns an unavailable motion beat to a suitable library clip without another paid request', async () => {
     const { Orchestrator } = await import('../src/main/pipeline/orchestrator')
     const { ProjectStore } = await import('../src/main/store/projectStore')

@@ -117,12 +117,29 @@ type SceneDraft = { kind: Scene['kind']; content: Record<string, unknown>; weigh
 
 function buildArc(topic: string, style: StyleFamily, totalSec: number, rng: () => number): SceneDraft[] {
   const T = titleCase(topic)
+  // A short offline brief cannot fit the six-scene default arc or its long
+  // captions. Use the subject and any explicitly supplied beats, without
+  // inventing statistics or claims, so readability does not stretch the film.
+  if (totalSec <= 12) {
+    const [subject, details] = topic.split(/,?\s+with\s+/i, 2)
+    const short = (value: string) => titleCase(value.trim().split(/\s+/).slice(0, 4).join(' '))
+    const title = short(subject) || short(topic)
+    if (style === 'motion3d') return [
+      { kind: 'particles', weight: 1, content: { headline: title, density: 'medium' } },
+      { kind: 'showcase3d', weight: 1, content: { objectStyle: 'torusknot', material: 'chrome', motion: 'dollyOrbit', headline: title } }
+    ]
+    const beats = details?.split(/\s*,\s*|\s+and\s+/i).map(short).filter(Boolean).slice(0, 3) ?? []
+    if (!beats.length) return [{ kind: 'title', weight: 1, content: { headline: title } }]
+    return beats.map((beat, i) => i === 0
+      ? { kind: 'title', weight: 1, content: { headline: title, subline: beat } }
+      : { kind: 'statement', weight: 1, content: { headline: beat } })
+  }
   const hooks = [
-    `Stop scrolling.`,
-    `You're doing ${topic} wrong.`,
-    `Nobody talks about this:`,
+    `A closer look at ${topic}.`,
+    `Explore ${topic}.`,
+    `Introducing ${topic}.`,
     `${T}, explained fast.`,
-    `This changes everything about ${topic}.`
+    `Discover ${topic}.`
   ]
   const hook = hooks[Math.floor(rng() * hooks.length)]
 
@@ -130,8 +147,8 @@ function buildArc(topic: string, style: StyleFamily, totalSec: number, rng: () =
     const arc: SceneDraft[] = [
       { kind: 'title', weight: 1.1, content: { headline: hook, kicker: T.toUpperCase() } },
       { kind: 'statement', weight: 1.4, content: { headline: `Here's the thing about ${topic}:`, subline: 'It is simpler than you think.' } },
-      { kind: 'bullets', weight: 2.2, content: { headline: '3 things to know', bullets: [`Why ${topic} matters`, `The one mistake everyone makes`, `What to do instead`] } },
-      { kind: 'stat', weight: 1.2, content: { value: '10×', label: 'better results', context: `when you apply this to ${topic}` } },
+      { kind: 'bullets', weight: 2.2, content: { headline: 'Explore the idea', bullets: [`Introducing ${topic}`, 'A closer look', 'Key points'] } },
+      { kind: 'statement', weight: 1.2, content: { headline: `Explore ${topic}` } },
       { kind: 'cta', weight: 1.0, content: { headline: `Now you know ${topic}.`, action: 'Follow for more' } }
     ]
     return arc
@@ -141,7 +158,7 @@ function buildArc(topic: string, style: StyleFamily, totalSec: number, rng: () =
     const arc: SceneDraft[] = [
       { kind: 'particles', weight: 1.2, content: { headline: T3, subline: 'A visual journey', density: 'medium' } },
       { kind: 'showcase3d', weight: 1.8, content: { objectStyle: 'torusknot', material: 'chrome', motion: 'dollyOrbit', headline: `The shape of ${T3}` } },
-      { kind: 'statement', weight: 1.4, content: { headline: `${T3} isn't what you think.`, subline: 'Look closer.' } },
+      { kind: 'statement', weight: 1.4, content: { headline: `Discover ${T3}`, subline: 'A closer look.' } },
       { kind: 'showcase3d', weight: 1.8, content: { objectStyle: 'crystal', material: 'glass', motion: 'explodeAssemble', headline: 'Complex. Beautiful.' } },
       { kind: 'cta', weight: 1.0, content: { headline: T3, action: 'Explore the full film' } }
     ]
@@ -149,11 +166,11 @@ function buildArc(topic: string, style: StyleFamily, totalSec: number, rng: () =
   }
   // explainer (default)
   const arc: SceneDraft[] = [
-    { kind: 'title', weight: 1.2, content: { headline: `${T}`, subline: 'In 60 seconds', kicker: 'EXPLAINER' } },
-    { kind: 'statement', weight: 1.3, content: { headline: 'The problem:', subline: `${titleCase(topic)} is confusing because nobody explains it simply.` } },
+    { kind: 'title', weight: 1.2, content: { headline: `${T}`, subline: 'An overview', kicker: 'EXPLAINER' } },
+    { kind: 'statement', weight: 1.3, content: { headline: `Introducing ${titleCase(topic)}` } },
     { kind: 'bullets', weight: 2.4, content: { headline: `How ${topic} works`, bullets: ['The core idea', 'Why it matters', 'How to use it'] } },
-    { kind: 'comparison', weight: 2.0, content: { headline: 'Old way vs new way', left: { label: 'Before', points: ['Confusing', 'Slow', 'Expensive'] }, right: { label: 'After', points: ['Clear', 'Fast', 'Affordable'] } } },
-    { kind: 'stat', weight: 1.2, content: { value: '87%', label: 'of people prefer simple', context: `Source: common sense` } },
+    { kind: 'statement', weight: 2.0, content: { headline: `A closer look at ${topic}` } },
+    { kind: 'statement', weight: 1.2, content: { headline: `Explore ${topic}` } },
     { kind: 'cta', weight: 1.0, content: { headline: `That's ${topic}.`, subline: 'Now you can explain it too.', action: 'Share this' } }
   ]
   return arc

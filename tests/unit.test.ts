@@ -112,14 +112,15 @@ describe('planner clamp', () => {
     const mock = new MockProvider()
     const long = await new Planner(mock).plan({ userPrompt: 'coffee', platform: 'tiktok', durationHintSec: 30 })
     const short = await new Planner(mock).plan({ userPrompt: 'coffee', platform: 'tiktok', durationHintSec: 15 })
-    let calls = 0
+    let calls = 0, repairPrompt = ''
     const provider = {
       id: 'openai' as const, label: 'fake', isConfigured: async () => true, listModels: async () => [], generateText: async () => '',
-      generateJSON: async <T,>() => structuredClone(++calls === 1 ? long : short) as T
+      generateJSON: async <T,>(request: { prompt: string }) => { if (++calls > 1) repairPrompt = request.prompt; return structuredClone(calls === 1 ? long : short) as T }
     }
     const result = await new Planner(provider).plan({ userPrompt: 'coffee', platform: 'tiktok', durationHintSec: 15 })
     expect(calls).toBe(2)
     expect(Math.abs(result.durationSec - 15)).toBeLessThan(Math.abs(long.durationSec - 15))
+    expect(repairPrompt).toContain('production directions out of on-screen text')
   })
   it('asks for a tighter plan when the requested duration is exceeded by less than 15 percent', async () => {
     const mock = new MockProvider()
@@ -184,6 +185,13 @@ describe('deterministic QA fixes', () => {
     const report: CheckReport = { ok: false, errors: [{ message: 'contrast ratio below WCAG AA' }], warnings: [] }
     const fixed = applyDeterministicFixes(baseSpec, report)
     expect(fixed.palette.fg.toLowerCase()).toBe('#ffffff')
+  })
+
+  it('also brightens the accent used by directed captions on images', () => {
+    const spec = { ...baseSpec, design: { look: 'documentary' as const, series: 'TEST', imageStyle: '', accent: '#ffb547', accent2: '#00e5ff' } }
+    const report: CheckReport = { ok: false, errors: [{ message: 'Contrast is 2.7:1', selector: '#scene-1-c0' }], warnings: [] }
+    const fixed = applyDeterministicFixes(spec, report)
+    expect(fixed.design?.accent).toBe('#FFFFFF')
   })
 
   it('returns the same spec when no fix applies (stops the loop)', () => {

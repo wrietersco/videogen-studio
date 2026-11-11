@@ -29,6 +29,8 @@ describe('autopilot', () => {
     expect(await decideCreative('Make a 15 second TikTok hype edit about gaming', mock)).toMatchObject({ platform: 'tiktok', styleHint: 'social', durationHintSec: 15 })
     expect(await decideCreative('A 60 second YouTube 3D logo reveal with particles', mock)).toMatchObject({ platform: 'youtube', styleHint: 'motion3d', durationHintSec: 60 })
     expect(await decideCreative('Explain how coffee is made', mock)).toMatchObject({ platform: 'youtube', styleHint: 'explainer' })
+    expect(await decideCreative('Create an 8 second vertical animated video about the water cycle', mock)).toMatchObject({ platform: 'youtube-shorts', durationHintSec: 8 })
+    expect(await decideCreative('Create an 8-second vertical video', mock)).toMatchObject({ platform: 'youtube-shorts', durationHintSec: 8 })
   })
 
   it('uses the configured provider decision and rejects invalid decisions', async () => {

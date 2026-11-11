@@ -161,6 +161,24 @@ describe('scene director (mock heuristics)', () => {
     expect(system).toContain('intentionally has no headline')
   })
 
+  it('shows the critic the moving footage as well as the closing frame', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'coffee explainer', platform: 'tiktok' })
+    spec.scenes = [spec.scenes[0]]
+    spec.scenes[0].durationSec = 7
+    spec.design = { look: 'documentary', series: 'COFFEE', imageStyle: '', accent: '#fff', accent2: '#aaa' }
+    const draft = heuristicCraft(spec, spec.design, 0)
+    spec.crafts = [guardCraft(draft, spec.scenes[0].id, { platesAvailable: true, narration: '' })]
+    spec.crafts[0] = { ...spec.crafts[0], background: 'plate', plate: { prompt: 'tamping', camera: 'push', subject: 'center', subjectLabel: 'tamping', motion: true, clipFile: 'assets/plates/tamp.mp4', clipDurationSec: 3.5 } }
+    const dir = mkdtempSync(join(tmpdir(), 'vg-clip-review-')), frame = join(dir, 'frame.png')
+    writeFileSync(frame, await sharp({ create: { width: 32, height: 32, channels: 3, background: '#c08040' } }).png().toBuffer())
+    let sampled: number[] = [], imageCount = 0
+    const provider: LLMProvider = { id: 'openai', label: 'test', isConfigured: async () => true, listModels: async () => [], generateText: async () => '', generateJSON: async <T,>(req: { images?: unknown[] }) => { imageCount = req.images?.length ?? 0; return { score: 9, notes: [], revise: false } as T } }
+    const renders = { snapshot: async (_dir: string, times: number[]) => { sampled = times; return times.map(() => frame) } } as unknown as RenderService
+    await reviewScenes({ provider, renders, projectDir: dir, spec })
+    expect(sampled).toEqual([1.75, 6.45])
+    expect(imageCount).toBe(2)
+  })
+
   it('sends weak native 3D scenes to the bespoke revision path', async () => {
     const { Orchestrator } = await import('../src/main/pipeline/orchestrator')
     const { ProjectStore } = await import('../src/main/store/projectStore')

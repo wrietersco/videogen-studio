@@ -21,6 +21,7 @@ import { authorCustomScene, chooseCustomScenes } from '../director/customScene'
 import { authorCanvasCode, needsCanvasCode, renderCanvasCode } from '../director/canvasCode'
 import { randomUUID } from 'node:crypto'
 import sharp from 'sharp'
+import { lastFrame } from '../assets/probe'
 
 
 /** Explicit whole-film isometric briefs use a code-only visual pipeline. */
@@ -91,10 +92,15 @@ export async function motionCloseups(first: Buffer, last: Buffer): Promise<{ cha
 export function extractAudioLayer(html: string): AudioLayer {
   if (!html) return { clips: [], captions: [] }
   const clips: AudioLayer['clips'] = []
-  for (const m of html.matchAll(
-    /<audio class="clip" src="([^"]+)" data-start="([\d.]+)" data-duration="([\d.]+)" data-track-index="(\d+)" data-volume="([\d.]+)"><\/audio>/g
-  )) {
-    clips.push({ file: m[1], startSec: parseFloat(m[2]), durationSec: parseFloat(m[3]), trackIndex: parseInt(m[4], 10), volume: parseFloat(m[5]) })
+  for (const match of html.matchAll(/<audio\b([^>]*)><\/audio>/g)) {
+    const attrs = match[1]
+    const attr = (name: string) => new RegExp(`(?:^|\\s)${name}="([^"]*)"`).exec(attrs)?.[1]
+    if (!attr('class')?.split(/\s+/).includes('clip')) continue
+    const file = attr('src'), start = attr('data-start'), duration = attr('data-duration'), track = attr('data-track-index'), volume = attr('data-volume')
+    if (file === undefined || start === undefined || duration === undefined || track === undefined || volume === undefined) continue
+    const startSec = Number(start), durationSec = Number(duration), trackIndex = Number(track), gain = Number(volume)
+    if (![startSec, durationSec, trackIndex, gain].every(Number.isFinite)) continue
+    clips.push({ file, startSec, durationSec, trackIndex, volume: gain })
   }
   let captions: AudioLayer['captions'] = []
   const capMatch = html.match(/const CAPTIONS = (\[.*?\]);/s)
@@ -1002,6 +1008,25 @@ export class Orchestrator {
     const dir = this.store.dir(projectId)
     let made = 0
     let missed = 0
+    const attachClip = async (sceneId: string, sceneDuration: number, plate: NonNullable<VideoSpec['crafts'][number]['plate']>, hit: { buffer: Buffer; durationSec?: number }) => {
+      const relative = `assets/plates/${sceneId}.mp4`
+      const clipPath = join(dir, relative)
+      mkdirSync(join(dir, 'assets', 'plates'), { recursive: true })
+      writeFileSync(clipPath, hit.buffer)
+      let file = plate.file, depthFile = plate.depthFile
+      // Continue from the actual last frame rather than cutting to a different
+      // image of the subject; the director's still may differ in lighting,
+      // camera angle or even equipment identity.
+      if (hit.durationSec && hit.durationSec < sceneDuration) {
+        const frame = lastFrame(clipPath)
+        if (!frame) throw new Error('short clip has no usable closing frame')
+        file = `assets/plates/${sceneId}-clip-still.jpg`
+        depthFile = `assets/plates/${sceneId}-clip-depth.png`
+        writeFileSync(join(dir, file), frame)
+        await sharp({ create: { width: 16, height: 16, channels: 3, background: '#808080' } }).png().toFile(join(dir, depthFile))
+      }
+      return { ...plate, motion: true, file, depthFile, clipFile: relative, clipDurationSec: hit.durationSec }
+    }
     const attempted = new Set<string>()
     for (const scene of spec.scenes) {
       if (this.cancelled) break
@@ -1017,15 +1042,14 @@ export class Orchestrator {
           camera: plate.camera,
           imageStyle: spec.design.imageStyle,
           still,
+          allowShortClip: true,
           width: preset.width,
           height: preset.height,
           durationSec: scene.durationSec,
           projectId
         })
         if (!r) throw new Error('no clip source')
-        mkdirSync(join(dir, 'assets', 'plates'), { recursive: true })
-        writeFileSync(join(dir, 'assets', 'plates', `${scene.id}.mp4`), r.buffer)
-        c.plate = { ...plate, clipFile: `assets/plates/${scene.id}.mp4` }
+        c.plate = await attachClip(scene.id, scene.durationSec, plate, r)
         made += 1
       } catch (err) {
         this.store.appendEvent(projectId, `clip for ${scene.id} skipped: ${String((err as Error)?.message ?? err).slice(0, 160)}`)
@@ -1041,11 +1065,9 @@ export class Orchestrator {
       const c = crafts.get(scene.id), plate = c?.plate
       if (!c || c.background !== 'plate' || !plate || plate.clipFile || attempted.has(scene.id)) continue
       try {
-        const hit = await media.motionClip({ prompt: plate.prompt, subjectLabel: plate.subjectLabel, camera: plate.camera, imageStyle: spec.design.imageStyle, width: preset.width, height: preset.height, durationSec: scene.durationSec, projectId, libraryOnly: true })
+        const hit = await media.motionClip({ prompt: plate.prompt, subjectLabel: plate.subjectLabel, camera: plate.camera, imageStyle: spec.design.imageStyle, width: preset.width, height: preset.height, durationSec: scene.durationSec, projectId, libraryOnly: true, allowShortClip: true })
         if (!hit) continue
-        mkdirSync(join(dir, 'assets', 'plates'), { recursive: true })
-        writeFileSync(join(dir, 'assets', 'plates', `${scene.id}.mp4`), hit.buffer)
-        c.plate = { ...plate, motion: true, clipFile: `assets/plates/${scene.id}.mp4` }
+        c.plate = await attachClip(scene.id, scene.durationSec, plate, hit)
         this.store.appendEvent(projectId, `clip for ${scene.id}: reused a suitable library clip after another beat had no match`)
         made++; missed--
       } catch { /* retain the existing still and try the next beat */ }
@@ -1295,7 +1317,7 @@ export class Orchestrator {
     let directed = false
     const isometricOnly = isIsometricOnlyBrief(meta.prompt)
     if (isometricOnly && (spec.crafts.length || spec.customScenes?.length)) {
-      spec = { ...spec, crafts: [], customScenes: [], customVideos: [] }
+      spec = { ...spec, crafts: [], customScenes: [] }
       this.store.saveSpec(projectId, spec)
     }
     if (!isometricOnly && opts.craft !== 'classic' && (!spec.design || spec.crafts.length < spec.scenes.length)) {
@@ -1393,6 +1415,10 @@ export function applyDeterministicFixes(spec: VideoSpec, qa: CheckReport): Video
   // contrast → bump foreground toward pure white / background toward black
   if (/contrast/i.test(messages)) {
     next.palette = { ...next.palette, fg: '#FFFFFF', bg: darken(next.palette.bg) }
+    // Directed captions and headlines use the film accent rather than the
+    // palette foreground. Brighten it too; otherwise a contrast retry leaves
+    // exactly the same low-contrast accent over the photograph.
+    if (next.design) next.design = { ...next.design, accent: '#FFFFFF' }
     changed = true
   }
 

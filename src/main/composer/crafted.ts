@@ -270,18 +270,22 @@ export function renderCraftedScene(
   // ---------- background ----------
   // a moving clip (engine-chosen motion plate) wins over the painted still
   const clip = craft.background === 'plate' && craft.plate?.clipFile ? craft.plate : undefined
+  const clipBackdrop = Boolean(clip?.file && clip.depthFile && clip.clipDurationSec && clip.clipDurationSec < dur)
   const plate = clip ?? (craft.background === 'plate' && craft.plate?.file && craft.plate.depthFile ? craft.plate : undefined)
   const imageLed = Boolean(plate && craft.headlineTreatment === 'visual')
   let plateJob: PlateJob | undefined
   if (plate) {
     const anchor = plate.anchor ?? { x: plate.subject === 'left' ? 0.3 : plate.subject === 'right' ? 0.7 : 0.5, y: 0.6 }
     if (clip) {
+      if (clipBackdrop) parts.push(`<canvas class="cr-plate" id="${id}-plate" width="${ctx.width}" height="${ctx.height}"></canvas>`)
+      const clipDur = clipBackdrop ? Math.min(dur, clip.clipDurationSec as number) : dur
       // the framework seeks/plays it from data-start; muted — the soundtrack is ours.
       // A slow scale keeps a camera feel (transform only: never animate a video's box)
       parts.push(
-        `<video class="clip cr-plate cr-clip" id="${id}-clip" src="${esc(clip.clipFile as string)}" data-start="${startSec.toFixed(3)}" data-duration="${dur.toFixed(3)}" data-track-index="${20 + index}" muted playsinline preload="auto"></video>`
+        `<video class="clip cr-plate cr-clip" id="${id}-clip" src="${esc(clip.clipFile as string)}" data-start="${startSec.toFixed(3)}" data-duration="${clipDur.toFixed(3)}" data-track-index="${20 + index}" muted playsinline preload="auto"></video>`
       )
-      steps.push({ kind: 'tween', t: startSec, sel: `#${id}-clip`, from: { scale: 1.0 }, to: { scale: clip.camera === 'pull' ? 1.0 : 1.06 }, dur, ease: 'none' })
+      steps.push({ kind: 'tween', t: startSec, sel: `#${id}-clip`, from: { scale: 1.0 }, to: { scale: clip.camera === 'pull' ? 1.0 : 1.06 }, dur: clipDur, ease: 'none' })
+      if (clipBackdrop) steps.push({ kind: 'tween', t: startSec + Math.max(0, clipDur - 0.35), sel: `#${id}-clip`, from: { opacity: 1 }, to: { opacity: 0 }, dur: Math.min(0.35, clipDur), ease: 'none' })
     } else {
       parts.push(`<canvas class="cr-plate" id="${id}-plate" width="${ctx.width}" height="${ctx.height}"></canvas>`)
     }
@@ -510,7 +514,7 @@ export function renderCraftedScene(
 
   const html = `<section class="scene crafted" id="${id}" data-kind="crafted">${parts.join('\n')}</section>`
   // clips are played by the framework, not the WebGL plate engine
-  return { html, steps, plate: clip ? undefined : plateJob }
+  return { html, steps, plate: clip && !clipBackdrop ? undefined : plateJob }
 }
 
 /**

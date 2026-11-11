@@ -41,6 +41,26 @@ describe('scene transitions', () => {
 })
 
 describe('mock planner', () => {
+  it('does not fabricate statistics or pretend a requested duration is always 60 seconds', async () => {
+    for (const style of ['social', 'explainer'] as const) {
+      const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'A 30 second video about coffee', platform: 'tiktok', styleHint: style, durationHintSec: 30 })
+      expect(spec.scenes.some(scene => scene.kind === 'stat')).toBe(false)
+      expect(JSON.stringify(spec.scenes)).not.toMatch(/87%|10×|In 60 seconds|common sense/i)
+    }
+  })
+  it('fits a short prompt using its supplied beats without fabricated statistics', async () => {
+    const prompt = 'Create an 8 second vertical animated video about the water cycle, with evaporation, clouds and rain.'
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: prompt, platform: 'youtube-shorts', styleHint: 'explainer', durationHintSec: 8 })
+    expect(spec.durationSec).toBeCloseTo(8, 1)
+    expect(spec.scenes).toHaveLength(3)
+    expect(JSON.stringify(spec.scenes).toLowerCase()).toContain('evaporation')
+    expect(JSON.stringify(spec.scenes).toLowerCase()).toContain('clouds')
+    expect(JSON.stringify(spec.scenes).toLowerCase()).toContain('rain')
+    expect(spec.scenes.some(s => s.kind === 'stat')).toBe(false)
+    const three = await new Planner(new MockProvider()).plan({ userPrompt: '8 second 3D logo reveal', platform: 'instagram-reels', styleHint: 'motion3d', durationHintSec: 8 })
+    expect(three.durationSec).toBeCloseTo(8, 1)
+    expect(three.scenes.some(s => s.kind === 'showcase3d')).toBe(true)
+  })
   it('produces valid, platform-clamped specs for every style family', async () => {
     for (const c of CASES) {
       const { spec } = await buildCase(c)

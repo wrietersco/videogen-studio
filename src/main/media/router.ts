@@ -496,7 +496,9 @@ export class MediaRouter {
     projectId: string
     /** Search the existing library only; never download or generate. */
     libraryOnly?: boolean
-  }): Promise<{ buffer: Buffer; assetId: string; source: AssetMeta['source'] } | null> {
+    /** Short clips can be used when a suitable still is available behind them. */
+    allowShortClip?: boolean
+  }): Promise<{ buffer: Buffer; assetId: string; source: AssetMeta['source']; durationSec?: number } | null> {
     const lib = this.d.library
     const orientation = orientationOf(req.width, req.height)
     const aspect = orientation === 'landscape' ? '16:9' : '9:16'
@@ -515,7 +517,8 @@ export class MediaRouter {
       const path = lib.path(a.id)
       if (!path) return null
       lib.markUsed(a.id, req.projectId)
-      return { buffer: readFileSync(path), assetId: a.id, source: a.source }
+      const durationSec = a.durationSec ?? probe(path).durationSec
+      return { buffer: readFileSync(path), assetId: a.id, source: a.source, ...(durationSec ? { durationSec } : {}) }
     }
     if (this.reuse) {
       const exact = lib.findByKey('video', key)
@@ -527,7 +530,7 @@ export class MediaRouter {
       // prefetched stock clips carry the subject as tags — matching on the full
       // motion prompt would dilute the score below the reuse bar
       const ready = lib
-        .search(req.subjectLabel ?? '', { kind: 'video', orientation, sources: ['stock'], tags: ['motion'], minDurationSec: req.durationSec * 0.6, limit: 5 })
+        .search(req.subjectLabel ?? '', { kind: 'video', orientation, sources: ['stock'], tags: ['motion'], minDurationSec: req.allowShortClip ? Math.min(3, req.durationSec * 0.6) : req.durationSec * 0.6, limit: 5 })
         .find((h) => h.score >= 0.75)
       const readyPath = ready ? lib.path(ready.asset.id) : null
       if (ready && readyPath && (!this.d.settings().autopilot || (await this.scoreVideo(readFileSync(readyPath), prompt) ?? 0) >= 7)) return use(ready.asset)
@@ -540,13 +543,13 @@ export class MediaRouter {
         if (!path) continue
         const metadata = hit.asset.durationSec && hit.asset.width && hit.asset.height ? hit.asset : probe(path)
         const foundOrientation = orientationOf(metadata.width, metadata.height)
-        if (!metadata.durationSec || metadata.durationSec < req.durationSec * 0.6 || (orientation && foundOrientation && orientation !== foundOrientation)) continue
+        if (!metadata.durationSec || metadata.durationSec < (req.allowShortClip ? Math.min(3, req.durationSec * 0.6) : req.durationSec * 0.6) || (orientation && foundOrientation && orientation !== foundOrientation)) continue
         const buffer = readFileSync(path)
         if (this.d.settings().autopilot && (await this.scoreVideo(buffer, prompt) ?? 0) < 7) continue
         if (hit.asset.source === 'generated' && hit.asset.provider === 'gemini') meter.record({ kind: 'video', provider: 'gemini', model: hit.asset.model || model, usage: { outputTokens: metadata.durationSec * 5792 }, saved: true, note: `reused ${hit.asset.id}` })
         return use(hit.asset)
       }
-      const close = lib.search(`${req.subjectLabel ?? ''} ${req.prompt}`, { kind: 'video', orientation, minDurationSec: req.durationSec * 0.6, limit: 5 })[0]
+      const close = lib.search(`${req.subjectLabel ?? ''} ${req.prompt}`, { kind: 'video', orientation, minDurationSec: req.allowShortClip ? Math.min(3, req.durationSec * 0.6) : req.durationSec * 0.6, limit: 5 })[0]
       const closePath = close ? lib.path(close.asset.id) : null
       if (close && closePath && close.score >= 0.75 && (!this.d.settings().autopilot || (close.asset.source !== 'stock' && !close.asset.tags.includes('candidate-alternate')) || (await this.scoreVideo(readFileSync(closePath), prompt) ?? 0) >= 7)) return use(close.asset)
     }

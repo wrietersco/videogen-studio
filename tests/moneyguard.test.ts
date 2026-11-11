@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { guardCraft, pickClipScenes, preserveFinishedPlates, sameShot } from '../src/main/director/director'
+import { guardCraft, pickClipScenes, preserveFinishedPlates, sameShot, SceneCraftDraft } from '../src/main/director/director'
 import type { SceneCraft } from '../shared/spec'
 
 /**
@@ -54,6 +54,15 @@ describe('preserveFinishedPlates (the critic pass)', () => {
     // a new subject label re-locates the anchor on the same painting
     const relabel = craft('s1', { prompt: 'Night view of lava pouring into the sea', subjectLabel: 'the flow', motion: true })
     expect(preserveFinishedPlates([relabel], prev, 'subject').crafts[0].plate?.anchor).toBeUndefined()
+  })
+
+  it('keeps the measured clip duration instead of taking a model-authored value', () => {
+    const previous: SceneCraft = { ...old, plate: { ...old.plate!, clipDurationSec: 3.5 } }
+    const fresh: SceneCraft = { ...craft('s1', { prompt: previous.plate!.prompt }), plate: { ...craft('s1').plate!, prompt: previous.plate!.prompt, clipDurationSec: 9 } }
+    const result = preserveFinishedPlates([fresh], new Map([['s1', previous]]), 'subject')
+    expect(result.crafts[0].plate?.clipDurationSec).toBe(3.5)
+    const parsed = SceneCraftDraft.parse({ ...fresh, plate: fresh.plate })
+    expect(parsed.plate).not.toHaveProperty('clipDurationSec')
   })
 
   it('repaints a genuinely different shot and counts the loss (user feedback path)', () => {

@@ -165,6 +165,8 @@ export const Plate = z.object({
   motion: z.boolean().default(false),
   /** filled by the engine when the still became a moving clip (project-relative mp4) */
   clipFile: z.string().optional(),
+  /** Actual clip length, used to return to the still before footage ends. */
+  clipDurationSec: z.number().positive().optional(),
   /** filled by the plate engine (project-relative paths + located anchor in 0..1 image space) */
   file: z.string().optional(),
   depthFile: z.string().optional(),

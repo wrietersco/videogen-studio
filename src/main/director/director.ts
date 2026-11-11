@@ -19,7 +19,7 @@ import type { LLMProvider } from '../providers/types'
 
 /** what the scene director fills in (the engine owns ids, plate files and reviews) */
 export const SceneCraftDraft = SceneCraft.omit({ sceneId: true, review: true }).extend({
-  plate: Plate.omit({ file: true, depthFile: true, anchor: true, clipFile: true }).optional()
+  plate: Plate.omit({ file: true, depthFile: true, anchor: true, clipFile: true, clipDurationSec: true }).optional()
 })
 export type SceneCraftDraft = z.infer<typeof SceneCraftDraft>
 
@@ -358,7 +358,8 @@ export function preserveFinishedPlates(
         anchor: old.subjectLabel === c.plate.subjectLabel ? old.anchor : undefined,
         // a finished clip is already paid for — it stays in the film
         motion: c.plate.motion || Boolean(old.clipFile),
-        clipFile: old.clipFile
+        clipFile: old.clipFile,
+        clipDurationSec: old.clipFile ? old.clipDurationSec : undefined
       }
     }
   })
