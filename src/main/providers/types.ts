@@ -9,7 +9,7 @@ import type { VideoSpec } from '@shared/spec'
  * provider work without app updates.
  */
 
-export type ProviderId = 'openai' | 'anthropic' | 'gemini' | 'mock'
+export type ProviderId = 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'mock'
 
 export interface ModelInfo {
   id: string

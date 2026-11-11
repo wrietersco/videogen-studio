@@ -11,6 +11,7 @@ import { ProjectStore } from './store/projectStore'
 import { providerRegistry } from './providers/registry'
 import type { ProviderId } from './providers/types'
 import { DEFAULT_MEDIA, DEFAULT_SETTINGS, type KeyId, type Settings } from './settings'
+import { PROVIDER_CAPABILITIES, type ProviderRole } from '@shared/providerRoles'
 import { AssetLibrary } from './assets/library'
 import { registerAssetIpc, registerAssetScheme } from './assets/ipc'
 import { MediaRouter } from './media/router'
@@ -43,9 +44,9 @@ const library = new AssetLibrary(libraryDir, builtinPackDir, () => settings.shar
 const keyCache = new Map<KeyId, string>()
 const keyOf = (id: KeyId): string => {
   // on a plan, AI providers are reached through the licence server; with no AI, not at all
-  if (id === 'openai' || id === 'gemini' || id === 'elevenlabs' || id === 'anthropic') {
+  if (id === 'openai' || id === 'gemini' || id === 'elevenlabs' || id === 'anthropic' || id === 'deepseek') {
     if (aiOff) return ''
-    if (mode === 'plan') return id === 'anthropic' ? '' : 'managed'
+    if (mode === 'plan') return id === 'anthropic' || id === 'deepseek' ? '' : 'managed'
     if (mode === 'programmatic') return ''
   }
   if (!keyCache.has(id)) keyCache.set(id, decryptKey(settings.keys[id]))
@@ -56,15 +57,18 @@ const media = new MediaRouter({
   settings: () => runSettings ?? effective,
   key: keyOf,
   provider: (id) => providerRegistry.get(id),
+  providerForRole: (role) => providerRegistry.forRole(role),
+  roleAllows: (id, role) => providerRegistry.roleEnabled(id, role),
   autoImageProvider: () => providerRegistry.imageProvider(),
   onDecision: (projectId, message) => { if (store.readMeta(projectId)) store.appendEvent(projectId, `media · ${message}`) }
 })
 const footageStore = new FootageStore(footageDir)
 const footage = new FootageService({
   store: footageStore,
-  provider: () => providerRegistry.active(),
-  whisperKey: () => keyOf('openai'),
-  chatModel: () => effective.models[effective.provider] || ({ openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash' } as Record<string, string>)[effective.provider],
+  provider: () => providerRegistry.forRole('text') ?? providerRegistry.active(),
+  visionProvider: () => providerRegistry.forRole('image-process') ?? providerRegistry.active(),
+  whisperKey: () => (providerRegistry.roleEnabled('openai', 'audio-process') ? keyOf('openai') : ''),
+  chatModel: () => effective.models[effective.provider] || ({ openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash', deepseek: 'deepseek-chat' } as Record<string, string>)[effective.provider],
   emit: (e) => emit('footage:event', e),
   aiReady: () => (mode === 'plan' ? (planEnt()?.clipsPerVideo ?? 0) > 0 : keyOf('gemini').length > 0),
   makeClip: async (prompt, aspect, sec) => {
@@ -76,9 +80,11 @@ const footage = new FootageService({
 })
 const orchestrator = new Orchestrator(
   store,
-  () => providerRegistry.active(),
+  () => providerRegistry.forRole('text') ?? providerRegistry.active(),
   () => providerRegistry.imageProvider(),
-  media
+  media,
+  () => providerRegistry.forRole('code') ?? providerRegistry.active(),
+  () => providerRegistry.forRole('image-process') ?? providerRegistry.active()
 )
 
 // ---------------- settings (encrypted key storage) ----------------
@@ -121,7 +127,12 @@ function applyAccess(): void {
     mode === 'plan'
       ? { openai: 'managed', gemini: 'managed' }
       : mode === 'own-keys'
-        ? { openai: decryptKey(settings.keys.openai), anthropic: decryptKey(settings.keys.anthropic), gemini: decryptKey(settings.keys.gemini) }
+        ? {
+            openai: decryptKey(settings.keys.openai),
+            anthropic: decryptKey(settings.keys.anthropic),
+            gemini: decryptKey(settings.keys.gemini),
+            deepseek: decryptKey(settings.keys.deepseek)
+          }
         : {}
   )
   setManagedRouter(mode === 'plan' ? (p) => account.managedRoute(p) : null)
@@ -426,11 +437,23 @@ function registerIpc(): void {
   })
   ipcMain.handle('settings:hasKey', (_e, provider: KeyId) => Boolean(settings.keys[provider]))
   ipcMain.handle('settings:keyStatus', () =>
-    Object.fromEntries((['openai', 'anthropic', 'gemini', 'elevenlabs', 'pexels', 'pixabay'] as KeyId[]).map((k) => [k, Boolean(settings.keys[k])]))
+    Object.fromEntries((['openai', 'anthropic', 'gemini', 'deepseek', 'elevenlabs', 'pexels', 'pixabay'] as KeyId[]).map((k) => [k, Boolean(settings.keys[k])]))
   )
   ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
     if (patch.provider) settings.provider = patch.provider
     if (patch.models) settings.models = { ...settings.models, ...patch.models }
+    if (patch.roles) {
+      // keep only known providers and only roles their capability matrix allows
+      settings.roles = Object.fromEntries(
+        Object.entries(patch.roles).flatMap(([p, list]) => {
+          const id = p as ProviderId
+          const allowed = PROVIDER_CAPABILITIES[id]
+          if (!allowed || !Array.isArray(list)) return []
+          const roles = [...new Set(list)].filter((r): r is ProviderRole => allowed.includes(r))
+          return roles.length ? [[id, roles] as [ProviderId, ProviderRole[]]] : []
+        })
+      )
+    }
     if (patch.quality) settings.quality = patch.quality
     if (typeof patch.allowGpu === 'boolean') settings.allowGpu = patch.allowGpu
     if (patch.craft === 'directed' || patch.craft === 'classic') settings.craft = patch.craft

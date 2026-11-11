@@ -17,6 +17,7 @@ import { MockProvider } from '../src/main/providers/mock'
 import { OpenAIProvider } from '../src/main/providers/openai'
 import { AnthropicProvider } from '../src/main/providers/anthropic'
 import { GeminiProvider } from '../src/main/providers/gemini'
+import { DeepseekProvider } from '../src/main/providers/deepseek'
 import type { LLMProvider } from '../src/main/providers/types'
 import { PLATFORM_PRESETS } from '../src/shared/presets'
 import type { PlatformId, StyleFamily } from '../src/shared/spec'
@@ -48,7 +49,8 @@ const env = (k: string) => process.env[k] ?? ''
 const keyed: Record<string, LLMProvider | null> = {
   openai: env('OPENAI_API_KEY') ? new OpenAIProvider(() => env('OPENAI_API_KEY'), () => env('OPENAI_MODEL') || undefined, () => env('OPENAI_IMAGE_MODEL') || undefined) : null,
   anthropic: env('ANTHROPIC_API_KEY') ? new AnthropicProvider(() => env('ANTHROPIC_API_KEY'), () => env('ANTHROPIC_MODEL') || undefined) : null,
-  gemini: env('GEMINI_API_KEY') ? new GeminiProvider(() => env('GEMINI_API_KEY'), () => env('GEMINI_MODEL') || undefined, () => env('GEMINI_IMAGE_MODEL') || undefined) : null
+  gemini: env('GEMINI_API_KEY') ? new GeminiProvider(() => env('GEMINI_API_KEY'), () => env('GEMINI_MODEL') || undefined, () => env('GEMINI_IMAGE_MODEL') || undefined) : null,
+  deepseek: env('DEEPSEEK_API_KEY') ? new DeepseekProvider(() => env('DEEPSEEK_API_KEY'), () => env('DEEPSEEK_MODEL') || undefined) : null
 }
 const chat: LLMProvider = keyed[values.provider ?? 'mock'] ?? new MockProvider()
 if (values.provider && values.provider !== 'mock' && chat.id === 'mock') {

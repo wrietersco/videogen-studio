@@ -1,4 +1,5 @@
 import type { ProviderId } from './providers/types'
+import { DEFAULT_ROLES, type ProviderRole } from '@shared/providerRoles'
 
 /** every secret the app can hold: chat providers plus media/stock services */
 export type KeyId = ProviderId | 'elevenlabs' | 'pexels' | 'pixabay'
@@ -21,6 +22,8 @@ export interface Settings {
   provider: ProviderId
   /** per-provider model ids; keys are provider ids plus sub-keys like 'openai-image' */
   models: Record<string, string>
+  /** which provider may do what (Settings → Who does what); the brain provider is always the fallback */
+  roles: Partial<Record<ProviderId, ProviderRole[]>>
   keys: Partial<Record<KeyId, string>>
   quality: 'draft' | 'standard' | 'delivery'
   allowGpu: boolean
@@ -47,6 +50,7 @@ export const DEFAULT_MEDIA: MediaSettings = {
 export const DEFAULT_SETTINGS: Settings = {
   provider: 'mock',
   models: {},
+  roles: Object.fromEntries(Object.entries(DEFAULT_ROLES).map(([p, r]) => [p, [...r]])) as typeof DEFAULT_ROLES,
   keys: {},
   quality: 'standard',
   allowGpu: false,

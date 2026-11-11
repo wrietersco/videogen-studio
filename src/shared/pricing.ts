@@ -51,6 +51,9 @@ export const RATES: Record<string, Rate> = {
   'gpt-5.6-luna': { inTok: 0.2, outTok: 1.2 },
   'gpt-5.5': { inTok: 5, outTok: 30 },
   'gpt-4o-mini': { inTok: 0.15, outTok: 0.6 },
+  // ---- DeepSeek chat ----
+  'deepseek-chat': { inTok: 0.27, outTok: 1.1 },
+  'deepseek-reasoner': { inTok: 0.55, outTok: 2.19 },
   // ---- OpenAI image (image tokens) ----
   'gpt-image-2': { inTok: 8, outTok: 30 },
   'gpt-image-2.5-flare': { inTok: 8, outTok: 30 },
@@ -120,7 +123,7 @@ export function priceUsage(model: string, u: UsageNumbers): { usd: number; price
 
 // ---------------- media model catalog (Settings → Media models) ----------------
 
-export type ProviderKey = 'openai' | 'anthropic' | 'gemini' | 'elevenlabs' | 'builtin' | 'stock' | 'mock'
+export type ProviderKey = 'openai' | 'anthropic' | 'gemini' | 'deepseek' | 'elevenlabs' | 'builtin' | 'stock' | 'mock'
 
 export interface MediaModel {
   kind: Exclude<MediaKind, 'text' | 'transcribe'>

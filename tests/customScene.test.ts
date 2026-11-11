@@ -105,6 +105,8 @@ describe('custom scene authoring', () => {
     const noise = Buffer.from(still)
     for (let pixel = 0; pixel < 10; pixel++) noise.fill(101, pixel * 3, pixel * 3 + 3)
     expect(hasVisibleMotion([still, noise])).toBe(false)
+    const slow = Array.from({ length: 8 }, (_, i) => { const frame = Buffer.from(still); for (let pixel = 0; pixel < 80; pixel++) frame.fill(100 + i * 4, pixel * 3, pixel * 3 + 3); return frame })
+    expect(hasVisibleMotion(slow)).toBe(true)
   })
   it('gives the author the previous approved scene code for exact design continuity', async () => {
     const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'isometric shop', platform: 'tiktok' })

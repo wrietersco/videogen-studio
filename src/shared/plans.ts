@@ -378,8 +378,9 @@ export function entitlements(policy: Policy, account: Account, license: License 
 }
 
 /** which provider runs a model id */
-export function providerOfModel(model: string): 'openai' | 'gemini' | 'elevenlabs' {
+export function providerOfModel(model: string): 'openai' | 'gemini' | 'deepseek' | 'elevenlabs' {
   if (/^gpt-|^whisper|^tts-/.test(model)) return 'openai'
+  if (/^deepseek-/.test(model)) return 'deepseek'
   if (/^eleven_|^music_v1$/.test(model)) return 'elevenlabs'
   return 'gemini'
 }

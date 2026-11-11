@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { MEDIA_MODELS, PRICES_AS_OF, RATES, modelTags, type MediaModel } from '@shared/pricing'
+import { ALL_ROLES, PROVIDER_CAPABILITIES, ROLE_LABELS, type ProviderRole } from '@shared/providerRoles'
 import { api, type KeyId, type MediaSettings, type ModelInfo, type ProviderId, type ProviderStatus, type SettingsView } from '../api'
 import { Chip, Meter, Section } from '../components/ui'
 import Updater from '../components/Updater'
@@ -16,6 +17,7 @@ const KEYS: Array<{ id: KeyId; label: string; icon: string; what: string; where:
   { id: 'openai', label: 'OpenAI', icon: '🟢', what: 'writing, pictures, voices', where: 'platform.openai.com → API keys' },
   { id: 'anthropic', label: 'Anthropic (Claude)', icon: '🟠', what: 'writing & directing', where: 'console.anthropic.com → API keys' },
   { id: 'gemini', label: 'Google Gemini', icon: '🔵', what: 'writing, pictures, voices', where: 'aistudio.google.com → Get API key' },
+  { id: 'deepseek', label: 'DeepSeek', icon: '🐋', what: 'writing & code, cheap', where: 'platform.deepseek.com → API keys' },
   { id: 'elevenlabs', label: 'ElevenLabs', icon: '🎙️', what: 'premium voices & music', where: 'elevenlabs.io → Developers → API keys' },
   { id: 'pexels', label: 'Pexels', icon: '📷', what: 'free stock photos & clips', where: 'pexels.com/api — free' },
   { id: 'pixabay', label: 'Pixabay', icon: '🌄', what: 'free stock photos & clips', where: 'pixabay.com/api/docs — free' }
@@ -25,7 +27,8 @@ const BRAIN_HINT: Record<ProviderId, string> = {
   mock: 'Free, offline, rule-based — great for trying the app. No API key needed.',
   openai: 'GPT models plan and direct your video.',
   anthropic: 'Claude plans and directs your video.',
-  gemini: 'Gemini plans and directs your video.'
+  gemini: 'Gemini plans and directs your video.',
+  deepseek: 'DeepSeek plans and directs your video — strong on code, very cheap.'
 }
 
 /** tags for a chat model from its rate: cheap / premium */
@@ -111,7 +114,7 @@ export default function Settings() {
   }
   useEffect(() => {
     refresh()
-    for (const p of ['openai', 'anthropic', 'gemini'] as ProviderId[]) {
+    for (const p of ['openai', 'anthropic', 'gemini', 'deepseek'] as ProviderId[]) {
       api
         .listModels(p)
         .then((m) => setModels((x) => ({ ...x, [p]: m })))
@@ -138,7 +141,7 @@ export default function Settings() {
   }
 
   if (!settings) return null
-  const defaultModel: Record<string, string> = { openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash' }
+  const defaultModel: Record<string, string> = { openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash', deepseek: 'deepseek-chat' }
 
   return (
     <div className="page-bg h-full overflow-y-auto">
@@ -318,6 +321,78 @@ export default function Settings() {
             </details>
           )}
         </Section>
+        )}
+
+        {/* who does what — several providers at once, each with its jobs */}
+        {insider && !onPlan && settings && (
+          <Section icon="🎭" title="Who does what" hint="Enable several providers and tick the jobs each one takes. A job with no enabled provider falls back to your brain pick above." tone="amber">
+            <div className="space-y-2">
+              {(['openai', 'anthropic', 'gemini', 'deepseek'] as ProviderId[]).map((pid) => {
+                const label = providers.find((x) => x.id === pid)?.label ?? pid
+                const icon = KEYS.find((k) => k.id === pid)?.icon ?? ''
+                const connected = Boolean(keys?.[pid])
+                const supported = PROVIDER_CAPABILITIES[pid]
+                const current = settings.roles?.[pid] ?? []
+                const enabled = current.length > 0
+                const setRoles = (roles: ProviderRole[], msg: string) => patch({ roles: { ...settings.roles, [pid]: roles } }, msg)
+                return (
+                  <div key={pid} className={`flex flex-wrap items-center gap-3 rounded-2xl border-2 px-4 py-3 transition-colors ${connected ? 'border-ink/10 bg-white' : 'border-ink/10 bg-ink/5 opacity-70'}`}>
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      disabled={!connected}
+                      onChange={(e) => setRoles(e.target.checked ? [...supported] : [], e.target.checked ? `🎭 ${label} on duty` : `🎭 ${label} off duty`)}
+                      title={connected ? 'Enable this provider for the ticked jobs' : `Connect your ${label} key first`}
+                      className="h-4 w-4 accent-grape"
+                    />
+                    <span className="text-lg">{icon}</span>
+                    <span className="w-40 text-sm font-black">{label}</span>
+                    <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${connected ? 'bg-mint text-white' : 'bg-ink/5 text-ink/50'}`}>
+                      {connected ? '✓ Connected' : '🔒 Connect the key above'}
+                    </span>
+                    {enabled && (
+                      <details className="group min-w-0 flex-1">
+                        <summary className="cursor-pointer select-none text-xs font-bold text-grape">
+                          {current.length} job{current.length === 1 ? '' : 's'}
+                          <span className="ml-2 font-semibold text-ink/55 group-open:hidden">▾ choose</span>
+                        </summary>
+                        <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 lg:grid-cols-4">
+                          {ALL_ROLES.map((role) => {
+                            const ok = supported.includes(role)
+                            return (
+                              <label key={role} className={`flex items-center gap-2 text-xs font-bold ${ok ? 'text-ink/80' : 'text-ink/40'}`} title={ok ? undefined : `${label} cannot do this job`}>
+                                <input
+                                  type="checkbox"
+                                  checked={current.includes(role)}
+                                  disabled={!ok}
+                                  onChange={(e) => setRoles(e.target.checked ? [...current, role] : current.filter((r) => r !== role), `🎭 ${label}: ${ROLE_LABELS[role]} ${e.target.checked ? 'on' : 'off'}`)}
+                                  className="h-3.5 w-3.5 accent-grape"
+                                />
+                                {ROLE_LABELS[role]}
+                                {!ok && <span className="text-[10px] font-semibold text-ink/40">not supported</span>}
+                              </label>
+                            )
+                          })}
+                        </div>
+                      </details>
+                    )}
+                    <button
+                      onClick={() => setRoles([...supported], `🎭 ${label} on every job it can do`)}
+                      disabled={!connected}
+                      className="btn-ghost ml-auto disabled:cursor-not-allowed disabled:opacity-45"
+                      title="Tick every job this provider can do"
+                    >
+                      ✨ All-rounder
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="mt-3 text-[11px] leading-snug text-ink/55">
+              When several providers could take one job, the app asks your brain pick first, then OpenAI → Anthropic → Gemini → DeepSeek.
+              Jobs like pictures, voices, music and clips still follow the engine choices below — the ticks decide who is allowed on the job at all.
+            </div>
+          </Section>
         )}
 
         {/* media models */}

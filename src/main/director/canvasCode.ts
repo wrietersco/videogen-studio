@@ -9,6 +9,7 @@ import sharp from 'sharp'
 import { appRoot } from '../paths'
 import type { LLMProvider } from '../providers/types'
 import type { VideoSpec } from '@shared/spec'
+import { PLATFORM_PRESETS } from '@shared/presets'
 
 const electron = electronModule as unknown as Partial<typeof import('electron')>
 
@@ -41,8 +42,8 @@ export async function authorCanvasCode(provider: LLMProvider, spec: VideoSpec, p
     })
   } catch { /* write from the brief and reviewer notes if planning is unavailable */ }
   const request = {
-    system: 'Write the BODY of a JavaScript function draw(ctx,t,w,h,assets) for a bespoke professional animated video scene. ctx is a CanvasRenderingContext2D; t is seconds since this scene starts; w and h are canvas dimensions. If assets.background exists it is the preloaded photo or current frame of the moving footage chosen for this scene. Always draw it as the full-frame background when backgroundIsVideo is true, preserving its movement and keeping its subject unobstructed; place custom motion on top. Draw the entire frame every call. Make the requested action visibly change at the beginning, middle and end: do not substitute a static diagram or tiny decorative particles for meaningful motion. Everything must be a deterministic function of t: no random, clocks, timers, animation frame, mutable state carried between calls, network, storage, DOM access or loading assets. Make the important motion large and obvious across the frame, with visibly different beginning, middle and end, not just tiny moving dots. Do not use external packages or load images or video. Use canvas 2D shapes, gradients, paths and text. Use scene-specific visual storytelling, not a generic title slide. When a previous approved scene is supplied, preserve the identity and appearance of its recurring emblem, character or product while advancing the action. If approvedPreviousSceneCode is supplied, reuse its static geometry, object placement, perspective and palette as the authoritative design; adapt the motion to this scene instead of inventing replacement equipment. Keep important content inside the frame. Return only JavaScript statements, no function wrapper or markdown.',
-    prompt: JSON.stringify({ brief: prompt, scene, narration: spec.narration.find(n => n.sceneId === sceneId)?.text, palette: spec.palette, hasBackground, backgroundIsVideo, imageOrder: references.map(x => x.label), motionPlan, feedback, previousCode, approvedPreviousSceneCode: continuityCode }),
+    system: 'Write the BODY of a JavaScript function draw(ctx,t,w,h,assets) for a bespoke professional animated video scene. ctx is a CanvasRenderingContext2D; t is seconds since this scene starts; w and h are canvas dimensions. If assets.background exists it is the preloaded photo or current frame of the moving footage chosen for this scene. Always draw it as the full-frame background when backgroundIsVideo is true, preserving its movement and keeping its subject unobstructed; place custom motion on top. Draw the entire frame every call. Make the requested action visibly change at the beginning, middle and end: do not substitute a static diagram or tiny decorative particles for meaningful motion. Everything must be a deterministic function of t: no random, clocks, timers, animation frame, mutable state carried between calls, network, storage, DOM access or loading assets. Make the important motion large and obvious across the frame, with visibly different beginning, middle and end, not just tiny moving dots. Do not use external packages or load images or video. Use canvas 2D shapes, gradients, paths and text. Use scene-specific visual storytelling, not a generic title slide. Show physical objects as connected, supported assemblies with plausible functional relationships: a hopper connects to its grinder, material flows from the outlet into the receiving vessel, and handled parts attach at the correct contact point. Avoid floating, disconnected or impossible components unless the brief explicitly requests an exploded view. Choose readable framing over decorative details. Compose for the actual w by h frame: do not letterbox a landscape composition inside a vertical video. When isometric is requested, show coherent parallel isometric angles on the main subject instead of front-facing rectangles. When a previous approved scene is supplied, preserve the identity and appearance of its recurring emblem, character or product while advancing the action. If approvedPreviousSceneCode is supplied, reuse its static geometry, object placement, perspective and palette as the authoritative design; adapt the motion to this scene instead of inventing replacement equipment. Keep important content inside the frame. Return only JavaScript statements, no function wrapper or markdown.',
+    prompt: JSON.stringify({ brief: prompt, scene, narration: spec.narration.find(n => n.sceneId === sceneId)?.text, palette: spec.palette, frame: { width: PLATFORM_PRESETS[spec.platform].width, height: PLATFORM_PRESETS[spec.platform].height, orientation: PLATFORM_PRESETS[spec.platform].height > PLATFORM_PRESETS[spec.platform].width ? 'portrait' : 'landscape' }, hasBackground, backgroundIsVideo, imageOrder: references.map(x => x.label), motionPlan, feedback, previousCode, approvedPreviousSceneCode: continuityCode }),
     images, maxTokens: 7000, temperature: 0.6
   }
   let result: string
@@ -59,8 +60,10 @@ export async function authorCanvasCode(provider: LLMProvider, spec: VideoSpec, p
 export function hasVisibleMotion(samples: Buffer[]): boolean {
   if (samples.length < 2 || samples[0].length === 0 || samples[0].length % 3 !== 0 || samples.some(s => s.length !== samples[0].length)) return false
   const pixels = samples[0].length / 3
-  for (let i = 1; i < samples.length; i++) {
-    const a = samples[i - 1], b = samples[i]
+  // Slow, cumulative action can be invisible between adjacent samples.
+  // Compare all sampled pairs so a fill or gradual change is not rejected.
+  for (let i = 0; i < samples.length - 1; i++) for (let j = i + 1; j < samples.length; j++) {
+    const a = samples[i], b = samples[j]
     let total = 0, changed = 0
     for (let p = 0; p < a.length; p += 3) {
       const delta = (Math.abs(a[p] - b[p]) + Math.abs(a[p + 1] - b[p + 1]) + Math.abs(a[p + 2] - b[p + 2])) / 3

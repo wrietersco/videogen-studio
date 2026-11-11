@@ -232,7 +232,11 @@ export class Orchestrator {
     /** image model for painted plates (null → directed scenes use dot-grid backgrounds) */
     private readonly imageProviderFor: () => LLMProvider | null = () => null,
     /** library-first media routing (desktop app); absent → direct provider calls (CLI, tests) */
-    private readonly media: MediaRouter | null = null
+    private readonly media: MediaRouter | null = null,
+    /** the provider code generation runs on (canvas code, custom scenes); defaults to the writing provider */
+    private readonly codeProviderFor: () => LLMProvider = () => this.providerFor(),
+    /** the provider image processing (vision) runs on; defaults to the writing provider */
+    private readonly visionProviderFor: () => LLMProvider = () => this.providerFor()
   ) {}
 
   /** narrator: the media router's choice, else any provider that speaks (legacy OpenAI voices) */
@@ -488,7 +492,7 @@ export class Orchestrator {
     if (isometricOnly) { spec.crafts = []; spec.customScenes = [] }
     // repaint pictures the user changed (their file was cleared by the editor)
     if (!isometricOnly && spec.design && spec.crafts.some((c) => c.background === 'plate' && c.plate && !c.plate.file)) {
-      spec = await this.runPlates(projectId, spec, emit, this.providerFor())
+      spec = await this.runPlates(projectId, spec, emit, this.visionProviderFor())
       this.store.saveSpec(projectId, spec)
     }
     if (this.cancelled) return this.abort(projectId, emit)
@@ -642,6 +646,8 @@ export class Orchestrator {
     isometricOnly = false
   ): Promise<VideoSpec> {
     const provider = this.providerFor()
+    const coder = this.codeProviderFor()
+    const vision = this.visionProviderFor()
     if (provider.id === 'mock') {
       if (isometricOnly) throw new Error('Isometric animation requires a configured writing model')
       return spec
@@ -708,7 +714,7 @@ export class Orchestrator {
         this.store.appendEvent(projectId, `custom scene ${index + 1}: kept moving footage because the source could not be loaded safely`)
         continue
       }
-      const useCode = isometricOnly || Boolean(backgroundVideo) || previousCode !== undefined || await needsCanvasCode(provider, current, sceneId, prompt)
+      const useCode = isometricOnly || Boolean(backgroundVideo) || previousCode !== undefined || await needsCanvasCode(coder, current, sceneId, prompt)
       let accepted = false
       let best: { spec: VideoSpec; score: number; file?: string; reason: string; attempt: number; frame: Buffer } | undefined
       const maxAttempts = isometricOnly ? 5 : 3
@@ -725,7 +731,7 @@ export class Orchestrator {
               if (existsSync(platePath)) backgroundJpeg = await sharp(readFileSync(platePath)).resize({ width: 1080, height: 1920, fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer()
             }
             if (backgroundVideo) backgroundJpeg = beforeImages[1]
-            const code = await authorCanvasCode(provider, current, isometricOnly ? `${prompt}\nAll scenes must be fully animated original 2D isometric motion graphics, with consistent perspective and visual identity. Draw all visuals using canvas shapes. Do not use photos, footage or generated imagery. Do not draw small words on signs, shopfronts or vehicles inside the artwork; show them with shapes, colours or simple icons. Show only this scene's beat: objects that only act in later scenes stay still or out of view.` : prompt, sceneId, feedback, previousCode, backgroundJpeg, previousFrame, Boolean(backgroundVideo), continuityFrame, isometricOnly && index > 0 ? current.customVideos?.find(c => c.sceneId === current.scenes[index - 1].id)?.source : undefined)
+            const code = await authorCanvasCode(coder, current, isometricOnly ? `${prompt}\nAll scenes must be fully animated original 2D isometric motion graphics, with consistent perspective and visual identity. Draw all visuals using canvas shapes. Do not use photos, footage or generated imagery. Do not draw small words on signs, shopfronts or vehicles inside the artwork; show them with shapes, colours or simple icons. Show only this scene's beat: objects that only act in later scenes stay still or out of view.` : prompt, sceneId, feedback, previousCode, backgroundJpeg, previousFrame, Boolean(backgroundVideo), continuityFrame, isometricOnly && index > 0 ? current.customVideos?.find(c => c.sceneId === current.scenes[index - 1].id)?.source : undefined)
             previousCode = code
             const file = `assets/custom/${randomUUID()}.mp4`
             trialFile = join(dir, file)
@@ -733,7 +739,7 @@ export class Orchestrator {
             await renderCanvasCode({ code, width: preset.width, height: preset.height, durationSec: scene.durationSec, output: trialFile, backgroundJpeg: backgroundVideo ? undefined : backgroundJpeg, backgroundVideo, cancelled: () => this.cancelled })
             candidate = { ...current, customScenes: (current.customScenes ?? []).filter(c => c.sceneId !== sceneId), customVideos: [...(current.customVideos ?? []).filter(c => c.sceneId !== sceneId), { sceneId, file, source: code }] }
           } else {
-            const svg = await authorCustomScene(provider, current, prompt, sceneId, feedback, previousSvg, continuityFrame)
+            const svg = await authorCustomScene(coder, current, prompt, sceneId, feedback, previousSvg, continuityFrame)
             previousSvg = svg
             candidate = { ...current, customVideos: (current.customVideos ?? []).filter(c => c.sceneId !== sceneId), customScenes: [...(current.customScenes ?? []).filter(c => c.sceneId !== sceneId), { sceneId, svg }] }
           }
@@ -760,8 +766,8 @@ export class Orchestrator {
             ? `Measured: ${motion.changedPercent}% of the candidate frame changes between images 4 and 6. Images ${closeupStart} and ${closeupStart + 1} are enlarged close-ups of the region that changed most, at the early and late times. Small changes such as lights switching off, shutters moving or vehicles travelling are real animation: inspect the close-ups before concluding the candidate is static, and never call the frames unchanged when this measured change is present.`
             : `Measured: only ${motion.changedPercent}% of the candidate frame changes between images 4 and 6.`) : undefined
           emit({ stage: 'custom', status: 'attempt', sceneIndex: index, attempt, phase: 'reviewing' })
-          const verdict = await provider.generateJSON<{ useCandidate: boolean; score: number; originalScore: number; blockingIssue: boolean; reason: string }>({
-            system: `${isometricOnly ? 'This is a code-only 2D isometric film: the candidate must clearly show animated isometric objects and processes, match the scene and maintain continuity. Ignore the generic original when evaluating the candidate; useCandidate should be true when the candidate is professional and meets the brief, even if the original looks better. ' : ''}You are the video editor. Images 1, 2 and 3 are the existing scene at early, middle and late times; images 4, 5 and 6 are the new custom illustration or coded animation at those same times. If image 7 is provided, it is the preceding approved scene and is the authoritative visual reference for any recurring emblem, character or product. The original scene in images 1-3 may be the inconsistent scene being repaired: do not treat its conflicting design as the established identity. Judge both original and candidate against image 7, and reject a candidate that changes that identity contrary to the brief. Preserve relevant moving footage and its subject; reject the candidate if footage or its motion is lost. The brief describes the whole film; assess the intended beat of this scene in the context of the surrounding scene plan rather than demanding that every scene contain every film-wide action. Compare them against the brief and narration. Rate both the original and candidate out of 10 using the same criteria; put the original rating in originalScore. Reserve 8 or above for professional, accurate and legible motion that communicates the scene. Set blockingIssue true for any inconsistent recurring identity when continuity is required, factual or scientific error, wrong subject, missing required content, clipped or overlapping labels, or illegible text, even when the candidate looks better than the original. ${isometricOnly ? 'Accept if it scores at least 8 and has no blocking issue, irrespective of the generic original.' : 'Accept only if it scores at least 8, has no blocking issue, and is clearly better than the original. Do not prefer a generic diagram over relevant photos or footage.'} Give concrete improvement notes.`,
+          const verdict = await vision.generateJSON<{ useCandidate: boolean; score: number; originalScore: number; blockingIssue: boolean; reason: string }>({
+            system: `${isometricOnly ? 'This is a code-only 2D isometric film: the candidate must clearly show animated isometric objects and processes, match the scene and maintain continuity. Ignore the generic original when evaluating the candidate; useCandidate should be true when the candidate is professional and meets the brief, even if the original looks better. ' : ''}You are the video editor. Images 1, 2 and 3 are the existing scene at early, middle and late times; images 4, 5 and 6 are the new custom illustration or coded animation at those same times. If image 7 is provided, it is the preceding approved scene and is the authoritative visual reference for any recurring emblem, character or product. The original scene in images 1-3 may be the inconsistent scene being repaired: do not treat its conflicting design as the established identity. Judge both original and candidate against image 7, and reject a candidate that changes that identity contrary to the brief. Preserve relevant moving footage and its subject; reject the candidate if footage or its motion is lost. The brief describes the whole film; assess the intended beat of this scene in the context of the surrounding scene plan rather than demanding that every scene contain every film-wide action. Compare them against the brief and narration. Rate both the original and candidate out of 10 using the same criteria; put the original rating in originalScore. Reserve 8 or above for professional, accurate and legible motion that communicates the scene. Set blockingIssue true for any inconsistent recurring identity when continuity is required, factual or scientific error, disconnected or unsupported machinery that makes the depicted process physically unclear, wrong subject, missing required content, clipped or overlapping labels, or illegible text, even when the candidate looks better than the original. ${isometricOnly ? 'Accept if it scores at least 8 and has no blocking issue, irrespective of the generic original.' : 'Accept only if it scores at least 8, has no blocking issue, and is clearly better than the original. Do not prefer a generic diagram over relevant photos or footage.'} Give concrete improvement notes.`,
             prompt: JSON.stringify({ brief: prompt, scene, filmScenes: current.scenes, narration: current.narration.find(n => n.sceneId === sceneId)?.text, hasContinuityReference: Boolean(continuityFrame), motionEvidence }),
             schemaName: 'CustomSceneReview', jsonSchema: { type: 'object', properties: { useCandidate: { type: 'boolean' }, score: { type: 'number' }, originalScore: { type: 'number' }, blockingIssue: { type: 'boolean' }, reason: { type: 'string' } }, required: ['useCandidate', 'score', 'originalScore', 'blockingIssue', 'reason'], additionalProperties: false },
             images: [...beforeImages, ...afterImages, ...(continuityFrame ? [continuityFrame] : []), ...(motion?.crops ?? [])].map(image => ({ mimeType: 'image/jpeg', base64: image.toString('base64') })), temperature: 0.1, maxTokens: 500
@@ -884,7 +890,7 @@ export class Orchestrator {
           })
           .catch(() => null)
       : null
-    next = await this.runPlates(projectId, next, emit, provider)
+    next = await this.runPlates(projectId, next, emit, this.visionProviderFor())
     this.store.saveSpec(projectId, next)
     return next
   }
@@ -1296,7 +1302,7 @@ export class Orchestrator {
       spec = await this.runDirect(projectId, spec, meta.prompt, emit)
       directed = true
     } else if (!isometricOnly && spec.crafts.some((c) => c.background === 'plate' && !c.plate?.file)) {
-      spec = await this.runPlates(projectId, spec, emit, this.providerFor())
+      spec = await this.runPlates(projectId, spec, emit, this.visionProviderFor())
       this.store.saveSpec(projectId, spec)
       directed = true
     }

@@ -8,6 +8,7 @@ import type { UsageEntry, UsageRun, ProjectUsage } from '../../main/usage/meter'
 import type { AssetKind, AssetMeta, AssetSource } from '@shared/assets'
 import type { StockResult } from '../../main/media/stock'
 import type { KeyId, MediaSettings } from '../../main/settings'
+import type { ProviderRole } from '@shared/providerRoles'
 
 import type { UpdateInfo } from '../../main/updater'
 import type { EditPlan, EditRecord, FootageEvent, FootageProject, FootageSummary, PlanRequest, PlanResult, UnderstandEstimate } from '@shared/footage'
@@ -26,6 +27,8 @@ export type { EditPlan, EditRecord, FootageEvent, FootageProject, FootageSummary
 export type { UpdateInfo, EnhancedPrompt, PromptSection, PromptTemplate }
 export type { UsageEntry, UsageRun, ProjectUsage, AssetKind, AssetMeta, AssetSource, StockResult, KeyId, MediaSettings }
 export type { PipelineEvent, ProjectMeta, ProviderId, ModelInfo, PlatformId, StyleFamily, VideoSpec }
+export type { ProviderRole } from '@shared/providerRoles'
+export { ALL_ROLES, PROVIDER_CAPABILITIES, ROLE_LABELS } from '@shared/providerRoles'
 
 export interface ProviderStatus {
   id: ProviderId
@@ -38,6 +41,8 @@ export interface SettingsView {
   provider: ProviderId
   /** per-provider model ids; keys are provider ids plus sub-keys like 'openai-image' */
   models: Record<string, string>
+  /** which provider may do what (Settings → Who does what) */
+  roles: Partial<Record<ProviderId, ProviderRole[]>>
   quality: 'draft' | 'standard' | 'delivery'
   allowGpu: boolean
   craft: 'directed' | 'classic'

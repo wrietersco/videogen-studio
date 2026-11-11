@@ -14,6 +14,8 @@ import { estimateUnderstanding, listenToClip, watchClip } from './understand'
 export interface FootageDeps {
   store: FootageStore
   provider: () => LLMProvider
+  /** the provider that watches clip frames (image processing); defaults to the writing provider */
+  visionProvider?: () => LLMProvider
   /** OpenAI key for Whisper; empty = speech is not transcribed */
   whisperKey: () => string
   chatModel: () => string | undefined
@@ -121,7 +123,7 @@ export class FootageService {
     const emit = (e: UnderstandEvent) => this.d.emit({ kind: 'understand', projectId, ...e })
     emit({ status: 'started' })
     try {
-      const provider = this.d.provider()
+      const provider = this.d.visionProvider?.() ?? this.d.provider()
       if (provider.id === 'mock') throw new Error('Connect an AI provider in Settings first: the free offline engine cannot watch videos.')
       const key = this.d.whisperKey()
       const projectDir = this.d.store.dir(projectId)

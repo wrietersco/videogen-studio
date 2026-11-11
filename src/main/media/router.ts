@@ -17,6 +17,7 @@ import { meter } from '../usage/meter'
 import type { KeyId, Settings } from '../settings'
 import { platePrompt } from '../director/plates'
 import { downloadStock, searchStock, stockQuery } from './stock'
+import type { ProviderRole } from '@shared/providerRoles'
 
 /**
  * Media router — the one place that decides where each asset comes from:
@@ -32,6 +33,10 @@ export interface MediaDeps {
   settings: () => Settings
   key: (id: KeyId) => string
   provider: (id: ProviderId) => LLMProvider
+  /** the provider a role runs on (image/video processing, audio generation); falls back to the brain provider */
+  providerForRole?: (role: ProviderRole) => LLMProvider | null
+  /** whether Settings → Who does what enables `role` for provider `id` (services outside the registry) */
+  roleAllows?: (id: string, role: ProviderRole) => boolean
   /** the active chat provider's painter, else any keyed one (legacy 'auto') */
   autoImageProvider: () => LLMProvider | null
   /** Explicit test-only budget, shared by all clips in this router instance. */
@@ -263,7 +268,7 @@ export class MediaRouter {
   }
 
   private async scoreImage(buffer: Buffer, brief: string): Promise<number | null> {
-    const vision = this.d.provider(this.d.settings().provider)
+    const vision = this.d.providerForRole?.('image-process') ?? this.d.provider(this.d.settings().provider)
     if (vision.id === 'mock') return null
     try {
       const sharp = (await import('sharp')).default
@@ -285,7 +290,7 @@ export class MediaRouter {
       writeFileSync(file, buffer)
       const duration = probe(file).durationSec
       if (!duration || duration <= 0) return null
-      const vision = this.d.provider(this.d.settings().provider)
+      const vision = this.d.providerForRole?.('video-process') ?? this.d.provider(this.d.settings().provider)
       if (vision.id === 'mock') return null
       const frames = [0.2, 0.5, 0.8].map((fraction) => videoPoster(file, duration * fraction)).filter((frame): frame is Buffer => Boolean(frame))
       if (frames.length < 2) return null
@@ -303,7 +308,8 @@ export class MediaRouter {
   speech(): SpeechProvider | null {
     const [p, model] = split(this.d.settings().media.voice || 'auto')
     if (p === 'none') return null
-    const pick = p === 'auto' ? (this.d.key('openai') ? 'openai' : this.d.key('elevenlabs') ? 'elevenlabs' : this.d.key('gemini') ? 'gemini' : null) : p
+    const voice = (id: string) => this.d.key(id as KeyId) && (this.d.roleAllows?.(id, 'audio-gen') ?? true)
+    const pick = p === 'auto' ? (voice('openai') ? 'openai' : voice('elevenlabs') ? 'elevenlabs' : voice('gemini') ? 'gemini' : null) : p
     if (!pick || !this.d.key(pick as KeyId)) return null
     if (pick === 'elevenlabs') {
       const m = model ?? 'eleven_flash_v2_5'
@@ -468,7 +474,7 @@ export class MediaRouter {
   /** can directed scenes get moving clips? (Gemini Omni with a key, or stock clips with a Pexels/Pixabay key) */
   clipsAvailable(): boolean {
     const [p] = split(this.d.settings().media.video || 'stock')
-    if (p === 'gemini') return this.omni.configured()
+    if (p === 'gemini') return this.omni.configured() && (this.d.roleAllows?.('gemini', 'video-gen') ?? true)
     if (p === 'stock') return Boolean(this.d.key('pexels') || this.d.key('pixabay') || (this.reuse && this.d.library.all().some((asset) => asset.kind === 'video')))
     return false
   }
