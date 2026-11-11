@@ -6,47 +6,58 @@ import { meter } from '../usage/meter'
  * DeepSeek adapter — OpenAI-compatible Chat Completions for writing and code.
  * JSON comes back via response_format json_object (DeepSeek has no
  * json_schema support): the schema is inlined into the system prompt and the
- * reply is parsed leniently. Images ride as OpenAI-style image_url parts for
- * the image-processing role. No image/audio generation — those roles are
- * disabled for DeepSeek in the capability matrix.
+ * reply is parsed leniently. Flash rides with vision (OpenAI-style image_url
+ * parts) for the image-processing role. No image/audio generation — those
+ * roles are disabled for DeepSeek in the capability matrix.
  *
- * The model id is injectable (registry), defaulting to the current flagship.
+ * Both current models think by default; a model that rejects sampling params
+ * is retried without them. The model id is injectable (registry), defaulting
+ * to the current flagship.
  */
 
-const API = 'https://api.deepseek.com/v1'
+/** the docs' OpenAI-format endpoint (no /v1 — that was the older compat path) */
+const API = 'https://api.deepseek.com'
 
 type KeyFn = () => string
 
 /**
- * Curated catalog, least → most expensive. Rates from DeepSeek's official
- * pricing (api-docs.deepseek.com/quick_start/pricing).
+ * Curated catalog — the current DeepSeek models, cheapest first. Rates are
+ * the peak rates (off-peak is half; weekends and CN holidays are off-peak),
+ * from api-docs.deepseek.com/quick_start/pricing. Verified Nov 12, 2026.
  */
 const CHAT_MODELS: ModelInfo[] = [
   {
-    id: 'deepseek-chat',
-    label: 'DeepSeek Chat',
+    id: 'deepseek-flash',
+    label: 'DeepSeek Flash (V4.1)',
     provider: 'deepseek',
     supportsJSON: true,
     supportsVision: true,
     kind: 'chat',
-    priceNote: '$0.27 in / $1.10 out per 1M tok'
+    priceNote: '$0.15–0.30 in / $0.60–1.20 out per 1M tok · vision'
   },
   {
-    id: 'deepseek-reasoner',
-    label: 'DeepSeek Reasoner',
+    id: 'deepseek-v4-pro',
+    label: 'DeepSeek V4 Pro',
     provider: 'deepseek',
     supportsJSON: true,
-    supportsVision: true,
+    supportsVision: false,
     kind: 'chat',
-    priceNote: '$0.55 in / $2.19 out per 1M tok · reasoning'
+    priceNote: '$0.66–1.32 in / $1.98–3.96 out per 1M tok · 1M context'
   }
 ]
 
-const DEFAULT_CHAT_MODEL = 'deepseek-chat'
+const DEFAULT_CHAT_MODEL = 'deepseek-flash'
 
-/** the reasoner thinks before answering: no sampling params on that family */
-function isReasoningModel(model: string): boolean {
-  return model === 'deepseek-reasoner'
+/** Renamed ids keep older saved selections working (the old chat/reasoner split is one thinking-mode model now). */
+const CHAT_MODEL_ALIASES: Record<string, string> = {
+  'deepseek-chat': 'deepseek-flash',
+  'deepseek-reasoner': 'deepseek-flash',
+  'deepseek-v4-flash': 'deepseek-flash'
+}
+
+function resolveChatModel(raw: string | undefined): string {
+  const m = raw || DEFAULT_CHAT_MODEL
+  return CHAT_MODEL_ALIASES[m] ?? m
 }
 
 export class DeepseekProvider implements LLMProvider {
@@ -68,7 +79,7 @@ export class DeepseekProvider implements LLMProvider {
   }
 
   async generateJSON<T>(req: GenerateJSONRequest): Promise<T> {
-    const model = this.modelOverride?.() || DEFAULT_CHAT_MODEL
+    const model = resolveChatModel(this.modelOverride?.())
     const text = await this.chat(model, {
       system: `${req.system}\n\nRespond with ONLY a JSON value matching this schema (no prose, no code fences):\n${JSON.stringify(req.jsonSchema)}`,
       prompt: req.prompt,
@@ -81,7 +92,7 @@ export class DeepseekProvider implements LLMProvider {
   }
 
   async generateText(req: GenerateTextRequest): Promise<string> {
-    const model = this.modelOverride?.() || DEFAULT_CHAT_MODEL
+    const model = resolveChatModel(this.modelOverride?.())
     return this.chat(model, {
       system: req.system,
       prompt: req.prompt,
@@ -96,7 +107,6 @@ export class DeepseekProvider implements LLMProvider {
     model: string,
     o: { system: string; prompt: string; images?: Array<{ mimeType: string; base64: string }>; jsonMode?: boolean; maxTokens: number; temperature?: number }
   ): Promise<string> {
-    const reasoning = isReasoningModel(model)
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: o.prompt }]
     for (const img of o.images ?? []) {
       content.push({ type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.base64}` } })
@@ -108,21 +118,36 @@ export class DeepseekProvider implements LLMProvider {
         { role: 'user', content }
       ],
       max_tokens: o.maxTokens,
-      ...(o.jsonMode ? { response_format: { type: 'json_object' } } : {})
+      ...(o.jsonMode ? { response_format: { type: 'json_object' } } : {}),
+      ...(o.temperature !== undefined ? { temperature: o.temperature } : {})
     }
-    // the reasoner ignores sampling params — don't send them
-    if (!reasoning && o.temperature !== undefined) body.temperature = o.temperature
-    const json = await this.request<{
-      choices: Array<{ message: { content?: string; reasoning_content?: string } }>
-      usage?: { prompt_tokens?: number; completion_tokens?: number }
-    }>('POST', '/chat/completions', body)
-    meter.record({
-      kind: 'text',
-      provider: 'deepseek',
-      model,
-      usage: { inputTokens: json.usage?.prompt_tokens ?? 0, outputTokens: json.usage?.completion_tokens ?? 0 }
-    })
-    return json.choices[0]?.message?.content ?? ''
+    try {
+      const json = await this.request<{
+        choices: Array<{ message: { content?: string; reasoning_content?: string } }>
+        usage?: { prompt_tokens?: number; completion_tokens?: number }
+      }>('POST', '/chat/completions', body)
+      meter.record({
+        kind: 'text',
+        provider: 'deepseek',
+        model,
+        usage: { inputTokens: json.usage?.prompt_tokens ?? 0, outputTokens: json.usage?.completion_tokens ?? 0 }
+      })
+      return json.choices[0]?.message?.content ?? ''
+    } catch (e) {
+      if (e instanceof ProviderError && e.kind === 'invalid-request' && /temperature/i.test(e.message)) {
+        // a thinking model rejected sampling params — retry without them
+        delete body.temperature
+        const json = await this.request<{ choices: Array<{ message: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } }>('POST', '/chat/completions', body)
+        meter.record({
+          kind: 'text',
+          provider: 'deepseek',
+          model,
+          usage: { inputTokens: json.usage?.prompt_tokens ?? 0, outputTokens: json.usage?.completion_tokens ?? 0 }
+        })
+        return json.choices[0]?.message?.content ?? ''
+      }
+      throw e
+    }
   }
 
   private parseJSON<T>(text: string): T {

@@ -145,7 +145,7 @@ export default function Settings() {
   }
 
   if (!settings) return null
-  const defaultModel: Record<string, string> = { openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash', deepseek: 'deepseek-chat' }
+  const defaultModel: Record<string, string> = { openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash', deepseek: 'deepseek-flash' }
   // who does what: in exclusive mode a role belongs to exactly one provider, so render the enforced view
   const exclusive = settings.roleMode === 'exclusive'
   const roleOrder = [...new Set([settings.provider, ...ROLE_PRIORITY])].filter((p) => p !== 'mock')
