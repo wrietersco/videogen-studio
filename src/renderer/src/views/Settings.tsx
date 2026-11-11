@@ -53,6 +53,9 @@ type Option = { value: string; label: string; typical: string; cost: number; spe
 /** the model that would run each generation job, per provider */
 const IMAGE_MODEL_DEFAULTS: Record<string, string> = { openai: 'gpt-image-2.5-sunburst', gemini: 'gemini-3.1-flash-image' }
 const VOICE_MODEL_DEFAULTS: Record<string, string> = { openai: 'gpt-4o-mini-tts', gemini: 'gemini-2.5-flash-preview-tts' }
+/** who-does-what matrix: roles are rows, these providers are columns */
+const ROLE_PROVIDERS: ProviderId[] = ['openai', 'anthropic', 'gemini', 'deepseek']
+const MATRIX_GRID = 'grid-cols-[150px_repeat(4,minmax(160px,1fr))]'
 
 function optionsFor(kind: keyof MediaSettings): Option[] {
   const fromCatalog = (m: MediaModel): Option => ({
@@ -376,104 +379,113 @@ export default function Settings() {
                 </span>
               </div>
             )}
-            <div className="space-y-2">
-              {(['openai', 'anthropic', 'gemini', 'deepseek'] as ProviderId[]).map((pid) => {
-                const label = providers.find((x) => x.id === pid)?.label ?? pid
-                const icon = KEYS.find((k) => k.id === pid)?.icon ?? ''
-                const connected = Boolean(keys?.[pid])
-                const supported = PROVIDER_CAPABILITIES[pid]
-                const current = viewRoles[pid] ?? []
-                const enabled = current.length > 0
-                const locked = onPlan || !connected
-                const setRoles = (roles: ProviderRole[], msg: string) => patch({ roles: { ...viewRoles, [pid]: roles } }, msg)
-                return (
-                  <div key={pid} className={`flex flex-wrap items-center gap-3 rounded-2xl border-2 px-4 py-3 transition-colors ${connected ? 'border-ink/10 bg-white' : 'border-ink/10 bg-ink/5 opacity-70'}`}>
-                    <input
-                      type="checkbox"
-                      checked={enabled}
-                      disabled={locked}
-                      onChange={(e) => {
-                        if (!e.target.checked) return setRoles([], `🎭 ${label} off duty`)
-                        let next = { ...viewRoles, [pid]: [...supported] }
-                        if (exclusive) {
-                          const taken = new Set(supported)
-                          for (const p of Object.keys(next) as ProviderId[]) if (p !== pid) next[p] = (next[p] ?? []).filter((r) => !taken.has(r))
-                        }
-                        patch({ roles: next }, `🎭 ${label} on duty`)
-                      }}
-                      title={onPlan ? 'Switch to your own API keys to change this' : connected ? 'Enable this provider for the ticked jobs' : `Connect your ${label} key first`}
-                      className="h-4 w-4 accent-grape"
-                    />
-                    <span className="text-lg">{icon}</span>
-                    <span className="w-40 text-sm font-black">{label}</span>
-                    <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold ${connected ? 'bg-mint text-white' : 'bg-ink/5 text-ink/50'}`}>
-                      {connected ? '✓ Connected' : '🔒 Connect the key above'}
-                    </span>
-                    {enabled && (
-                      <details className="group min-w-0 flex-1">
-                        <summary className="cursor-pointer select-none text-xs font-bold text-grape">
-                          {current.length} job{current.length === 1 ? '' : 's'} · {[...new Set(current.map((r) => modelForRole(pid, r)))].join(', ')}
-                          <span className="ml-2 font-semibold text-ink/55 group-open:hidden">▾ choose</span>
-                        </summary>
-                        <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 lg:grid-cols-4">
-                          {ALL_ROLES.map((role) => {
-                            const ok = supported.includes(role)
-                            const owner = roleOwner?.get(role)
-                            const takenElsewhere = exclusive && Boolean(owner) && owner !== pid
-                            return (
-                              <label
-                                key={role}
-                                className={`flex items-center gap-2 text-xs font-bold ${ok && !takenElsewhere ? 'text-ink/80' : 'text-ink/40'}`}
-                                title={!ok ? `${label} cannot do this job` : takenElsewhere ? `${ROLE_LABELS[role]} belongs to ${providers.find((x) => x.id === owner)?.label ?? owner} — untick it there first, or switch to Run in order` : undefined}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={current.includes(role)}
-                                  disabled={!ok || onPlan || takenElsewhere}
-                                  onChange={(e) => {
-                                    const next = assignRole(pid, role, e.target.checked)
-                                    patch({ roles: next }, `🎭 ${ROLE_LABELS[role]} → ${e.target.checked ? label : 'off'}`)
-                                  }}
-                                  className="h-3.5 w-3.5 accent-grape"
-                                />
-                                <span className="flex flex-col leading-tight">
-                                  <span>
-                                    {ROLE_LABELS[role]}
-                                    {!ok && <span className="ml-1 text-[10px] font-semibold text-ink/40">not supported</span>}
-                                    {takenElsewhere && <span className="ml-1 text-[10px] font-semibold text-grape">→ {providers.find((x) => x.id === owner)?.label ?? owner}</span>}
-                                  </span>
-                                  {modelForRole(pid, role) && <span className="text-[10px] font-semibold text-ink/45">{modelForRole(pid, role)}</span>}
-                                </span>
-                              </label>
-                            )
-                          })}
-                        </div>
-                      </details>
-                    )}
-                    <button
-                      onClick={() => {
-                        let next = { ...viewRoles, [pid]: [...supported] }
-                        if (exclusive) {
-                          const taken = new Set(supported)
-                          for (const p of Object.keys(next) as ProviderId[]) if (p !== pid) next[p] = (next[p] ?? []).filter((r) => !taken.has(r))
-                        }
-                        patch({ roles: next }, `🎭 ${label} on every job it can do`)
-                      }}
-                      disabled={locked}
-                      className="btn-ghost ml-auto disabled:cursor-not-allowed disabled:opacity-45"
-                      title={exclusive ? 'Make this provider the one model for every job it can do' : 'Tick every job this provider can do'}
-                    >
-                      ✨ All-rounder
-                    </button>
+            <div className="overflow-x-auto pb-1">
+              <div className="min-w-[860px]">
+                {/* matrix header: one column per provider */}
+                <div className={`grid ${MATRIX_GRID}`}>
+                  <div className="border-b-2 border-ink/10 px-3 pb-2 pt-1 text-[11px] font-bold uppercase tracking-wide text-ink/45">
+                    Job ↓ · Provider →
                   </div>
-                )
-              })}
+                  {ROLE_PROVIDERS.map((pid) => {
+                    const label = providers.find((x) => x.id === pid)?.label ?? pid
+                    const icon = KEYS.find((k) => k.id === pid)?.icon ?? ''
+                    const connected = Boolean(keys?.[pid])
+                    const supported = PROVIDER_CAPABILITIES[pid]
+                    const current = viewRoles[pid] ?? []
+                    const enabled = current.length > 0
+                    const locked = onPlan || !connected
+                    const enableProvider = () => {
+                      let next = { ...viewRoles, [pid]: [...supported] }
+                      if (exclusive) {
+                        const taken = new Set(supported)
+                        for (const p of Object.keys(next) as ProviderId[]) if (p !== pid) next[p] = (next[p] ?? []).filter((r) => !taken.has(r))
+                      }
+                      patch({ roles: next }, `🎭 ${label} on duty`)
+                    }
+                    return (
+                      <div key={pid} className="border-b-2 border-ink/10 px-3 pb-2 pt-1">
+                        <label className="flex cursor-pointer items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={enabled}
+                            disabled={locked}
+                            onChange={(e) => (e.target.checked ? enableProvider() : patch({ roles: { ...viewRoles, [pid]: [] } }, `🎭 ${label} off duty`))}
+                            title={onPlan ? 'Switch to your own API keys to change this' : connected ? `Enable ${label} for the ticked jobs` : `Connect your ${label} key first`}
+                            className="h-3.5 w-3.5 accent-grape"
+                          />
+                          <span>{icon}</span>
+                          <span className="text-xs font-black">{label}</span>
+                        </label>
+                        <div className="mt-1 flex items-center justify-between gap-1">
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${connected ? 'bg-mint text-white' : 'bg-ink/5 text-ink/50'}`}>
+                            {connected ? '✓ Connected' : '🔒 No key yet'}
+                          </span>
+                          <button
+                            onClick={enableProvider}
+                            disabled={locked}
+                            className="rounded-lg px-1.5 py-0.5 text-[10px] font-bold text-grape hover:bg-grape-soft disabled:cursor-not-allowed disabled:opacity-40"
+                            title={exclusive ? `Make ${label} the one model for every job it can do` : `Tick every job ${label} can do`}
+                          >
+                            ✨ All
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                {/* one row per role */}
+                {ALL_ROLES.map((role) => (
+                  <div key={role} className={`grid ${MATRIX_GRID} border-b border-ink/10 hover:bg-ink/[0.03]`}>
+                    <div className="px-3 py-2 text-xs font-black text-ink/75">{ROLE_LABELS[role]}</div>
+                    {ROLE_PROVIDERS.map((pid) => {
+                      const label = providers.find((x) => x.id === pid)?.label ?? pid
+                      const ok = PROVIDER_CAPABILITIES[pid].includes(role)
+                      const owner = roleOwner?.get(role)
+                      const takenElsewhere = exclusive && Boolean(owner) && owner !== pid
+                      const ticked = (viewRoles[pid] ?? []).includes(role)
+                      const model = modelForRole(pid, role)
+                      return (
+                        <div key={pid} className="border-l border-ink/10 px-3 py-1.5">
+                          {!ok ? (
+                            <span className="text-[11px] text-ink/30" title={`${label} cannot do this job`}>
+                              —
+                            </span>
+                          ) : (
+                            <label
+                              className={`flex cursor-pointer items-start gap-2 ${ticked || !takenElsewhere ? '' : 'opacity-70'} ${takenElsewhere ? 'cursor-not-allowed' : ''}`}
+                              title={!ok ? `${label} cannot do this job` : takenElsewhere ? `${ROLE_LABELS[role]} belongs to ${providers.find((x) => x.id === owner)?.label ?? owner} — untick it there first, or switch to Run in order` : undefined}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={ticked}
+                                disabled={onPlan || takenElsewhere}
+                                onChange={(e) => {
+                                  const next = assignRole(pid, role, e.target.checked)
+                                  patch({ roles: next }, `🎭 ${ROLE_LABELS[role]} → ${e.target.checked ? label : 'off'}`)
+                                }}
+                                className="mt-0.5 h-3.5 w-3.5 accent-grape"
+                              />
+                              <span className="flex flex-col leading-tight">
+                                {takenElsewhere ? (
+                                  <span className="text-[10px] font-bold text-grape">→ {providers.find((x) => x.id === owner)?.label ?? owner}</span>
+                                ) : (
+                                  model && <span className="text-[10px] font-semibold text-ink/45">{model}</span>
+                                )}
+                              </span>
+                            </label>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="mt-3 text-[11px] leading-snug text-ink/55">
               {exclusive
                 ? 'One model per role: each job runs on exactly the provider it is ticked for (a job with no owner falls back to your brain pick).'
                 : 'Run in order: when several providers could take one job, the app asks your brain pick first, then OpenAI → Anthropic → Gemini → DeepSeek. The others stand by if the first has no key.'}{' '}
-              Jobs like pictures, voices, music and clips still follow the engine choices below — the ticks decide who is allowed on the job at all.
+              The model under each tick is the one that would run the job — change it in the brain section above (and pictures, voices, music and clips follow the engine choices below).
             </div>
           </Section>
         )}
