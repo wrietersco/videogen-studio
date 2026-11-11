@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { ProviderRegistry } from '../src/main/providers/registry'
 import { DEFAULT_SETTINGS, type Settings } from '../src/main/settings'
-import { ALL_ROLES, DEFAULT_ROLES, PROVIDER_CAPABILITIES } from '@shared/providerRoles'
+import { ALL_ROLES, DEFAULT_ROLES, PROVIDER_CAPABILITIES, enforceExclusive, roleOwners } from '@shared/providerRoles'
 
 /** settings for one test: every provider keyed, so key presence never hides a candidate */
-function registryWith(roles: Settings['roles'], keyed: string[] = ['openai', 'anthropic', 'gemini', 'deepseek']): ProviderRegistry {
+function registryWith(roles: Settings['roles'], keyed: string[] = ['openai', 'anthropic', 'gemini', 'deepseek'], roleMode?: Settings['roleMode']): ProviderRegistry {
   const r = new ProviderRegistry()
-  r.reconfigure({ provider: 'gemini', models: {}, roles }, Object.fromEntries(keyed.map((k) => [k, 'test-key'])))
+  r.reconfigure({ provider: 'gemini', models: {}, roles, ...(roleMode ? { roleMode } : {}) }, Object.fromEntries(keyed.map((k) => [k, 'test-key'])))
   return r
 }
 
@@ -66,5 +66,28 @@ describe('registry role routing', () => {
     expect(registryWith(geminiNoPaint).imageProvider()?.id).toBe('openai')
     const noPainters = { ...DEFAULT_ROLES, openai: ['text'], gemini: ['text'] } as Settings['roles']
     expect(registryWith(noPainters).imageProvider()).toBeNull()
+  })
+
+  it('defaults to run-in-order and keeps standby candidates', () => {
+    expect(DEFAULT_SETTINGS.roleMode).toBe('order')
+    expect(registryWith(DEFAULT_ROLES).candidates('code')).toEqual(['gemini', 'openai', 'anthropic', 'deepseek'])
+  })
+
+  it('exclusive mode runs the job on exactly one provider', () => {
+    expect(registryWith(DEFAULT_ROLES, undefined, 'exclusive').candidates('code')).toEqual(['gemini'])
+    const both = { ...DEFAULT_ROLES } as Settings['roles']
+    const r = registryWith(both, undefined, 'exclusive')
+    expect(r.forRole('text')?.id).toBe('gemini') // brain, not openai-despite-order
+    expect(r.forRole('image-gen')?.id).toBe('gemini')
+  })
+
+  it('enforceExclusive keeps the first owner per role and drops later ticks', () => {
+    const roles = { openai: ['text', 'code'], gemini: ['text', 'code', 'image-gen'], deepseek: ['code'] } as Settings['roles']
+    const enforced = enforceExclusive(roles, ['openai', 'gemini', 'deepseek'])
+    expect(enforced).toEqual({ openai: ['text', 'code'], gemini: ['image-gen'] })
+    const owners = roleOwners(roles, ['gemini', 'openai', 'deepseek'])
+    expect(owners.get('text')).toBe('gemini')
+    expect(owners.get('code')).toBe('gemini')
+    expect(owners.get('image-gen')).toBe('gemini')
   })
 })

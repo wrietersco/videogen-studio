@@ -47,3 +47,38 @@ export const PROVIDER_CAPABILITIES: Record<ProviderId, ProviderRole[]> = {
 export const DEFAULT_ROLES: Record<ProviderId, ProviderRole[]> = Object.fromEntries(
   (Object.keys(PROVIDER_CAPABILITIES) as ProviderId[]).map((id) => [id, [...PROVIDER_CAPABILITIES[id]]])
 ) as Record<ProviderId, ProviderRole[]>
+
+/**
+ * How jobs are shared when several providers could do one:
+ *   'order'     every ticked provider is a candidate — the brain pick leads,
+ *               then OpenAI → Anthropic → Gemini → DeepSeek; the rest stand by
+ *   'exclusive' one model for one role: each job belongs to exactly one
+ *               provider, whoever it is ticked for
+ */
+export type RoleRouting = 'order' | 'exclusive'
+
+/** the order candidates are tried in (the brain pick is prepended by callers) */
+export const ROLE_PRIORITY: ProviderId[] = ['openai', 'anthropic', 'gemini', 'deepseek']
+
+/**
+ * Keep only the first provider (in `order`) per role, dropping every later
+ * tick — used when the app runs 'exclusive' so a role has exactly one owner.
+ */
+export function enforceExclusive(
+  roles: Partial<Record<ProviderId, ProviderRole[]>>,
+  order: ProviderId[]
+): Partial<Record<ProviderId, ProviderRole[]>> {
+  const out: Partial<Record<ProviderId, ProviderRole[]>> = {}
+  for (const [r, p] of roleOwners(roles, order)) (out[p] ??= []).push(r)
+  return out
+}
+
+/** which provider owns each role under `roles`, in `order` (first tick wins) */
+export function roleOwners(
+  roles: Partial<Record<ProviderId, ProviderRole[]>>,
+  order: ProviderId[]
+): Map<ProviderRole, ProviderId> {
+  const owners = new Map<ProviderRole, ProviderId>()
+  for (const p of order) for (const r of roles[p] ?? []) if (!owners.has(r)) owners.set(r, p)
+  return owners
+}

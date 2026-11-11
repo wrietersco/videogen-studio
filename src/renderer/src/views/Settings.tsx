@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { MEDIA_MODELS, PRICES_AS_OF, RATES, modelTags, type MediaModel } from '@shared/pricing'
-import { ALL_ROLES, PROVIDER_CAPABILITIES, ROLE_LABELS, type ProviderRole } from '@shared/providerRoles'
+import { ALL_ROLES, PROVIDER_CAPABILITIES, ROLE_LABELS, ROLE_PRIORITY, enforceExclusive, roleOwners, type ProviderRole, type RoleRouting } from '@shared/providerRoles'
 import { api, type KeyId, type MediaSettings, type ModelInfo, type ProviderId, type ProviderStatus, type SettingsView } from '../api'
 import { Chip, Meter, Section } from '../components/ui'
 import Updater from '../components/Updater'
@@ -49,6 +49,10 @@ const MEDIA_KINDS: Array<{ kind: keyof MediaSettings; icon: string; title: strin
 ]
 
 type Option = { value: string; label: string; typical: string; cost: number; speed: number; quality: number; tags: string[]; note?: string; needs?: KeyId }
+
+/** the model that would run each generation job, per provider */
+const IMAGE_MODEL_DEFAULTS: Record<string, string> = { openai: 'gpt-image-2.5-sunburst', gemini: 'gemini-3.1-flash-image' }
+const VOICE_MODEL_DEFAULTS: Record<string, string> = { openai: 'gpt-4o-mini-tts', gemini: 'gemini-2.5-flash-preview-tts' }
 
 function optionsFor(kind: keyof MediaSettings): Option[] {
   const fromCatalog = (m: MediaModel): Option => ({
@@ -142,6 +146,30 @@ export default function Settings() {
 
   if (!settings) return null
   const defaultModel: Record<string, string> = { openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash', deepseek: 'deepseek-chat' }
+  // who does what: in exclusive mode a role belongs to exactly one provider, so render the enforced view
+  const exclusive = settings.roleMode === 'exclusive'
+  const roleOrder = [...new Set([settings.provider, ...ROLE_PRIORITY])].filter((p) => p !== 'mock')
+  const viewRoles = exclusive ? enforceExclusive(settings.roles ?? {}, roleOrder) : settings.roles ?? {}
+  const roleOwner = exclusive ? roleOwners(viewRoles, roleOrder) : null
+  const modelForRole = (pid: ProviderId, role: ProviderRole): string => {
+    if (role === 'image-gen') return settings.models[`${pid}-image`] || IMAGE_MODEL_DEFAULTS[pid] || ''
+    if (role === 'video-gen') return 'gemini-omni-1.1-flash'
+    if (role === 'audio-gen') return VOICE_MODEL_DEFAULTS[pid] ?? ''
+    if (role === 'audio-process') return pid === 'openai' ? 'whisper-1' : ''
+    return settings.models[pid] || defaultModel[pid] || ''
+  }
+  /** tick/unset one role; in exclusive mode a new owner takes the job away from everyone else */
+  const assignRole = (pid: ProviderId, role: ProviderRole, add: boolean) => {
+    const next: Partial<Record<ProviderId, ProviderRole[]>> = { ...viewRoles }
+    if (add && exclusive) for (const p of Object.keys(next) as ProviderId[]) if (p !== pid) next[p] = (next[p] ?? []).filter((r) => r !== role)
+    next[pid] = add ? [...(next[pid] ?? []), role] : (next[pid] ?? []).filter((r) => r !== role)
+    return next
+  }
+  const setRoleMode = (m: RoleRouting) => {
+    if (m === settings.roleMode) return
+    if (m === 'exclusive') patch({ roleMode: m, roles: enforceExclusive(settings.roles ?? {}, roleOrder) }, '1️⃣ one model per role')
+    else patch({ roleMode: m }, '🔗 run in order')
+  }
 
   return (
     <div className="page-bg h-full overflow-y-auto">
@@ -325,7 +353,7 @@ export default function Settings() {
 
         {/* who does what — several providers at once, each with its jobs */}
         {insider && settings && (
-          <Section icon="🎭" title="Who does what" hint="Enable several providers and tick the jobs each one takes. A job with no enabled provider falls back to your brain pick above." tone="amber">
+          <Section icon="🎭" title="Who does what" hint="Connect providers, tick the jobs each one takes, and see exactly which model runs each job. A job with no enabled provider falls back to your brain pick above." tone="amber">
             {onPlan && (
               <div className="pop-in flex items-start gap-3 rounded-2xl border-2 border-sunny/60 bg-sunny-soft p-3 text-xs text-ink/80">
                 <span className="text-base">💡</span>
@@ -335,23 +363,44 @@ export default function Settings() {
                 </div>
               </div>
             )}
+            {!onPlan && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Chip active={!exclusive} onClick={() => setRoleMode('order')} title="Several providers may take one job: your brain pick leads, then OpenAI → Anthropic → Gemini → DeepSeek">
+                  🔗 Run in order
+                </Chip>
+                <Chip active={exclusive} onClick={() => setRoleMode('exclusive')} title="Each job belongs to exactly one provider — ticking it for someone else moves the job">
+                  1️⃣ One model per role
+                </Chip>
+                <span className="text-[11px] text-ink/55">
+                  {exclusive ? 'each job has exactly one owner — ticking it for another provider moves the job there' : 'several providers can share a job; the first in line runs it, the rest stand by'}
+                </span>
+              </div>
+            )}
             <div className="space-y-2">
               {(['openai', 'anthropic', 'gemini', 'deepseek'] as ProviderId[]).map((pid) => {
                 const label = providers.find((x) => x.id === pid)?.label ?? pid
                 const icon = KEYS.find((k) => k.id === pid)?.icon ?? ''
                 const connected = Boolean(keys?.[pid])
                 const supported = PROVIDER_CAPABILITIES[pid]
-                const current = settings.roles?.[pid] ?? []
+                const current = viewRoles[pid] ?? []
                 const enabled = current.length > 0
                 const locked = onPlan || !connected
-                const setRoles = (roles: ProviderRole[], msg: string) => patch({ roles: { ...settings.roles, [pid]: roles } }, msg)
+                const setRoles = (roles: ProviderRole[], msg: string) => patch({ roles: { ...viewRoles, [pid]: roles } }, msg)
                 return (
                   <div key={pid} className={`flex flex-wrap items-center gap-3 rounded-2xl border-2 px-4 py-3 transition-colors ${connected ? 'border-ink/10 bg-white' : 'border-ink/10 bg-ink/5 opacity-70'}`}>
                     <input
                       type="checkbox"
                       checked={enabled}
                       disabled={locked}
-                      onChange={(e) => setRoles(e.target.checked ? [...supported] : [], e.target.checked ? `🎭 ${label} on duty` : `🎭 ${label} off duty`)}
+                      onChange={(e) => {
+                        if (!e.target.checked) return setRoles([], `🎭 ${label} off duty`)
+                        let next = { ...viewRoles, [pid]: [...supported] }
+                        if (exclusive) {
+                          const taken = new Set(supported)
+                          for (const p of Object.keys(next) as ProviderId[]) if (p !== pid) next[p] = (next[p] ?? []).filter((r) => !taken.has(r))
+                        }
+                        patch({ roles: next }, `🎭 ${label} on duty`)
+                      }}
                       title={onPlan ? 'Switch to your own API keys to change this' : connected ? 'Enable this provider for the ticked jobs' : `Connect your ${label} key first`}
                       className="h-4 w-4 accent-grape"
                     />
@@ -363,23 +412,38 @@ export default function Settings() {
                     {enabled && (
                       <details className="group min-w-0 flex-1">
                         <summary className="cursor-pointer select-none text-xs font-bold text-grape">
-                          {current.length} job{current.length === 1 ? '' : 's'}
+                          {current.length} job{current.length === 1 ? '' : 's'} · {[...new Set(current.map((r) => modelForRole(pid, r)))].join(', ')}
                           <span className="ml-2 font-semibold text-ink/55 group-open:hidden">▾ choose</span>
                         </summary>
                         <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5 lg:grid-cols-4">
                           {ALL_ROLES.map((role) => {
                             const ok = supported.includes(role)
+                            const owner = roleOwner?.get(role)
+                            const takenElsewhere = exclusive && Boolean(owner) && owner !== pid
                             return (
-                              <label key={role} className={`flex items-center gap-2 text-xs font-bold ${ok ? 'text-ink/80' : 'text-ink/40'}`} title={ok ? undefined : `${label} cannot do this job`}>
+                              <label
+                                key={role}
+                                className={`flex items-center gap-2 text-xs font-bold ${ok && !takenElsewhere ? 'text-ink/80' : 'text-ink/40'}`}
+                                title={!ok ? `${label} cannot do this job` : takenElsewhere ? `${ROLE_LABELS[role]} belongs to ${providers.find((x) => x.id === owner)?.label ?? owner} — untick it there first, or switch to Run in order` : undefined}
+                              >
                                 <input
                                   type="checkbox"
                                   checked={current.includes(role)}
-                                  disabled={!ok || onPlan}
-                                  onChange={(e) => setRoles(e.target.checked ? [...current, role] : current.filter((r) => r !== role), `🎭 ${label}: ${ROLE_LABELS[role]} ${e.target.checked ? 'on' : 'off'}`)}
+                                  disabled={!ok || onPlan || takenElsewhere}
+                                  onChange={(e) => {
+                                    const next = assignRole(pid, role, e.target.checked)
+                                    patch({ roles: next }, `🎭 ${ROLE_LABELS[role]} → ${e.target.checked ? label : 'off'}`)
+                                  }}
                                   className="h-3.5 w-3.5 accent-grape"
                                 />
-                                {ROLE_LABELS[role]}
-                                {!ok && <span className="text-[10px] font-semibold text-ink/40">not supported</span>}
+                                <span className="flex flex-col leading-tight">
+                                  <span>
+                                    {ROLE_LABELS[role]}
+                                    {!ok && <span className="ml-1 text-[10px] font-semibold text-ink/40">not supported</span>}
+                                    {takenElsewhere && <span className="ml-1 text-[10px] font-semibold text-grape">→ {providers.find((x) => x.id === owner)?.label ?? owner}</span>}
+                                  </span>
+                                  {modelForRole(pid, role) && <span className="text-[10px] font-semibold text-ink/45">{modelForRole(pid, role)}</span>}
+                                </span>
                               </label>
                             )
                           })}
@@ -387,10 +451,17 @@ export default function Settings() {
                       </details>
                     )}
                     <button
-                      onClick={() => setRoles([...supported], `🎭 ${label} on every job it can do`)}
+                      onClick={() => {
+                        let next = { ...viewRoles, [pid]: [...supported] }
+                        if (exclusive) {
+                          const taken = new Set(supported)
+                          for (const p of Object.keys(next) as ProviderId[]) if (p !== pid) next[p] = (next[p] ?? []).filter((r) => !taken.has(r))
+                        }
+                        patch({ roles: next }, `🎭 ${label} on every job it can do`)
+                      }}
                       disabled={locked}
                       className="btn-ghost ml-auto disabled:cursor-not-allowed disabled:opacity-45"
-                      title="Tick every job this provider can do"
+                      title={exclusive ? 'Make this provider the one model for every job it can do' : 'Tick every job this provider can do'}
                     >
                       ✨ All-rounder
                     </button>
@@ -399,7 +470,9 @@ export default function Settings() {
               })}
             </div>
             <div className="mt-3 text-[11px] leading-snug text-ink/55">
-              When several providers could take one job, the app asks your brain pick first, then OpenAI → Anthropic → Gemini → DeepSeek.
+              {exclusive
+                ? 'One model per role: each job runs on exactly the provider it is ticked for (a job with no owner falls back to your brain pick).'
+                : 'Run in order: when several providers could take one job, the app asks your brain pick first, then OpenAI → Anthropic → Gemini → DeepSeek. The others stand by if the first has no key.'}{' '}
               Jobs like pictures, voices, music and clips still follow the engine choices below — the ticks decide who is allowed on the job at all.
             </div>
           </Section>

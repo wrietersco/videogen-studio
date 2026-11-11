@@ -309,7 +309,18 @@ export class MediaRouter {
     const [p, model] = split(this.d.settings().media.voice || 'auto')
     if (p === 'none') return null
     const voice = (id: string) => this.d.key(id as KeyId) && (this.d.roleAllows?.(id, 'audio-gen') ?? true)
-    const pick = p === 'auto' ? (voice('openai') ? 'openai' : voice('elevenlabs') ? 'elevenlabs' : voice('gemini') ? 'gemini' : null) : p
+    const pick = p === 'auto'
+      ? this.d.settings().roleMode === 'exclusive'
+        ? // one model for one role: the ticked owner speaks, else ElevenLabs
+          (['openai', 'gemini'].find((id) => voice(id)) ?? (voice('elevenlabs') ? 'elevenlabs' : null))
+        : voice('openai')
+          ? 'openai'
+          : voice('elevenlabs')
+            ? 'elevenlabs'
+            : voice('gemini')
+              ? 'gemini'
+              : null
+      : p
     if (!pick || !this.d.key(pick as KeyId)) return null
     if (pick === 'elevenlabs') {
       const m = model ?? 'eleven_flash_v2_5'

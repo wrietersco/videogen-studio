@@ -1,5 +1,5 @@
 import type { ProviderId } from './providers/types'
-import { DEFAULT_ROLES, type ProviderRole } from '@shared/providerRoles'
+import { DEFAULT_ROLES, type ProviderRole, type RoleRouting } from '@shared/providerRoles'
 
 /** every secret the app can hold: chat providers plus media/stock services */
 export type KeyId = ProviderId | 'elevenlabs' | 'pexels' | 'pixabay'
@@ -24,6 +24,8 @@ export interface Settings {
   models: Record<string, string>
   /** which provider may do what (Settings → Who does what); the brain provider is always the fallback */
   roles: Partial<Record<ProviderId, ProviderRole[]>>
+  /** how jobs are shared when several providers could do one: ordered candidates, or one owner per role */
+  roleMode: RoleRouting
   keys: Partial<Record<KeyId, string>>
   quality: 'draft' | 'standard' | 'delivery'
   allowGpu: boolean
@@ -51,6 +53,7 @@ export const DEFAULT_SETTINGS: Settings = {
   provider: 'mock',
   models: {},
   roles: Object.fromEntries(Object.entries(DEFAULT_ROLES).map(([p, r]) => [p, [...r]])) as typeof DEFAULT_ROLES,
+  roleMode: 'order',
   keys: {},
   quality: 'standard',
   allowGpu: false,

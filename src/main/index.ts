@@ -454,6 +454,7 @@ function registerIpc(): void {
         })
       )
     }
+    if (patch.roleMode === 'order' || patch.roleMode === 'exclusive') settings.roleMode = patch.roleMode
     if (patch.quality) settings.quality = patch.quality
     if (typeof patch.allowGpu === 'boolean') settings.allowGpu = patch.allowGpu
     if (patch.craft === 'directed' || patch.craft === 'classic') settings.craft = patch.craft

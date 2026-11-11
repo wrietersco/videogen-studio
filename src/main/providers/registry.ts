@@ -5,7 +5,7 @@ import { AnthropicProvider } from './anthropic'
 import { GeminiProvider } from './gemini'
 import { DeepseekProvider } from './deepseek'
 import type { Settings } from '../settings'
-import { DEFAULT_ROLES, PROVIDER_CAPABILITIES, type ProviderRole } from '@shared/providerRoles'
+import { DEFAULT_ROLES, PROVIDER_CAPABILITIES, ROLE_PRIORITY, type ProviderRole } from '@shared/providerRoles'
 
 /**
  * Provider registry — resolves which LLMProvider runs each role and passes
@@ -26,6 +26,7 @@ export class ProviderRegistry {
   private readonly keys = new Map<ProviderId, string>()
   private readonly models = new Map<string, string | undefined>()
   private roles: Partial<Record<ProviderId, ProviderRole[]>> = {}
+  private roleMode: 'order' | 'exclusive' = 'order'
 
   constructor() {
     this.providers.set('mock', new MockProvider())
@@ -51,7 +52,7 @@ export class ProviderRegistry {
   }
 
   /** Called at startup and whenever settings change. */
-  reconfigure(settings: Pick<Settings, 'provider' | 'models' | 'roles'>, keys?: Partial<Record<ProviderId, string>>): void {
+  reconfigure(settings: Pick<Settings, 'provider' | 'models' | 'roles' | 'roleMode'>, keys?: Partial<Record<ProviderId, string>>): void {
     if (settings.provider && this.providers.has(settings.provider)) this.activeId = settings.provider
     if (settings.models) {
       for (const [p, m] of Object.entries(settings.models)) {
@@ -59,6 +60,7 @@ export class ProviderRegistry {
       }
     }
     if (settings.roles) this.roles = settings.roles
+    if (settings.roleMode) this.roleMode = settings.roleMode
     if (keys) {
       for (const [p, k] of Object.entries(keys)) {
         if (k) this.keys.set(p as ProviderId, k)
@@ -87,8 +89,8 @@ export class ProviderRegistry {
    * A provider qualifies when Settings → Who does what enables the role for
    * it, its capability matrix allows the role, and it has a key.
    */
-  private candidatesFor(role: ProviderRole): ProviderId[] {
-    const order: ProviderId[] = [this.activeId, 'openai', 'anthropic', 'gemini', 'deepseek']
+  candidates(role: ProviderRole): ProviderId[] {
+    const order: ProviderId[] = [this.activeId, ...ROLE_PRIORITY]
     const seen = new Set<ProviderId>()
     const out: ProviderId[] = []
     for (const id of order) {
@@ -98,6 +100,8 @@ export class ProviderRegistry {
       if (!PROVIDER_CAPABILITIES[id].includes(role)) continue
       if (!this.keys.has(id)) continue
       out.push(id)
+      // one model for one role: a single owner runs the job, nobody stands by
+      if (this.roleMode === 'exclusive') break
     }
     return out
   }
@@ -107,7 +111,7 @@ export class ProviderRegistry {
    * above. Null → the caller keeps its fallback (the brain provider).
    */
   forRole(role: ProviderRole): LLMProvider | null {
-    for (const id of this.candidatesFor(role)) {
+    for (const id of this.candidates(role)) {
       const p = this.providers.get(id)
       if (role === 'image-gen' && !p?.generateImage) continue
       return p ?? null
