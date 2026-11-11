@@ -324,8 +324,17 @@ export default function Settings() {
         )}
 
         {/* who does what — several providers at once, each with its jobs */}
-        {insider && !onPlan && settings && (
+        {insider && settings && (
           <Section icon="🎭" title="Who does what" hint="Enable several providers and tick the jobs each one takes. A job with no enabled provider falls back to your brain pick above." tone="amber">
+            {onPlan && (
+              <div className="pop-in flex items-start gap-3 rounded-2xl border-2 border-sunny/60 bg-sunny-soft p-3 text-xs text-ink/80">
+                <span className="text-base">💡</span>
+                <div>
+                  Your plan is running the AI right now, so these jobs follow your plan's engines.
+                  Tick <b>Use my own API keys</b> in Your plan above to put your own providers — DeepSeek included — on these jobs.
+                </div>
+              </div>
+            )}
             <div className="space-y-2">
               {(['openai', 'anthropic', 'gemini', 'deepseek'] as ProviderId[]).map((pid) => {
                 const label = providers.find((x) => x.id === pid)?.label ?? pid
@@ -334,15 +343,16 @@ export default function Settings() {
                 const supported = PROVIDER_CAPABILITIES[pid]
                 const current = settings.roles?.[pid] ?? []
                 const enabled = current.length > 0
+                const locked = onPlan || !connected
                 const setRoles = (roles: ProviderRole[], msg: string) => patch({ roles: { ...settings.roles, [pid]: roles } }, msg)
                 return (
                   <div key={pid} className={`flex flex-wrap items-center gap-3 rounded-2xl border-2 px-4 py-3 transition-colors ${connected ? 'border-ink/10 bg-white' : 'border-ink/10 bg-ink/5 opacity-70'}`}>
                     <input
                       type="checkbox"
                       checked={enabled}
-                      disabled={!connected}
+                      disabled={locked}
                       onChange={(e) => setRoles(e.target.checked ? [...supported] : [], e.target.checked ? `🎭 ${label} on duty` : `🎭 ${label} off duty`)}
-                      title={connected ? 'Enable this provider for the ticked jobs' : `Connect your ${label} key first`}
+                      title={onPlan ? 'Switch to your own API keys to change this' : connected ? 'Enable this provider for the ticked jobs' : `Connect your ${label} key first`}
                       className="h-4 w-4 accent-grape"
                     />
                     <span className="text-lg">{icon}</span>
@@ -364,7 +374,7 @@ export default function Settings() {
                                 <input
                                   type="checkbox"
                                   checked={current.includes(role)}
-                                  disabled={!ok}
+                                  disabled={!ok || onPlan}
                                   onChange={(e) => setRoles(e.target.checked ? [...current, role] : current.filter((r) => r !== role), `🎭 ${label}: ${ROLE_LABELS[role]} ${e.target.checked ? 'on' : 'off'}`)}
                                   className="h-3.5 w-3.5 accent-grape"
                                 />
@@ -378,7 +388,7 @@ export default function Settings() {
                     )}
                     <button
                       onClick={() => setRoles([...supported], `🎭 ${label} on every job it can do`)}
-                      disabled={!connected}
+                      disabled={locked}
                       className="btn-ghost ml-auto disabled:cursor-not-allowed disabled:opacity-45"
                       title="Tick every job this provider can do"
                     >
