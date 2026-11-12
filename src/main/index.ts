@@ -312,7 +312,7 @@ interface JobRun {
   settings: Settings
   orch: Orchestrator
   media: MediaRouter
-  /** programmatic on own keys: the code model authors scenes, media engines stay live */
+  /** programmatic on own keys: the user's full engine runs, never counted */
   artistic: boolean
   text: () => LLMProvider
 }
@@ -322,15 +322,17 @@ interface JobRun {
  * relay and the registry stay as `applyAccess` left them, and this job's key
  * function decides which of those keys it may actually use:
  *   programmatic        the free engine (no AI keys) — never counted
- *   programmatic+own    artistic: mock writer, real code model + own media keys — never counted
+ *   programmatic+own    the user's full engine on their own keys — never counted
  *   plan / own-keys     the account's engines as configured
  */
 function makeRun(asProgrammatic: boolean): JobRun {
   const programmatic = asProgrammatic || mode === 'programmatic'
+  // programmatic on own keys ("Programmatic+"): the user's full engine, never
+  // counted; programmatic anywhere else: the free engine (mock writer, no AI keys)
   const artistic = programmatic && mode === 'own-keys'
   const free = programmatic && !artistic
   const mock = providerRegistry.get('mock')
-  const text = programmatic ? () => mock : () => providerRegistry.forRole('text') ?? providerRegistry.active()
+  const text = free ? () => mock : () => providerRegistry.forRole('text') ?? providerRegistry.active()
   const code = free ? () => mock : () => providerRegistry.forRole('code') ?? (programmatic ? mock : providerRegistry.active())
   const vision = free ? () => mock : () => providerRegistry.forRole('image-process') ?? (programmatic ? mock : providerRegistry.active())
   const image = free ? () => null : () => providerRegistry.imageProvider()
@@ -443,7 +445,9 @@ async function startGenerate(opts: GenRequest, tap?: (ev: Record<string, unknown
       }
       try {
         const decided = settings.autopilot ? await decideCreative(opts.prompt, run.text()) : null
-        const creative = decided && opts.shapeLocked ? honorShape(decided, opts.platform) : decided
+        const shaped = decided && opts.shapeLocked ? honorShape(decided, opts.platform) : decided
+        // an exact scene grid is the person's own length: the creative pass may not change it
+        const creative = shaped && opts.sceneCount && opts.sceneSec ? { ...shaped, durationHintSec: opts.sceneCount * opts.sceneSec } : shaped
         if (creative) onEvent({ stage: 'plan', status: 'creative', ...creative })
         const base = run.settings
         const pilot = settings.autopilot ? decide({ prompt: opts.prompt, durationHintSec: creative?.durationHintSec ?? opts.durationHintSec, settings: base, imageAvailable: run.media.imageAvailable() }) : null
@@ -747,39 +751,148 @@ function registerIpc(): void {
   })
 }
 
-app.whenReady().then(() => {
-  // fresh installs download the renderer's Chrome once; start before the first job
-  void ensureBrowser()
+// ---------------- headless generation (electron . --headless-gen=<json>) ----------------
+
+const HEADLESS_FLAG = '--headless-gen='
+const headlessFile = process.argv.find((a) => a.startsWith(HEADLESS_FLAG))?.slice(HEADLESS_FLAG.length)
+
+interface HeadlessJob {
+  /** pick an unfinished project up where it stopped instead of starting a new video (prompt is then ignored) */
+  resume?: string
+  prompt: string
+  platform?: GenerateOptions['platform']
+  style?: GenerateOptions['styleHint']
+  programmatic?: boolean
+  sceneCount?: number
+  sceneSec?: number
+}
+
+/**
+ * Make videos without a window, straight through the app's own wiring (keys,
+ * roles, media engines) — the parallel-job path, several jobs at once.
+ * For testing: `npx electron . --headless-gen=request.json`; results land in
+ * headless-result.json next to the working directory.
+ */
+async function runHeadless(file: string): Promise<void> {
   loadSettings()
+  account.reload()
+  await account.sync().catch((err) => console.warn('[headless] account sync failed —', err instanceof Error ? err.message : err))
+  const req = JSON.parse(readFileSync(file, 'utf8')) as { jobs: HeadlessJob[]; media?: Partial<Settings['media']>; dryRun?: boolean }
+  // in memory only (nothing here saves settings): a request may pin media engines to bound the cost of a test
+  if (req.media) settings.media = { ...settings.media, ...req.media }
+  // the test videos run on the user's own engine, never counted
+  if (planEnt()?.allowOwnKeys ?? false) settings.useOwnKeys = true
   applyAccess()
-  // refresh the plan in the background; offline keeps the last one for display
-  void account.sync().catch((err) => console.warn('[account] sync failed', err instanceof Error ? err.message : err))
-  registerIpc()
-  registerAssetIpc({ library, router: media, key: keyOf, isBusy: busyNow })
-  registerFootageIpc({
-    store: footageStore,
-    service: footage,
-    isBusy: busyNow,
-    setBusy: (b) => { footageBusy = b },
-    emit,
-    window: () => win,
-    aiJob: (projectKey, title, fn) => {
-      if (mode === 'programmatic') return Promise.reject(new Error(account.signedIn ? (planEnt()?.aiBlockedReason || 'AI is not available on this account.') : 'Sign in to use AI on your footage.'))
-      return withAccess({ projectKey, programmatic: false, title }, fn)
+  console.log(`[headless] userData=${app.getPath('userData')} signedIn=${account.signedIn} entitlements=${Boolean(planEnt())} allowOwnKeys=${planEnt()?.allowOwnKeys} useOwnKeys=${settings.useOwnKeys} storedKeys=${Object.keys(settings.keys).join(',')}`)
+  console.log(`[headless] mode=${mode} writer=${effective.provider} image=${effective.media.image} voice=${effective.media.voice} music=${effective.media.music} video=${effective.media.video}`)
+  console.log(`[headless] roles: text=${providerRegistry.forRole('text')?.id ?? '-'} code=${providerRegistry.forRole('code')?.id ?? '-'} vision=${providerRegistry.forRole('image-process')?.id ?? '-'} painter=${providerRegistry.imageProvider()?.id ?? '-'}`)
+  if (req.dryRun) return
+  // a test of the user's own engine must never quietly fall back to the free one
+  if (mode !== 'own-keys') throw new Error(`own-keys mode is not active (mode=${mode}) — the videos would be made on the free engine`)
+  const started = Date.now()
+  const results = await Promise.all(
+    req.jobs.map(
+      (j) =>
+        new Promise<{ ok: boolean; output?: string; projectId?: string | null; error?: string }>((resolve) => {
+          let settled = false
+          const finish = (r: { ok: boolean; output?: string; projectId?: string | null; error?: string }) => {
+            if (!settled) {
+              settled = true
+              resolve(r)
+            }
+          }
+          const tap = (ev: unknown, projectId?: string) => {
+            const e = ev as { stage: string; status?: string; output?: string; error?: string; projectId?: string | null }
+            if (e.stage === 'done') finish({ ok: true, output: e.output, projectId: projectId ?? e.projectId })
+            if (e.stage === 'pipeline' && (e.status === 'failed' || e.status === 'cancelled')) finish({ ok: false, error: e.error ?? e.status, projectId: projectId ?? e.projectId })
+          }
+          if (j.resume) {
+            const id = j.resume
+            const start = editJob('resume', id, (run, onEvent) =>
+              run.orch
+                .resume(id, { quality: settings.quality, gpu: settings.allowGpu, craft: settings.craft, onEvent: (ev) => { onEvent(ev); tap(ev, id) } })
+                .catch((err) => {
+                  finish({ ok: false, error: String(err), projectId: id })
+                  throw err
+                })
+            )
+            if (!start.ok) finish({ ok: false, error: start.error })
+            return
+          }
+          void startGenerate(
+            {
+              prompt: j.prompt,
+              platform: j.platform ?? 'tiktok',
+              styleHint: j.style,
+              shapeLocked: true,
+              durationHintSec: j.sceneCount && j.sceneSec ? j.sceneCount * j.sceneSec : undefined,
+              sceneCount: j.sceneCount,
+              sceneSec: j.sceneSec,
+              programmatic: j.programmatic !== false
+            },
+            (ev) => tap(ev)
+          ).then((start) => {
+            if (!start.ok) finish({ ok: false, error: start.error })
+          })
+        })
+    )
+  )
+  for (const [i, r] of results.entries()) console.log(`[headless] job ${i + 1}: ${r.ok ? `OK → ${r.output}` : `FAILED — ${r.error}`}`)
+  writeFileSync(join(process.cwd(), 'headless-result.json'), JSON.stringify({ tookMs: Date.now() - started, results }, null, 2))
+}
+
+if (headlessFile) {
+  app.whenReady().then(async () => {
+    try {
+      await runHeadless(headlessFile)
+    } catch (err) {
+      console.error('[headless]', err)
+      writeFileSync(join(process.cwd(), 'headless-result.json'), JSON.stringify({ error: String(err) }, null, 2))
+      process.exitCode = 1
+    } finally {
+      app.exit(0)
     }
   })
-  createWindow()
-  createTray()
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-    else showMainWindow()
+} else {
+  app.whenReady().then(() => {
+    // fresh installs download the renderer's Chrome once; start before the first job
+    void ensureBrowser()
+    loadSettings()
+    account.reload()
+    applyAccess()
+    // refresh the plan in the background; offline keeps the last one for display
+    void account.sync().catch((err) => console.warn('[account] sync failed', err instanceof Error ? err.message : err))
+    registerIpc()
+    registerAssetIpc({ library, router: media, key: keyOf, isBusy: busyNow })
+    registerFootageIpc({
+      store: footageStore,
+      service: footage,
+      isBusy: busyNow,
+      setBusy: (b) => { footageBusy = b },
+      emit,
+      window: () => win,
+      aiJob: (projectKey, title, fn) => {
+        if (mode === 'programmatic') return Promise.reject(new Error(account.signedIn ? (planEnt()?.aiBlockedReason || 'AI is not available on this account.') : 'Sign in to use AI on your footage.'))
+        return withAccess({ projectKey, programmatic: false, title }, fn)
+      }
+    })
+    createWindow()
+    createTray()
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+      else showMainWindow()
+    })
   })
-})
+}
 
 app.on('before-quit', () => {
   quitting = true
 })
 
 app.on('window-all-closed', () => {
+  // a headless run has no main window: the hidden helper windows (storyboard
+  // captures, coded-scene renders) open and close while jobs are still going,
+  // and must not take the app down with them — runHeadless exits when done
+  if (headlessFile) return
   if (process.platform !== 'darwin') app.quit()
 })

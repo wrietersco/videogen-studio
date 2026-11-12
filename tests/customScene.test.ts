@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { validateSceneSvg, chooseCustomScenes, authorCustomScene } from '../src/main/director/customScene'
-import { authorCanvasCode, hasVisibleMotion } from '../src/main/director/canvasCode'
+import { authorCanvasCode, hasVisibleMotion, syntaxProblem } from '../src/main/director/canvasCode'
 import { MockProvider } from '../src/main/providers/mock'
 import { Planner } from '../src/main/pipeline/planner'
 import { compose } from '../src/main/composer'
@@ -141,6 +141,23 @@ describe('custom scene authoring', () => {
     const provider = { id: 'openai', generateJSON: async () => ({ beginning: 'a', middle: 'b', end: 'c', photoUse: 'none' }), generateText: async (req: { prompt: string }) => { authorPrompt = req.prompt; return 'ctx.fillRect(0,0,w,h)' } } as unknown as LLMProvider
     await authorCanvasCode(provider, spec, 'isometric shop', spec.scenes[0].id, undefined, undefined, undefined, undefined, false, undefined, 'approved grinder geometry')
     expect(JSON.parse(authorPrompt).approvedPreviousSceneCode).toBe('approved grinder geometry')
+  })
+  it('asks the code author to repair a syntax slip once, before any render is spent on it', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'isometric shop', platform: 'tiktok' })
+    const replies = ['const a = 1;\nconst a = 2;\nctx.fillRect(0,0,w,h)', 'const a = 1;\nctx.fillRect(0,0,w,h)']
+    const prompts: string[] = []
+    const provider = { id: 'openai', generateJSON: async () => ({ beginning: 'a', middle: 'b', end: 'c', photoUse: 'none' }), generateText: async (req: { prompt: string }) => { prompts.push(req.prompt); return replies.shift() ?? '' } } as unknown as LLMProvider
+    const code = await authorCanvasCode(provider, spec, 'isometric shop', spec.scenes[0].id)
+    expect(code).toBe('const a = 1;\nctx.fillRect(0,0,w,h)')
+    expect(prompts).toHaveLength(2)
+    expect(JSON.parse(prompts[1]).error).toContain('already been declared')
+    expect(syntaxProblem('ctx.fillRect(0,0,w,h)')).toBeNull()
+    expect(syntaxProblem('if (')).toBeTruthy()
+  })
+  it('keeps the original code when the repair is no better', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'isometric shop', platform: 'tiktok' })
+    const provider = { id: 'openai', generateJSON: async () => ({ beginning: 'a', middle: 'b', end: 'c', photoUse: 'none' }), generateText: async () => 'if (' } as unknown as LLMProvider
+    expect(await authorCanvasCode(provider, spec, 'isometric shop', spec.scenes[0].id)).toBe('if (')
   })
   it('detects a failed near-black capture before comparing scenes', async () => {
     const blank = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#101216' } }).png().toBuffer()

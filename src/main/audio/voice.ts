@@ -108,6 +108,18 @@ export function fitScenes(spec: VideoSpec, targetSec?: number): void {
   const { beatSec, beatsPerCut } = beatGrid(spec)
   const unit = beatSec * beatsPerCut
   const take = new Map(spec.voiceover.map((t) => [t.sceneId, t]))
+  // an exact scene grid the person asked for ("5 scenes, 8 seconds each") wins
+  // over voice-first timing: every scene holds the grid length. A line that
+  // cannot be said in that time keeps its scene just long enough to finish.
+  if (spec.sceneGrid) {
+    for (const scene of spec.scenes) {
+      const t = take.get(scene.id)
+      const need = t ? t.leadSec + t.durationSec + 0.15 : 0
+      scene.durationSec = Math.round(Math.max(spec.sceneGrid.sec, need) * 1000) / 1000
+    }
+    spec.durationSec = Math.round(spec.scenes.reduce((a, s) => a + s.durationSec, 0) * 100) / 100
+    return
+  }
   if (targetSec && Number.isFinite(targetSec) && targetSec > 0) {
     const minimums = spec.scenes.map((scene) => {
       const t = take.get(scene.id)

@@ -108,6 +108,30 @@ describe('planner clamp', () => {
     expect(spec.durationSec).toBeGreaterThan(15)
     for (const scene of spec.scenes) expect(scene.durationSec).toBeGreaterThan(5)
   })
+  it('holds an exact scene grid through voice fitting: five scenes of eight seconds stay five times eight', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'coffee', platform: 'youtube', sceneCount: 5, sceneSec: 8 })
+    expect(spec.sceneGrid).toEqual({ count: 5, sec: 8 })
+    expect(spec.scenes.map((s) => s.durationSec)).toEqual([8, 8, 8, 8, 8])
+    spec.voiceover = spec.scenes.map((scene, i) => ({ sceneId: scene.id, key: `${i}`, file: `take-${i}.mp3`, durationSec: 4.5, speechStartSec: 0.1, leadSec: 0.2, words: [] }))
+    // a longer target (the creative pass suggesting 60s) must not stretch the grid
+    fitScenes(spec, 60)
+    expect(spec.scenes.map((s) => s.durationSec)).toEqual([8, 8, 8, 8, 8])
+    expect(spec.durationSec).toBe(40)
+  })
+  it('lets a scene run just long enough to finish a line that cannot be said inside the grid', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'coffee', platform: 'youtube', sceneCount: 3, sceneSec: 8 })
+    spec.voiceover = [{ sceneId: spec.scenes[1].id, key: 'a', file: 'take.mp3', durationSec: 9, speechStartSec: 0, leadSec: 0.2, words: [] }]
+    fitScenes(spec)
+    expect(spec.scenes.map((s) => s.durationSec)).toEqual([8, 9.35, 8])
+  })
+  it('tells the planner the grid and a per-scene narration budget', async () => {
+    const base = await new Planner(new MockProvider()).plan({ userPrompt: 'coffee', platform: 'youtube' })
+    let sent = ''
+    const provider = { id: 'openai' as const, label: 'test', isConfigured: async () => true, listModels: async () => [], generateText: async () => '', generateJSON: async <T,>(req: { prompt: string }) => { sent = req.prompt; return structuredClone(base) as T } }
+    await new Planner(provider).plan({ userPrompt: 'coffee', platform: 'youtube', sceneCount: 5, sceneSec: 8 })
+    expect(JSON.parse(sent).sceneGrid).toContain('exactly 5 scenes of 8 seconds')
+    expect(JSON.parse(sent).sceneGrid).toContain('9–14 words')
+  })
   it('asks the selected provider to condense a substantially overlong plan', async () => {
     const mock = new MockProvider()
     const long = await new Planner(mock).plan({ userPrompt: 'coffee', platform: 'tiktok', durationHintSec: 30 })

@@ -35,7 +35,7 @@ function zodToJsonSchema(schema: z.ZodType): Record<string, unknown> {
 let cachedSpecSchema: Record<string, unknown> | null = null
 export function videoSpecJsonSchema(): Record<string, unknown> {
   // design + crafts belong to the scene director, never the planner
-  cachedSpecSchema ??= zodToJsonSchema(VideoSpec.omit({ design: true, crafts: true, voice: true, voiceover: true, customScenes: true, customVideos: true }))
+  cachedSpecSchema ??= zodToJsonSchema(VideoSpec.omit({ design: true, crafts: true, voice: true, voiceover: true, customScenes: true, customVideos: true, sceneGrid: true }))
   return cachedSpecSchema
 }
 
@@ -50,8 +50,45 @@ export interface PlanInput {
   platform: VideoSpecT['platform']
   styleHint?: VideoSpecT['style']
   durationHintSec?: number
+  /** an exact scene grid the person asked for: this many scenes, each this long */
+  sceneCount?: number
+  sceneSec?: number
   imageSummaries?: string[]
   model?: string
+}
+
+/**
+ * Hold a plan to an exact scene grid ("5 scenes, 8 seconds each"). Enforced in
+ * code after planning, so it holds whatever the model returned: extra scenes
+ * are dropped, a short plan repeats the body of the story, and every scene
+ * gets the same length. Narration follows its scene.
+ */
+export function enforceSceneGrid(spec: VideoSpecT, sceneCount?: number, sceneSec?: number): VideoSpecT {
+  const count = Number.isFinite(sceneCount) ? Math.max(1, Math.min(40, Math.round(sceneCount as number))) : spec.scenes.length
+  if ((!sceneCount && !sceneSec) || count === 0 || spec.scenes.length === 0) return spec
+  const sec = Number.isFinite(sceneSec) ? Math.max(1.4, Math.round((sceneSec as number) * 10) / 10) : Math.round((spec.durationSec / count) * 10) / 10
+  // keep the opening scene and the closing call to action; trim or fill the middle
+  const body = spec.scenes.length > 1 ? spec.scenes.slice(0, -1) : spec.scenes
+  const last = spec.scenes[spec.scenes.length - 1]
+  const picked = [...body]
+  for (let i = 1; picked.length < count - 1; i++) picked.push(body[Math.min(i, body.length - 1)] ?? body[0])
+  const final = count === 1 ? [spec.scenes[0]] : [...picked.slice(0, count - 1), last]
+  const text = new Map(spec.narration.map((n) => [n.sceneId, n]))
+  const scenes = final.map((s, i) => ({ ...s, id: `scene-${i + 1}`, durationSec: sec }))
+  const narration = final
+    .map((s, i) => {
+      const orig = text.get(s.id)
+      return orig ? { ...orig, sceneId: `scene-${i + 1}` } : null
+    })
+    .filter((n): n is VideoSpecT['narration'][number] => n !== null)
+  // remembered on the spec so every later recompose (voice fitting, critic, resume) holds the grid
+  return { ...spec, scenes, narration, durationSec: Math.round(sec * scenes.length * 10) / 10, ...(sceneCount && sceneSec ? { sceneGrid: { count: scenes.length, sec } } : {}) }
+}
+
+/** words a narrator comfortably says inside one scene of a grid, leaving a breath at each cut */
+export function gridWordBudget(sceneSec: number): { min: number; max: number } {
+  const max = Math.max(4, Math.floor((sceneSec - 1.2) * 2.2))
+  return { min: Math.max(3, Math.floor(max * 0.7)), max }
 }
 
 export class Planner {
@@ -64,8 +101,13 @@ export class Planner {
       platform: input.platform,
       platformNotes: `${preset.label} (${preset.aspectLabel}, ${preset.width}×${preset.height}, ${preset.durationRange[0]}–${preset.durationRange[1]}s). ${preset.notes}`,
       styleHint: input.styleHint,
-      durationHintSec: input.durationHintSec,
-      imageSummaries: input.imageSummaries
+      durationHintSec: input.sceneCount && input.sceneSec ? Math.round(input.sceneCount * input.sceneSec * 10) / 10 : input.durationHintSec,
+      imageSummaries: input.imageSummaries,
+      ...(input.sceneCount && input.sceneSec
+        ? {
+            sceneGrid: `Plan exactly ${input.sceneCount} scenes of ${input.sceneSec} seconds each. Every scene shows a different step of the story and has exactly one narration line of ${gridWordBudget(input.sceneSec).min}–${gridWordBudget(input.sceneSec).max} words that describes what that scene shows; no scene is left without narration.`
+          }
+        : {})
     }
 
     const req: GenerateJSONRequest = {
@@ -98,11 +140,11 @@ export class Planner {
         try {
           const retry = await this.provider.generateJSON<unknown>({ ...req, prompt: JSON.stringify({ ...payload, correction: `The prior plan became ${first.durationSec}s, exceeding the ${target}s request. Replan for at most ${target} seconds with at most ${Math.max(2, Math.floor(target / 3))} concise scenes. Condense the narration to at most ${Math.floor(target * 1.8)} words total. Use at most two words in each headline and four words in each subline, no more than two brief bullets, and keep production directions out of on-screen text. Put the essential subject and action in those words and rely on the original brief to describe the visual treatment. Show the essential visual steps; omit anything that does not fit. Keep the scene durations and text readable.` }), temperature: 0.3 })
           const revised = this.clampToPlatform(enforceChoices(this.validate(retry)))
-          if (Math.abs(revised.durationSec - target) < Math.abs(first.durationSec - target)) return revised
+          if (Math.abs(revised.durationSec - target) < Math.abs(first.durationSec - target)) return enforceSceneGrid(revised, input.sceneCount, input.sceneSec)
         } catch { /* keep the valid original plan */ }
       }
     }
-    return first
+    return enforceSceneGrid(first, input.sceneCount, input.sceneSec)
   }
 
   /** Validation failure here is what triggers the fixer loop upstream. */
@@ -110,7 +152,7 @@ export class Planner {
     // These fields are created only by later engine stages. Never accept
     // planner-supplied code, file paths, paid-media references or voice takes.
     const candidate = raw && typeof raw === 'object' && !Array.isArray(raw)
-      ? { ...raw, design: undefined, crafts: undefined, voice: undefined, voiceover: undefined, customScenes: undefined, customVideos: undefined }
+      ? { ...raw, design: undefined, crafts: undefined, voice: undefined, voiceover: undefined, customScenes: undefined, customVideos: undefined, sceneGrid: undefined }
       : raw
     // Music is optional presentation metadata: an invented mood must not
     // prevent an otherwise valid film from being created.

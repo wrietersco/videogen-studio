@@ -63,6 +63,9 @@ export interface GenerateOptionsView {
   platform: VideoSpec['platform']
   styleHint?: VideoSpec['style']
   durationHintSec?: number
+  /** an exact scene grid the person asked for: this many scenes, each this long */
+  sceneCount?: number
+  sceneSec?: number
   /** the person picked the shape; autopilot may change the app, never the shape */
   shapeLocked?: boolean
   /** make it without AI (free, unlimited, not counted) */

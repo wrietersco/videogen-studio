@@ -127,6 +127,9 @@ export interface GenerateOptions {
   platform: VideoSpec['platform']
   styleHint?: VideoSpec['style']
   durationHintSec?: number
+  /** an exact scene grid the person asked for: this many scenes, each this long */
+  sceneCount?: number
+  sceneSec?: number
   quality?: 'draft' | 'standard' | 'delivery'
   /** opt-in fast mode: GPU rasterization is faster but not pixel-deterministic */
   gpu?: boolean
@@ -562,7 +565,9 @@ export class Orchestrator {
         userPrompt: opts.prompt,
         platform: opts.platform,
         styleHint: opts.styleHint,
-        durationHintSec: opts.durationHintSec
+        durationHintSec: opts.durationHintSec,
+        sceneCount: opts.sceneCount,
+        sceneSec: opts.sceneSec
       })
     } catch (err) {
       this.store.setStatus(projectId, 'error', String(err))

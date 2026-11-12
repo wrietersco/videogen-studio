@@ -93,6 +93,16 @@ export class AccountSession {
     this.saved = this.load()
   }
 
+  /**
+   * Read the saved account again. The session is built while the main bundle
+   * loads, and on Windows the OS keychain only opens once the app is ready —
+   * so a token read too early comes back empty and the session starts signed
+   * out. Call this after `ready` (before anything trusts `signedIn`).
+   */
+  reload(): void {
+    if (!this.saved.refreshToken) this.saved = this.load()
+  }
+
   // ---------------- persistence ----------------
 
   private load(): Saved {

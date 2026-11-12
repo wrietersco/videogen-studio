@@ -150,7 +150,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
   /** AI video, or programmatic (free, unlimited, no AI) */
   const [kind, setKind] = useState<'ai' | 'programmatic'>('ai')
   const programmatic = !aiOn || kind === 'programmatic' || aiLeft === 0
-  /** on own keys a programmatic video is still never counted, but the code model and media keys work on it */
+  /** on own keys a programmatic video is still never counted, and the user's full engine works on it */
   const ownKeys = account?.mode === 'own-keys'
   const estimate = cfg ? estimateFor(programmatic ? { ...cfg, provider: 'mock' } : cfg, duration) : null
   useEffect(() => {
@@ -613,7 +613,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
               <button
                 onClick={() => setKind('programmatic')}
                 className={`rounded-xl px-3 py-2 text-left text-xs font-bold transition-all ${programmatic ? 'bg-mint text-white' : 'text-ink/70 hover:bg-ink/5'}`}
-                title={ownKeys ? 'Never counted: the free planner lays it out, your code model authors the scenes and your own keys make the media' : 'Made on your PC from templates and free stock — no AI'}
+                title={ownKeys ? 'Never counted: your own writer, code model and media keys make it — world-class scenes, billed only by your providers' : 'Made on your PC from templates and free stock — no AI'}
               >
                 {ownKeys ? '⚙️ Programmatic+' : '⚙️ Programmatic'}
                 <span className="block text-[11px] font-semibold opacity-80">{ownKeys ? 'Not counted · your keys make the art' : 'Free · basic graphics · no AI'}</span>
@@ -644,7 +644,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
                 ? activeJobs.length > 0 ? '👆 Type another idea to make a second video at the same time' : '👆 Type your idea above to get started'
                 : programmatic
                   ? ownKeys
-                    ? '🎨 Not counted: your code model authors the scenes and your own keys make the media. Provider charges appear as it works.'
+                    ? '🎨 Not counted: your own AI writes it, your code model authors the scenes and your keys make the media. Provider charges appear as it works.'
                     : '🆓 Basic graphics made on your PC; visuals may not illustrate the subject.'
                 : account?.mode === 'plan'
                   ? `🎟️ Uses 1 of your ${aiLeft ?? '∞'} AI videos this month · editing it later is included`

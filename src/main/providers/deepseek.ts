@@ -47,6 +47,11 @@ const CHAT_MODELS: ModelInfo[] = [
 ]
 
 const DEFAULT_CHAT_MODEL = 'deepseek-flash'
+/** tokens kept free for the model's thinking, on top of the answer budget a caller asks for */
+const THINKING_HEADROOM = 12000
+/** the model that can see; V4 Pro cannot, so a judgement that carries images rides on this one */
+const VISION_MODEL = 'deepseek-flash'
+const visionOf = (model: string): string => (CHAT_MODELS.find((m) => m.id === model)?.supportsVision === false ? VISION_MODEL : model)
 
 /** Renamed ids keep older saved selections working (the old chat/reasoner split is one thinking-mode model now). */
 const CHAT_MODEL_ALIASES: Record<string, string> = {
@@ -79,7 +84,10 @@ export class DeepseekProvider implements LLMProvider {
   }
 
   async generateJSON<T>(req: GenerateJSONRequest): Promise<T> {
-    const model = resolveChatModel(this.modelOverride?.())
+    // structured calls with images are visual judgements (review, locate, score): they need a model that sees.
+    // Writing calls keep the chosen model — their callers retry without images when it cannot see.
+    const chosen = resolveChatModel(this.modelOverride?.())
+    const model = req.images?.length ? visionOf(chosen) : chosen
     const text = await this.chat(model, {
       system: `${req.system}\n\nRespond with ONLY a JSON value matching this schema (no prose, no code fences):\n${JSON.stringify(req.jsonSchema)}`,
       prompt: req.prompt,
@@ -111,43 +119,56 @@ export class DeepseekProvider implements LLMProvider {
     for (const img of o.images ?? []) {
       content.push({ type: 'image_url', image_url: { url: `data:${img.mimeType};base64,${img.base64}` } })
     }
+    // Both models think before they answer, and the thinking is spent from the
+    // same max_tokens as the answer. A caller's budget is sized for the answer
+    // alone, so without headroom the thinking uses it all and the answer comes
+    // back empty (finish_reason "length").
     const body: Record<string, unknown> = {
       model,
       messages: [
         { role: 'system', content: o.system },
         { role: 'user', content }
       ],
-      max_tokens: o.maxTokens,
+      max_tokens: o.maxTokens + THINKING_HEADROOM,
+      // the default effort ("high") spends minutes per pipeline step — a coded
+      // scene took ten; these are bounded authoring and judging steps
+      reasoning_effort: 'low',
       ...(o.jsonMode ? { response_format: { type: 'json_object' } } : {}),
       ...(o.temperature !== undefined ? { temperature: o.temperature } : {})
     }
-    try {
-      const json = await this.request<{
-        choices: Array<{ message: { content?: string; reasoning_content?: string } }>
-        usage?: { prompt_tokens?: number; completion_tokens?: number }
-      }>('POST', '/chat/completions', body)
+    type Reply = {
+      choices: Array<{ finish_reason?: string; message: { content?: string; reasoning_content?: string } }>
+      usage?: { prompt_tokens?: number; completion_tokens?: number }
+    }
+    const call = async (): Promise<Reply> => {
+      const json = await this.request<Reply>('POST', '/chat/completions', body)
       meter.record({
         kind: 'text',
         provider: 'deepseek',
         model,
         usage: { inputTokens: json.usage?.prompt_tokens ?? 0, outputTokens: json.usage?.completion_tokens ?? 0 }
       })
-      return json.choices[0]?.message?.content ?? ''
-    } catch (e) {
-      if (e instanceof ProviderError && e.kind === 'invalid-request' && /temperature/i.test(e.message)) {
-        // a thinking model rejected sampling params — retry without them
-        delete body.temperature
-        const json = await this.request<{ choices: Array<{ message: { content?: string } }>; usage?: { prompt_tokens?: number; completion_tokens?: number } }>('POST', '/chat/completions', body)
-        meter.record({
-          kind: 'text',
-          provider: 'deepseek',
-          model,
-          usage: { inputTokens: json.usage?.prompt_tokens ?? 0, outputTokens: json.usage?.completion_tokens ?? 0 }
-        })
-        return json.choices[0]?.message?.content ?? ''
-      }
-      throw e
+      return json
     }
+    let json: Reply
+    try {
+      json = await call()
+    } catch (e) {
+      if (!(e instanceof ProviderError && e.kind === 'invalid-request' && /temperature/i.test(e.message))) throw e
+      // a thinking model rejected sampling params — retry without them
+      delete body.temperature
+      json = await call()
+    }
+    let text = json.choices[0]?.message?.content ?? ''
+    if (!text.trim() && json.choices[0]?.finish_reason === 'length') {
+      // the thinking still used the whole budget: once more with room to finish
+      body.max_tokens = o.maxTokens + THINKING_HEADROOM * 3
+      json = await call()
+      text = json.choices[0]?.message?.content ?? ''
+    }
+    // an empty answer is a failure the caller must see, never a silent blank
+    if (!text.trim()) throw new ProviderError(`empty answer from ${model} (finish_reason: ${json.choices[0]?.finish_reason ?? 'unknown'})`, this.id, 'server')
+    return text
   }
 
   private parseJSON<T>(text: string): T {

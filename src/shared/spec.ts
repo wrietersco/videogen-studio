@@ -261,6 +261,8 @@ export const VideoSpec = z.object({
       uppercase: z.boolean().default(true)
     })
     .default({ enabled: true, position: 'bottom', uppercase: true }),
+  /** an exact scene grid the person asked for (set by the engine, never the planner): every scene holds this length */
+  sceneGrid: z.object({ count: z.number().int().positive(), sec: z.number().positive() }).optional(),
   /** narration voice + delivery direction (absent = chosen from the film look) */
   voice: z.object({ id: z.string(), tone: z.string().max(400) }).optional(),
   /** voice-first timing: measured narration takes; scene durations are fitted to them */

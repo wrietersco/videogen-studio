@@ -159,7 +159,10 @@ export default function Settings() {
     if (role === 'video-gen') return 'gemini-omni-1.1-flash'
     if (role === 'audio-gen') return VOICE_MODEL_DEFAULTS[pid] ?? ''
     if (role === 'audio-process') return pid === 'openai' ? 'whisper-1' : ''
-    return settings.models[pid] || defaultModel[pid] || ''
+    const chat = settings.models[pid] || defaultModel[pid] || ''
+    // DeepSeek V4 Pro cannot see: looking at pictures and frames rides on Flash
+    if (pid === 'deepseek' && chat === 'deepseek-v4-pro' && (role === 'image-process' || role === 'video-process')) return 'deepseek-flash'
+    return chat
   }
   /** tick/unset one role; in exclusive mode a new owner takes the job away from everyone else */
   const assignRole = (pid: ProviderId, role: ProviderRole, add: boolean) => {

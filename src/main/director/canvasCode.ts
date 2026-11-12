@@ -10,6 +10,7 @@ import { appRoot } from '../paths'
 import type { LLMProvider } from '../providers/types'
 import type { VideoSpec } from '@shared/spec'
 import { PLATFORM_PRESETS } from '@shared/presets'
+import { CANVAS_KIT_GUIDE, CANVAS_KIT_SOURCE } from './canvasKit'
 
 const electron = electronModule as unknown as Partial<typeof import('electron')>
 
@@ -42,7 +43,7 @@ export async function authorCanvasCode(provider: LLMProvider, spec: VideoSpec, p
     })
   } catch { /* write from the brief and reviewer notes if planning is unavailable */ }
   const request = {
-    system: 'Write the BODY of a JavaScript function draw(ctx,t,w,h,assets) for a bespoke professional animated video scene. ctx is a CanvasRenderingContext2D; t is seconds since this scene starts; w and h are canvas dimensions. If assets.background exists it is the preloaded photo or current frame of the moving footage chosen for this scene. Always draw it as the full-frame background when backgroundIsVideo is true, preserving its movement and keeping its subject unobstructed; place custom motion on top. Draw the entire frame every call. Make the requested action visibly change at the beginning, middle and end: do not substitute a static diagram or tiny decorative particles for meaningful motion. Everything must be a deterministic function of t: no random, clocks, timers, animation frame, mutable state carried between calls, network, storage, DOM access or loading assets. Make the important motion large and obvious across the frame, with visibly different beginning, middle and end, not just tiny moving dots. Do not use external packages or load images or video. Use canvas 2D shapes, gradients, paths and text. Use scene-specific visual storytelling, not a generic title slide. Show physical objects as connected, supported assemblies with plausible functional relationships: a hopper connects to its grinder, material flows from the outlet into the receiving vessel, and handled parts attach at the correct contact point. Avoid floating, disconnected or impossible components unless the brief explicitly requests an exploded view. Choose readable framing over decorative details. Compose for the actual w by h frame: do not letterbox a landscape composition inside a vertical video. When isometric is requested, show coherent parallel isometric angles on the main subject instead of front-facing rectangles. When a previous approved scene is supplied, preserve the identity and appearance of its recurring emblem, character or product while advancing the action. If approvedPreviousSceneCode is supplied, reuse its static geometry, object placement, perspective and palette as the authoritative design; adapt the motion to this scene instead of inventing replacement equipment. Keep important content inside the frame. Return only JavaScript statements, no function wrapper or markdown.',
+    system: 'Write the BODY of a JavaScript function draw(ctx,t,w,h,assets,kit) for a bespoke professional animated video scene. ctx is a CanvasRenderingContext2D; t is seconds since this scene starts (the scene lasts scene.durationSec seconds); w and h are canvas dimensions; kit is the art kit described at the end, which you should build the scene from. If assets.background exists it is the preloaded photo or current frame of the moving footage chosen for this scene. Always draw it as the full-frame background when backgroundIsVideo is true, preserving its movement and keeping its subject unobstructed; place custom motion on top. Draw the entire frame every call. Make the requested action visibly change at the beginning, middle and end: do not substitute a static diagram or tiny decorative particles for meaningful motion. Everything must be a deterministic function of t: no random, clocks, timers, animation frame, mutable state carried between calls, network, storage, DOM access or loading assets. Make the important motion large and obvious across the frame, with visibly different beginning, middle and end, not just tiny moving dots. Do not use external packages or load images or video. Use canvas 2D shapes, gradients, paths and text. Use scene-specific visual storytelling, not a generic title slide. Show physical objects as connected, supported assemblies with plausible functional relationships: a hopper connects to its grinder, material flows from the outlet into the receiving vessel, and handled parts attach at the correct contact point. Avoid floating, disconnected or impossible components unless the brief explicitly requests an exploded view. Choose readable framing over decorative details. Compose for the actual w by h frame: do not letterbox a landscape composition inside a vertical video. When isometric is requested, show coherent parallel isometric angles on the main subject instead of front-facing rectangles. When a previous approved scene is supplied, preserve the identity and appearance of its recurring emblem, character or product while advancing the action. If approvedPreviousSceneCode is supplied, reuse its static geometry, object placement, perspective and palette as the authoritative design; adapt the motion to this scene instead of inventing replacement equipment. Keep important content inside the frame. Return only JavaScript statements, no function wrapper or markdown.\n\n' + CANVAS_KIT_GUIDE,
     prompt: JSON.stringify({ brief: prompt, scene, narration: spec.narration.find(n => n.sceneId === sceneId)?.text, palette: spec.palette, frame: { width: PLATFORM_PRESETS[spec.platform].width, height: PLATFORM_PRESETS[spec.platform].height, orientation: PLATFORM_PRESETS[spec.platform].height > PLATFORM_PRESETS[spec.platform].width ? 'portrait' : 'landscape' }, hasBackground, backgroundIsVideo, imageOrder: references.map(x => x.label), motionPlan, feedback, previousCode, approvedPreviousSceneCode: continuityCode }),
     images, maxTokens: 7000, temperature: 0.6
   }
@@ -51,9 +52,31 @@ export async function authorCanvasCode(provider: LLMProvider, spec: VideoSpec, p
     if (!images) throw err
     result = await provider.generateText({ ...request, images: undefined })
   }
-  const code = result.replace(/^```(?:javascript|js)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
+  let code = extractCode(result)
+  // a plain syntax slip would cost a whole render-and-review round: catch it here and ask once for a repair
+  const slip = syntaxProblem(code)
+  if (slip) {
+    try {
+      const fixed = extractCode(await provider.generateText({
+        system: 'You repair JavaScript. The code below is the BODY of draw(ctx,t,w,h,assets,kit) and has an error that stops it from running. Return the complete corrected body only (no function wrapper, no markdown), changing as little as possible and keeping the same scene.',
+        prompt: JSON.stringify({ error: slip, code }),
+        maxTokens: 7000, temperature: 0.2
+      }))
+      if (fixed && !syntaxProblem(fixed)) code = fixed
+    } catch { /* keep the original; the renderer reports the same error and the review loop retries */ }
+  }
   if (!code || code.length > 50000) throw new Error('Invalid custom code size')
   return code
+}
+
+function extractCode(text: string): string {
+  return text.replace(/^```(?:javascript|js)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
+}
+
+/** the error text when the code cannot even be parsed as a draw body, else null */
+export function syntaxProblem(code: string): string | null {
+  if (!code) return 'empty'
+  try { new Function('ctx', 't', 'w', 'h', 'assets', 'kit', code); return null } catch (err) { return String((err as Error)?.message ?? err).slice(0, 300) }
 }
 
 /** Detect meaningful local motion as well as whole-frame changes. RGB samples must have identical dimensions. */
@@ -104,17 +127,20 @@ export async function renderCanvasCode(opts: { code: string; width: number; heig
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   win.webContents.on('will-navigate', event => event.preventDefault())
   const childCode = Buffer.from(code, 'utf8').toString('base64')
+  // the art kit is trusted app code: it runs in the same sandboxed frame, ahead of the model's code
+  const kitCode = Buffer.from(CANVAS_KIT_SOURCE, 'utf8').toString('base64')
   const background = opts.backgroundJpeg?.toString('base64') ?? ''
   const child = `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; img-src data:; style-src 'unsafe-inline'; connect-src 'none'; media-src 'none'; frame-src 'none'; form-action 'none'"><canvas id="canvas" width="${width}" height="${height}"></canvas><script>
 const bytes=Uint8Array.from(atob('${childCode}'),c=>c.charCodeAt(0));
-const source=new TextDecoder().decode(bytes); let draw, error='';
-try { draw=new Function('ctx','t','w','h','assets',source) } catch(e) { error=String(e) }
+const source=new TextDecoder().decode(bytes); let draw, makeKit, error='';
+try { makeKit=new Function(new TextDecoder().decode(Uint8Array.from(atob('${kitCode}'),c=>c.charCodeAt(0)))+';return makeKit')() } catch(e) { error='Art kit failed to load: '+String(e) }
+try { draw=new Function('ctx','t','w','h','assets','kit',source) } catch(e) { error=error||String(e) }
 const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d');
 const probe=document.createElement('canvas').getContext('2d');const validColor=c=>{probe.fillStyle='#010203';probe.fillStyle=c;const a=probe.fillStyle;probe.fillStyle='#030201';probe.fillStyle=c;return a===probe.fillStyle};
 const origStop=CanvasGradient.prototype.addColorStop;
 CanvasGradient.prototype.addColorStop=function(o,c){let v=c;if(typeof v!=='string'||!validColor(v)){const m=/^#([0-9a-fA-F]+)/.exec(String(c));const hex=m?m[1]:'';const n=[8,6,4,3].find(k=>hex.length>=k);v=n?'#'+hex.slice(0,n):'rgba(0,0,0,0)'}return origStop.call(this,Math.min(1,Math.max(0,Number(o)||0)),v)};
 let background=null; const data='${background}';
-addEventListener('message',async e=>{ if(e.source!==parent || !e.data || e.data.kind!=='draw') return; try { if(error) throw Error(error); let frameBackground=background; if(e.data.background){frameBackground=new Image();await new Promise((resolve,reject)=>{frameBackground.onload=resolve;frameBackground.onerror=()=>reject(Error('Video frame could not be loaded'));frameBackground.src='data:image/jpeg;base64,'+e.data.background})} canvas.width=canvas.width;draw(ctx,e.data.time,canvas.width,canvas.height,{background:frameBackground});parent.postMessage({kind:'frame',id:e.data.id,png:canvas.toDataURL('image/png')},'*') } catch(err){ parent.postMessage({kind:'frame',id:e.data.id,error:String(err)},'*') } });
+addEventListener('message',async e=>{ if(e.source!==parent || !e.data || e.data.kind!=='draw') return; try { if(error) throw Error(error); let frameBackground=background; if(e.data.background){frameBackground=new Image();await new Promise((resolve,reject)=>{frameBackground.onload=resolve;frameBackground.onerror=()=>reject(Error('Video frame could not be loaded'));frameBackground.src='data:image/jpeg;base64,'+e.data.background})} canvas.width=canvas.width;draw(ctx,e.data.time,canvas.width,canvas.height,{background:frameBackground},makeKit(ctx,canvas.width,canvas.height));parent.postMessage({kind:'frame',id:e.data.id,png:canvas.toDataURL('image/png')},'*') } catch(err){ parent.postMessage({kind:'frame',id:e.data.id,error:String(err)},'*') } });
 if(data){background=new Image();background.onload=()=>parent.postMessage({kind:'ready'},'*');background.onerror=()=>{error='Background image could not be loaded';parent.postMessage({kind:'ready'},'*')};background.src='data:image/jpeg;base64,'+data}else parent.postMessage({kind:'ready'},'*');</script>`
   const childAttr = child.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   const host = `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; img-src data:; frame-src 'self'"><iframe id="worker" sandbox="allow-scripts" srcdoc="${childAttr}"></iframe><script>

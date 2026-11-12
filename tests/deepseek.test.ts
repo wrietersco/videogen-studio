@@ -26,10 +26,31 @@ describe('DeepSeek adapter', () => {
     expect(out).toBe('hello there')
     expect(calls[0].url).toBe('https://api.deepseek.com/chat/completions')
     expect(calls[0].headers.Authorization).toBe('Bearer sk-test')
-    expect(calls[0].body).toMatchObject({ model: 'deepseek-flash', max_tokens: 4000 })
+    // the answer budget (4000) plus room for the model's thinking
+    expect(calls[0].body).toMatchObject({ model: 'deepseek-flash', max_tokens: 16000 })
     expect(calls[0].body).not.toHaveProperty('temperature')
     expect(calls[0].body).not.toHaveProperty('response_format')
     expect(run?.entries[0]).toMatchObject({ kind: 'text', provider: 'deepseek', model: 'deepseek-flash', usage: { inputTokens: 10, outputTokens: 5 } })
+  })
+
+  it('asks again with more room when thinking used the whole budget and the answer came back empty', async () => {
+    const budgets: number[] = []
+    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+      budgets.push(JSON.parse(String(init?.body)).max_tokens)
+      return budgets.length === 1
+        ? json({ choices: [{ finish_reason: 'length', message: { content: '', reasoning_content: 'thinking…' } }] })
+        : json({ choices: [{ finish_reason: 'stop', message: { content: 'ctx.fillRect(0,0,w,h)' } }] })
+    })
+    const out = await new DeepseekProvider(() => 'k').generateText({ system: 's', prompt: 'draw', maxTokens: 7000 })
+    expect(out).toBe('ctx.fillRect(0,0,w,h)')
+    expect(budgets).toEqual([19000, 43000])
+  })
+
+  it('reports an empty answer as an error instead of returning a blank', async () => {
+    vi.stubGlobal('fetch', async () => json({ choices: [{ finish_reason: 'stop', message: { content: '' } }] }))
+    const err = await new DeepseekProvider(() => 'k').generateText({ system: 's', prompt: 'p' }).catch((e) => e)
+    expect(err).toBeInstanceOf(ProviderError)
+    expect((err as ProviderError).message).toContain('empty answer')
   })
 
   it('asks for json_object mode and parses fenced replies for generateJSON', async () => {
@@ -93,6 +114,21 @@ describe('DeepSeek adapter', () => {
     await new DeepseekProvider(() => 'k', () => 'deepseek-chat').generateText({ system: 's', prompt: 'x' })
     expect(bodies[0].model).toBe('deepseek-flash')
     expect(bodies[1].model).toBe('deepseek-flash')
+  })
+
+  it('sends visual judgements to the model that can see, and keeps writing on the chosen model', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return json({ choices: [{ message: { content: '{"score": 8}' } }] })
+    })
+    const pro = new DeepseekProvider(() => 'k', () => 'deepseek-v4-pro')
+    const image = [{ mimeType: 'image/jpeg', base64: 'AAAA' }]
+    const schema = { system: 's', prompt: 'p', schemaName: 'Review', jsonSchema: { type: 'object' } }
+    await pro.generateJSON({ ...schema, images: image })
+    await pro.generateJSON(schema)
+    await pro.generateText({ system: 's', prompt: 'write the code', images: image })
+    expect(bodies.map((b) => b.model)).toEqual(['deepseek-flash', 'deepseek-v4-pro', 'deepseek-v4-pro'])
   })
 
   it('maps a 401 to an auth ProviderError', async () => {

@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path'
 import sharp from 'sharp'
 import { Orchestrator } from '../src/main/pipeline/orchestrator'
 import { ProjectStore } from '../src/main/store/projectStore'
-import { Planner } from '../src/main/pipeline/planner'
+import { Planner, enforceSceneGrid } from '../src/main/pipeline/planner'
 import { MockProvider } from '../src/main/providers/mock'
 import { compose } from '../src/main/composer'
 import { programmaticSettings, PROGRAMMATIC_MEDIA } from '../src/main/license/access'
@@ -38,12 +38,9 @@ describe('programmatic settings', () => {
     expect(free.media).toEqual(PROGRAMMATIC_MEDIA)
   })
 
-  it('keeps the user’s media engines and roles when artistic, and still plans for free', () => {
+  it('runs the user’s own engine unchanged when artistic (own keys)', () => {
     const own = { ...DEFAULT_SETTINGS, provider: 'deepseek' as const, media: { image: 'gemini:gemini-3.1-flash-image', voice: 'auto', music: 'builtin:procedural', video: 'stock' } }
-    const art = programmaticSettings(own, true)
-    expect(art.provider).toBe('mock')
-    expect(art.media).toEqual(own.media)
-    expect(art.roles).toEqual(own.roles)
+    expect(programmaticSettings(own, true)).toBe(own)
   })
 })
 
@@ -102,5 +99,29 @@ describe('code-authored scenes on a programmatic run', () => {
     expect(out.customScenes?.map((c: { sceneId: string }) => c.sceneId)).toEqual([sceneId])
     expect(events.find((e) => e.stage === 'custom' && e.status === 'scene')?.accepted).toBe(true)
     expect(store.readState(project.id)?.events.some((e: { text: string }) => e.text.includes('no visual reviewer on this run'))).toBe(true)
+  })
+})
+
+describe('exact scene grid', () => {
+  it('holds a plan to N scenes of S seconds and keeps narration with its scene', async () => {
+    const plan = await new Planner(new MockProvider()).plan({ userPrompt: 'how gears work', platform: 'youtube', styleHint: 'explainer' })
+    const closing = plan.narration.find((n) => n.sceneId === plan.scenes[plan.scenes.length - 1].id)?.text
+    const grid = enforceSceneGrid(plan, 5, 8)
+    expect(grid.scenes.map((s) => s.durationSec)).toEqual([8, 8, 8, 8, 8])
+    expect(grid.scenes.map((s) => s.id)).toEqual(['scene-1', 'scene-2', 'scene-3', 'scene-4', 'scene-5'])
+    expect(grid.durationSec).toBe(40)
+    expect(grid.scenes[0].kind).toBe(plan.scenes[0].kind)
+    expect(grid.scenes[4].kind).toBe(plan.scenes[plan.scenes.length - 1].kind)
+    expect(grid.narration.find((n) => n.sceneId === 'scene-5')?.text).toBe(closing)
+  })
+
+  it('fills a short plan, plans straight to the grid, and leaves an unasked plan alone', async () => {
+    const planner = new Planner(new MockProvider())
+    const plan = await planner.plan({ userPrompt: 'how gears work', platform: 'youtube', styleHint: 'social' })
+    expect(enforceSceneGrid(plan, 8, 5).scenes).toHaveLength(8)
+    expect(enforceSceneGrid(plan)).toBe(plan)
+    const direct = await planner.plan({ userPrompt: 'how gears work', platform: 'youtube', sceneCount: 5, sceneSec: 8 })
+    expect(direct.scenes.map((s) => s.durationSec)).toEqual([8, 8, 8, 8, 8])
+    expect(direct.durationSec).toBe(40)
   })
 })
