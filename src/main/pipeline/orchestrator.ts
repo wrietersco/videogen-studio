@@ -30,6 +30,7 @@ import { authorCanvasCode, needsCanvasCode, renderCanvasCode } from '../director
 import { randomUUID } from 'node:crypto'
 import sharp from 'sharp'
 import { lastFrame } from '../assets/probe'
+import { meter } from '../usage/meter'
 
 
 /** Explicit whole-film isometric briefs use a code-only visual pipeline. */
@@ -552,6 +553,7 @@ export class Orchestrator {
     const provisional = this.store.create(opts.prompt, opts.prompt.slice(0, 48))
     const projectId = provisional.id
     this.activeJobId = projectId
+    meter.bindProject(this.store.dir(projectId))
     this.store.setStatus(projectId, 'planning')
     const createdMeta = this.store.readMeta(projectId)
     if (createdMeta) {

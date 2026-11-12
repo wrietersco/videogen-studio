@@ -387,7 +387,10 @@ function startJob(kind: UsageRun['kind'], o: { title: string; projectId: string 
   }
   emitJobs()
   meter
-    .scope(usage, () => body(run, onEvent))
+    .scope(usage, () => {
+      if (o.projectId) meter.bindProject(store.dir(o.projectId))
+      return body(run, onEvent)
+    })
     .catch((err) => {
       if (!(err instanceof GenerationCancelled)) {
         emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err), projectId: jobProject(job), jobId: job.id })
@@ -395,10 +398,15 @@ function startJob(kind: UsageRun['kind'], o: { title: string; projectId: string 
     })
     .finally(() => {
       const id = jobProject(job)
-      const closed = meter.close(usage, id ? store.dir(id) : null)
-      jobs.delete(job.id)
-      if (id) emit('usage:run', { projectId: id, run: closed })
-      emitJobs()
+      try {
+        const closed = meter.close(usage, id ? store.dir(id) : null)
+        if (id) emit('usage:run', { projectId: id, run: closed })
+      } catch (err) {
+        console.warn('[usage] could not finish receipt', err)
+      } finally {
+        jobs.delete(job.id)
+        emitJobs()
+      }
     })
   return { ok: true }
 }
