@@ -654,11 +654,13 @@ export class Orchestrator {
     const provider = this.providerFor()
     const coder = this.codeProviderFor()
     const vision = this.visionProviderFor()
-    if (provider.id === 'mock') {
+    // the writer may be the free engine while a real code model authors the
+    // scenes (programmatic runs on own keys) — the gate is the code model
+    if (coder.id === 'mock') {
       if (isometricOnly) throw new Error('Isometric animation requires a configured writing model')
       return spec
     }
-    const ids = isometricOnly && targeted ? [...targeted.keys()] : isometricOnly ? spec.scenes.filter(s => !spec.customVideos?.some(c => c.sceneId === s.id && /^assets\/custom\/[A-Za-z0-9._-]+\.mp4$/.test(c.file) && existsSync(join(this.store.dir(projectId), c.file)))).map(s => s.id) : targeted ? [...targeted.keys()] : await chooseCustomScenes(provider, spec, prompt)
+    const ids = isometricOnly && targeted ? [...targeted.keys()] : isometricOnly ? spec.scenes.filter(s => !spec.customVideos?.some(c => c.sceneId === s.id && /^assets\/custom\/[A-Za-z0-9._-]+\.mp4$/.test(c.file) && existsSync(join(this.store.dir(projectId), c.file)))).map(s => s.id) : targeted ? [...targeted.keys()] : await chooseCustomScenes(provider.id === 'mock' ? coder : provider, spec, prompt)
     if (!ids.length) return spec
     emit({ stage: 'custom', status: 'started', total: ids.length })
     const dir = this.store.dir(projectId)
@@ -772,6 +774,19 @@ export class Orchestrator {
             ? `Measured: ${motion.changedPercent}% of the candidate frame changes between images 4 and 6. Images ${closeupStart} and ${closeupStart + 1} are enlarged close-ups of the region that changed most, at the early and late times. Small changes such as lights switching off, shutters moving or vehicles travelling are real animation: inspect the close-ups before concluding the candidate is static, and never call the frames unchanged when this measured change is present.`
             : `Measured: only ${motion.changedPercent}% of the candidate frame changes between images 4 and 6.`) : undefined
           emit({ stage: 'custom', status: 'attempt', sceneIndex: index, attempt, phase: 'reviewing' })
+          if (vision.id === 'mock') {
+            // no visual reviewer on this run (programmatic with a code model only):
+            // the candidate already passed the render check and the motion check,
+            // so it stands — keep the original otherwise
+            if (best?.file && best.file !== trialFile) { try { unlinkSync(best.file) } catch {} }
+            best = undefined
+            current = candidate
+            this.store.saveSpec(projectId, current)
+            this.store.appendEvent(projectId, `custom scene ${index + 1}: candidate ${attempt} accepted after render and motion checks (no visual reviewer on this run)`)
+            continuityFrame = afterImages[2]
+            accepted = true
+            break
+          }
           const verdict = await vision.generateJSON<{ useCandidate: boolean; score: number; originalScore: number; blockingIssue: boolean; reason: string }>({
             system: `${isometricOnly ? 'This is a code-only 2D isometric film: the candidate must clearly show animated isometric objects and processes, match the scene and maintain continuity. Ignore the generic original when evaluating the candidate; useCandidate should be true when the candidate is professional and meets the brief, even if the original looks better. ' : ''}You are the video editor. Images 1, 2 and 3 are the existing scene at early, middle and late times; images 4, 5 and 6 are the new custom illustration or coded animation at those same times. If image 7 is provided, it is the preceding approved scene and is the authoritative visual reference for any recurring emblem, character or product. The original scene in images 1-3 may be the inconsistent scene being repaired: do not treat its conflicting design as the established identity. Judge both original and candidate against image 7, and reject a candidate that changes that identity contrary to the brief. Preserve relevant moving footage and its subject; reject the candidate if footage or its motion is lost. The brief describes the whole film; assess the intended beat of this scene in the context of the surrounding scene plan rather than demanding that every scene contain every film-wide action. Compare them against the brief and narration. Rate both the original and candidate out of 10 using the same criteria; put the original rating in originalScore. Reserve 8 or above for professional, accurate and legible motion that communicates the scene. Set blockingIssue true for any inconsistent recurring identity when continuity is required, factual or scientific error, disconnected or unsupported machinery that makes the depicted process physically unclear, wrong subject, missing required content, clipped or overlapping labels, or illegible text, even when the candidate looks better than the original. ${isometricOnly ? 'Accept if it scores at least 8 and has no blocking issue, irrespective of the generic original.' : 'Accept only if it scores at least 8, has no blocking issue, and is clearly better than the original. Do not prefer a generic diagram over relevant photos or footage.'} Give concrete improvement notes.`,
             prompt: JSON.stringify({ brief: prompt, scene, filmScenes: current.scenes, narration: current.narration.find(n => n.sceneId === sceneId)?.text, hasContinuityReference: Boolean(continuityFrame), motionEvidence }),

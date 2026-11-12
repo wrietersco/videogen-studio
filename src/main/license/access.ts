@@ -61,10 +61,23 @@ export function clampMedia(media: MediaSettings, ent: Entitlements): MediaSettin
 
 export const PROGRAMMATIC_MEDIA: MediaSettings = { image: 'stock', voice: 'none', music: 'builtin:procedural', video: 'stock' }
 
+/**
+ * The settings a programmatic run uses. Always the free planner (mock) — a
+ * programmatic video is never counted. With `artistic` (the licence allows
+ * own keys and the user runs them), the user's media engines and models stay
+ * live so their code model authors bespoke scenes and their image/voice keys
+ * make media; without it the run is the plain free engine.
+ */
+export function programmaticSettings(settings: Settings, artistic: boolean): Settings {
+  return artistic
+    ? { ...settings, provider: 'mock' }
+    : { ...settings, provider: 'mock', autopilot: settings.autopilot, media: { ...PROGRAMMATIC_MEDIA } }
+}
+
 /** the settings a run uses under `mode` */
 export function effectiveSettings(settings: Settings, mode: AccessMode, ent: Entitlements | null): Settings {
   if (mode === 'own-keys') return settings
-  if (mode === 'programmatic' || !ent) return { ...settings, provider: 'mock', autopilot: settings.autopilot, media: { ...PROGRAMMATIC_MEDIA } }
+  if (mode === 'programmatic' || !ent) return programmaticSettings(settings, false)
   const chosen = settings.models.openai
   const chat = chosen && ent.models.chat.includes(chosen) ? chosen : ent.chatModel
   const painter = clampMedia(settings.media, ent).image

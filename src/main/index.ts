@@ -9,7 +9,7 @@ import { VideoSpec } from '@shared/spec'
 import { Orchestrator, GenerationCancelled, type GenerateOptions } from './pipeline/orchestrator'
 import { ProjectStore } from './store/projectStore'
 import { providerRegistry } from './providers/registry'
-import type { ProviderId } from './providers/types'
+import type { LLMProvider, ProviderId } from './providers/types'
 import { DEFAULT_MEDIA, DEFAULT_SETTINGS, type KeyId, type Settings } from './settings'
 import { PROVIDER_CAPABILITIES, type ProviderRole } from '@shared/providerRoles'
 import { AssetLibrary } from './assets/library'
@@ -26,7 +26,7 @@ import { registerFootageIpc } from './footage/ipc'
 import { meter, readProjectUsage, type UsageRun } from './usage/meter'
 import { checkForUpdate, downloadUpdate, installUpdate } from './updater'
 import { AccountError, AccountSession, newProjectKey, type AccountStatus } from './license/session'
-import { accessMode, effectiveSettings, type AccessMode } from './license/access'
+import { accessMode, effectiveSettings, programmaticSettings, type AccessMode } from './license/access'
 import { setManagedRouter, withProject } from './license/route'
 import { setClipCap } from './director/director'
 
@@ -42,19 +42,22 @@ const store = new ProjectStore(projectsDir)
 const library = new AssetLibrary(libraryDir, builtinPackDir, () => settings.sharing)
 /** decrypted keys, cached (safeStorage round-trips are not free) */
 const keyCache = new Map<KeyId, string>()
-const keyOf = (id: KeyId): string => {
-  // on a plan, AI providers are reached through the licence server; with no AI, not at all
-  if (id === 'openai' || id === 'gemini' || id === 'elevenlabs' || id === 'anthropic' || id === 'deepseek') {
-    if (aiOff) return ''
-    if (mode === 'plan') return id === 'anthropic' || id === 'deepseek' ? '' : 'managed'
-    if (mode === 'programmatic') return ''
-  }
+const storedKey = (id: KeyId): string => {
   if (!keyCache.has(id)) keyCache.set(id, decryptKey(settings.keys[id]))
   return keyCache.get(id) ?? ''
 }
+/** keys for one-shot surfaces (assets, footage): the plan's relay, or the user's own keys */
+const keyOf = (id: KeyId): string => {
+  // on a plan, AI providers are reached through the licence server; with no AI, not at all
+  if (id === 'openai' || id === 'gemini' || id === 'elevenlabs' || id === 'anthropic' || id === 'deepseek') {
+    if (mode === 'plan') return id === 'anthropic' || id === 'deepseek' ? '' : 'managed'
+    if (mode === 'programmatic') return ''
+  }
+  return storedKey(id)
+}
 const media = new MediaRouter({
   library,
-  settings: () => runSettings ?? effective,
+  settings: () => effective,
   key: keyOf,
   provider: (id) => providerRegistry.get(id),
   providerForRole: (role) => providerRegistry.forRole(role),
@@ -68,7 +71,7 @@ const footage = new FootageService({
   provider: () => providerRegistry.forRole('text') ?? providerRegistry.active(),
   visionProvider: () => providerRegistry.forRole('image-process') ?? providerRegistry.active(),
   whisperKey: () => (providerRegistry.roleEnabled('openai', 'audio-process') ? keyOf('openai') : ''),
-  chatModel: () => effective.models[effective.provider] || ({ openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash', deepseek: 'deepseek-chat' } as Record<string, string>)[effective.provider],
+  chatModel: () => effective.models[effective.provider] || ({ openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash', deepseek: 'deepseek-flash' } as Record<string, string>)[effective.provider],
   emit: (e) => emit('footage:event', e),
   aiReady: () => (mode === 'plan' ? (planEnt()?.clipsPerVideo ?? 0) > 0 : keyOf('gemini').length > 0),
   makeClip: async (prompt, aspect, sec) => {
@@ -78,27 +81,15 @@ const footage = new FootageService({
     return file
   }
 })
-const orchestrator = new Orchestrator(
-  store,
-  () => providerRegistry.forRole('text') ?? providerRegistry.active(),
-  () => providerRegistry.imageProvider(),
-  media,
-  () => providerRegistry.forRole('code') ?? providerRegistry.active(),
-  () => providerRegistry.forRole('image-process') ?? providerRegistry.active()
-)
 
 // ---------------- settings (encrypted key storage) ----------------
 
 const settingsPath = join(app.getPath('userData'), 'settings.json')
 const templates = new PromptTemplateStore(join(app.getPath('userData'), 'prompt-templates.json'))
 let settings: Settings = { ...DEFAULT_SETTINGS }
-/** autopilot's per-video settings; null outside a generate run (then the user's own settings apply) */
-let runSettings: Settings | null = null
 /** the user's settings as the current access allows them (plan-clamped, or no AI) — see license/access.ts */
 let effective: Settings = { ...DEFAULT_SETTINGS }
 let mode: AccessMode = 'programmatic'
-/** a programmatic run is in progress: every AI path is switched off */
-let aiOff = false
 
 // ---------------- account, plan and access ----------------
 
@@ -117,7 +108,6 @@ const planEnt = () => account.status().view?.entitlements ?? null
 
 /** recompute what runs: provider, model, keys, relay and clip cap all follow the account's plan */
 function applyAccess(): void {
-  if (aiOff) return // a programmatic run re-applies when it ends
   const ent = planEnt()
   mode = accessMode({ signedIn: account.signedIn, ent, wantsOwnKeys: settings.useOwnKeys })
   effective = effectiveSettings(settings, mode, ent)
@@ -169,39 +159,13 @@ function saveProjectLicense(projectId: string, info: ProjectLicense): void {
  * Run a job that may call AI models. On a plan the video is started (counted,
  * or reopened) on the server first, so a used-up allowance is refused before
  * anything is paid for, and every call inside is tagged with the video.
- * Programmatic projects, and accounts without AI, run with AI switched off.
+ * Programmatic jobs and own-key jobs are never counted: a programmatic run is
+ * built without the plan's AI (see makeRun), so there is nothing to start.
  */
 async function withAccess<T>(o: { projectKey: string; programmatic: boolean; title: string; durationSec?: number; started?: boolean }, fn: () => Promise<T>): Promise<T> {
-  if (o.programmatic || mode === 'programmatic') {
-    aiOff = true
-    const before = runSettings
-    runSettings = effectiveSettings(runSettings ?? settings, 'programmatic', null)
-    keyCache.clear()
-    providerRegistry.reconfigure(runSettings)
-    providerRegistry.setKeys({})
-    setManagedRouter(null)
-    try {
-      return await fn()
-    } finally {
-      runSettings = before
-      aiOff = false
-      applyAccess()
-    }
-  }
-  if (mode === 'own-keys') return fn()
+  if (o.programmatic || mode !== 'plan') return fn()
   if (!o.started) await account.startVideo(o.projectKey, o.title, o.durationSec)
   return withProject(o.projectKey, fn)
-}
-
-/** revise / resume / edit an existing project under its own access */
-function projectJob(projectId: string, fn: () => Promise<unknown>): () => Promise<unknown> {
-  const lic = projectLicense(projectId)
-  const title = store.readMeta(projectId)?.title ?? projectId
-  return () =>
-    withAccess({ projectKey: lic.projectKey, programmatic: lic.mode === 'programmatic', title }, async () => {
-      saveProjectLicense(projectId, lic)
-      return fn()
-    })
 }
 
 function loadSettings(): void {
@@ -306,39 +270,202 @@ function createWindow(): void {
 
 // ---------------- job management ----------------
 
-let busy = false
+/** how many videos may be made at once — each render owns a Chromium */
+const MAX_PARALLEL_JOBS = 3
+
+interface GenJob {
+  id: string
+  kind: UsageRun['kind']
+  title: string
+  /** known up front for edits; a generate learns it once its project exists */
+  projectId: string | null
+  orch: Orchestrator
+  startedAt: string
+}
+
+/** the generation jobs in flight; footage keeps its own single-job flag below */
+const jobs = new Map<string, GenJob>()
+let footageBusy = false
+
+const busyNow = () => jobs.size > 0 || footageBusy
+const jobProject = (job: GenJob): string | null => job.projectId ?? job.orch.activeProjectId
+const jobsView = () => [...jobs.values()].map((j) => ({ id: j.id, projectId: jobProject(j), title: j.title, kind: j.kind, startedAt: j.startedAt }))
+
+function emitJobs(): void {
+  emit('gen:jobs', jobsView())
+}
+
+/** refuse a job when the machine or the project is already at work */
+function jobGate(projectId: string | null): { ok: false; error: string } | null {
+  if (footageBusy) return { ok: false, error: 'Another job is running. Wait for it to finish, then try again.' }
+  if (jobs.size >= MAX_PARALLEL_JOBS) return { ok: false, error: `${MAX_PARALLEL_JOBS} videos are already being made — stop one or wait for it to finish.` }
+  if (projectId && [...jobs.values()].some((j) => jobProject(j) === projectId)) return { ok: false, error: 'This video is already being worked on — stop it first.' }
+  return null
+}
 
 function emit(channel: string, payload: unknown): void {
   win?.webContents.send(channel, payload)
 }
 
-/** pipeline events also tell the usage meter which stage is spending */
-function pipelineEvent(ev: unknown): void {
-  const e = ev as { stage?: string; status?: string }
-  if (e.stage && (e.status === 'started' || e.status === 'fixing')) meter.setStage(e.stage === 'compose' ? 'voice & compose' : e.stage)
-  emit('gen:event', ev)
+/** everything one job runs with: its own settings, media router and orchestrator */
+interface JobRun {
+  settings: Settings
+  orch: Orchestrator
+  media: MediaRouter
+  /** programmatic on own keys: the code model authors scenes, media engines stay live */
+  artistic: boolean
+  text: () => LLMProvider
 }
 
 /**
- * One job at a time: opens a usage run, streams priced entries to the UI,
- * and files the receipt into the project's usage.json when the job ends.
+ * Build a job's isolated run context. Nothing global is mutated — the plan's
+ * relay and the registry stay as `applyAccess` left them, and this job's key
+ * function decides which of those keys it may actually use:
+ *   programmatic        the free engine (no AI keys) — never counted
+ *   programmatic+own    artistic: mock writer, real code model + own media keys — never counted
+ *   plan / own-keys     the account's engines as configured
  */
-function runJob(kind: UsageRun['kind'], projectId: string | null, job: () => Promise<unknown>): { ok: true } {
-  busy = true
-  meter.begin(kind)
-  job()
+function makeRun(asProgrammatic: boolean): JobRun {
+  const programmatic = asProgrammatic || mode === 'programmatic'
+  const artistic = programmatic && mode === 'own-keys'
+  const free = programmatic && !artistic
+  const mock = providerRegistry.get('mock')
+  const text = programmatic ? () => mock : () => providerRegistry.forRole('text') ?? providerRegistry.active()
+  const code = free ? () => mock : () => providerRegistry.forRole('code') ?? (programmatic ? mock : providerRegistry.active())
+  const vision = free ? () => mock : () => providerRegistry.forRole('image-process') ?? (programmatic ? mock : providerRegistry.active())
+  const image = free ? () => null : () => providerRegistry.imageProvider()
+  const run: JobRun = {
+    artistic,
+    settings: programmatic ? programmaticSettings(settings, artistic) : effective,
+    text,
+    media: null as unknown as MediaRouter,
+    orch: null as unknown as Orchestrator
+  }
+  const jobKey = (id: KeyId): string => {
+    const ai = id === 'openai' || id === 'gemini' || id === 'elevenlabs' || id === 'anthropic' || id === 'deepseek'
+    if (ai && free) return ''
+    if (ai && mode === 'plan') return id === 'anthropic' || id === 'deepseek' ? '' : 'managed'
+    return storedKey(id)
+  }
+  run.media = new MediaRouter({
+    library,
+    settings: () => run.settings,
+    key: jobKey,
+    provider: (id) => providerRegistry.get(id),
+    providerForRole: (role) => (free ? null : providerRegistry.forRole(role)),
+    roleAllows: (id, role) => providerRegistry.roleEnabled(id, role),
+    autoImageProvider: image,
+    onDecision: (projectId, message) => { if (store.readMeta(projectId)) store.appendEvent(projectId, `media · ${message}`) }
+  })
+  run.orch = new Orchestrator(store, text, image, run.media, code, vision)
+  return run
+}
+
+/**
+ * Start one parallel job: opens a scoped usage run, stamps every pipeline
+ * event with the project, and files the receipt into the project's usage.json
+ * when the job ends. The body runs un-awaited; callers get { ok: true }.
+ */
+function startJob(kind: UsageRun['kind'], o: { title: string; projectId: string | null; programmatic: boolean }, body: (run: JobRun, onEvent: (ev: unknown) => void) => Promise<unknown>): { ok: true } | { ok: false; error: string } {
+  const gate = jobGate(o.projectId)
+  if (gate) return gate
+  const run = makeRun(o.programmatic)
+  const job: GenJob = { id: newProjectKey(), kind, title: o.title, projectId: o.projectId, orch: run.orch, startedAt: new Date().toISOString() }
+  jobs.set(job.id, job)
+  const usage = meter.open(kind)
+  const onEvent = (ev: unknown): void => {
+    const e = ev as { stage?: string; status?: string }
+    // the meter hears the stage from inside this job's scope
+    if (e.stage && (e.status === 'started' || e.status === 'fixing')) meter.setStage(e.stage === 'compose' ? 'voice & compose' : e.stage)
+    emit('gen:event', { ...(ev as object), projectId: jobProject(job), jobId: job.id })
+  }
+  emitJobs()
+  meter
+    .scope(usage, () => body(run, onEvent))
     .catch((err) => {
       if (!(err instanceof GenerationCancelled)) {
-        emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err) })
+        emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err), projectId: jobProject(job), jobId: job.id })
       }
     })
     .finally(() => {
-      const id = projectId ?? orchestrator.activeProjectId
-      const run = meter.end(id ? store.dir(id) : null)
-      if (run && id) emit('usage:run', { projectId: id, run })
-      busy = false
+      const id = jobProject(job)
+      const closed = meter.close(usage, id ? store.dir(id) : null)
+      jobs.delete(job.id)
+      if (id) emit('usage:run', { projectId: id, run: closed })
+      emitJobs()
     })
   return { ok: true }
+}
+
+/** revise / resume / edit / re-render an existing project under its own access, as one parallel job */
+function editJob(kind: UsageRun['kind'], projectId: string, body: (run: JobRun, onEvent: (ev: unknown) => void) => Promise<unknown>, opts: { rerender?: boolean } = {}): { ok: true } | { ok: false; error: string } {
+  const lic = projectLicense(projectId)
+  const title = store.readMeta(projectId)?.title ?? projectId
+  const programmatic = opts.rerender === true || lic.mode === 'programmatic' || mode === 'programmatic'
+  return startJob(kind, { title, projectId, programmatic }, (run, onEvent) =>
+    withAccess({ projectKey: opts.rerender === true ? 'rerender' : lic.projectKey, programmatic, title }, async () => {
+      if (opts.rerender !== true) saveProjectLicense(projectId, lic)
+      return body(run, onEvent)
+    })
+  )
+}
+
+type GenRequest = GenerateOptions & { shapeLocked?: boolean; programmatic?: boolean }
+
+/**
+ * Make a new video as one parallel job. The Create screen and the headless
+ * runner both come through here; `tap` sees the job's stamped events.
+ */
+async function startGenerate(opts: GenRequest, tap?: (ev: Record<string, unknown>) => void): Promise<{ ok: true } | { ok: false; error: string; code?: string }> {
+  const programmatic = opts.programmatic === true || mode === 'programmatic'
+  const projectKey = newProjectKey()
+  const title = opts.prompt.slice(0, 120)
+  const gate = jobGate(null)
+  if (gate) return gate
+  if (!programmatic && mode === 'plan') {
+    // refuse before the job starts, so the Create screen can say why
+    try {
+      await account.startVideo(projectKey, title, opts.durationHintSec)
+    } catch (err) {
+      return accountError(err)
+    }
+  }
+  return startJob('generate', { title, projectId: null, programmatic }, (run, emitEvent) =>
+    withAccess({ projectKey, programmatic, title, durationSec: opts.durationHintSec, started: true }, async () => {
+      const remember = () => {
+        const id = run.orch.activeProjectId
+        if (id && !existsSync(join(store.dir(id), 'license.json'))) saveProjectLicense(id, { projectKey, mode: programmatic ? 'programmatic' : 'ai' })
+      }
+      const onEvent = (ev: unknown) => {
+        remember()
+        emitEvent(ev)
+        tap?.({ ...(ev as Record<string, unknown>), projectId: run.orch.activeProjectId })
+      }
+      try {
+        const decided = settings.autopilot ? await decideCreative(opts.prompt, run.text()) : null
+        const creative = decided && opts.shapeLocked ? honorShape(decided, opts.platform) : decided
+        if (creative) onEvent({ stage: 'plan', status: 'creative', ...creative })
+        const base = run.settings
+        const pilot = settings.autopilot ? decide({ prompt: opts.prompt, durationHintSec: creative?.durationHintSec ?? opts.durationHintSec, settings: base, imageAvailable: run.media.imageAvailable() }) : null
+        if (pilot) run.settings = applyAutopilot(base, pilot)
+        return await run.orch.generate({
+          ...opts,
+          ...(creative ? { platform: creative.platform, styleHint: creative.styleHint, durationHintSec: creative.durationHintSec } : {}),
+          quality: settings.quality,
+          gpu: settings.allowGpu,
+          craft: settings.craft,
+          lookHint: creative?.look ?? pilot?.look,
+          autopilotNotes: [...(creative ? [`format: ${creative.platform} · ${creative.styleHint} · ${creative.durationHintSec}s · ${creative.look} — ${creative.reason}`] : []), ...(pilot?.reasons.filter((reason) => !creative || !reason.startsWith('look:')) ?? [])],
+          onEvent
+        })
+      } catch (err) {
+        tap?.({ stage: 'pipeline', status: err instanceof GenerationCancelled ? 'cancelled' : 'failed', error: String(err), projectId: run.orch.activeProjectId })
+        throw err
+      } finally {
+        remember()
+      }
+    })
+  )
 }
 
 meter.onEntry((entry, run) => emit('usage:entry', { entry, totalUsd: run.totalUsd, savedUsd: run.savedUsd }))
@@ -374,7 +501,7 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle('update:install', () => {
-    if (busy) return { ok: false as const, error: 'A video is being made — update once it finishes' }
+    if (busyNow()) return { ok: false as const, error: 'A video is being made — update once it finishes' }
     try {
       installUpdate()
       return { ok: true as const }
@@ -408,7 +535,7 @@ function registerIpc(): void {
   ipcMain.handle('account:google', () => accountCall(() => account.signInWithGoogle()))
   ipcMain.handle('account:cancelGoogle', () => account.cancelGoogle())
   ipcMain.handle('account:signOut', () => {
-    if (busy) return { ok: false as const, code: 'busy', error: 'A video is being made — sign out once it finishes' }
+    if (busyNow()) return { ok: false as const, code: 'busy', error: 'A video is being made — sign out once it finishes' }
     return accountCall(() => account.signOut())
   })
   ipcMain.handle('account:refresh', () => accountCall(() => account.sync(true)))
@@ -519,51 +646,7 @@ function registerIpc(): void {
     return { meta, spec, html, dir: store.dir(id), thumbs: shown }
   })
 
-  ipcMain.handle('gen:generate', async (_e, opts: GenerateOptions & { shapeLocked?: boolean; programmatic?: boolean }) => {
-    if (busy) return { ok: false, error: 'A generation job is already running' }
-    const programmatic = opts.programmatic === true || mode === 'programmatic'
-    const projectKey = newProjectKey()
-    const title = opts.prompt.slice(0, 120)
-    if (!programmatic && mode === 'plan') {
-      // refuse before the job starts, so the Create screen can say why
-      try {
-        await account.startVideo(projectKey, title, opts.durationHintSec)
-      } catch (err) {
-        return accountError(err)
-      }
-    }
-    return runJob('generate', null, () => withAccess({ projectKey, programmatic, title, durationSec: opts.durationHintSec, started: true }, async () => {
-      const remember = () => {
-        const id = orchestrator.activeProjectId
-        if (id && !existsSync(join(store.dir(id), 'license.json'))) saveProjectLicense(id, { projectKey, mode: programmatic ? 'programmatic' : 'ai' })
-      }
-      const onEvent = (ev: unknown) => {
-        remember()
-        pipelineEvent(ev)
-      }
-      try {
-        const decided = settings.autopilot ? await decideCreative(opts.prompt, providerRegistry.active()) : null
-        const creative = decided && opts.shapeLocked ? honorShape(decided, opts.platform) : decided
-        if (creative) pipelineEvent({ stage: 'plan', status: 'creative', ...creative })
-        const base = runSettings ?? effective
-        const pilot = settings.autopilot ? decide({ prompt: opts.prompt, durationHintSec: creative?.durationHintSec ?? opts.durationHintSec, settings: base, imageAvailable: media.imageAvailable() }) : null
-        if (pilot) runSettings = applyAutopilot(base, pilot)
-        return await orchestrator.generate({
-          ...opts,
-          ...(creative ? { platform: creative.platform, styleHint: creative.styleHint, durationHintSec: creative.durationHintSec } : {}),
-          quality: settings.quality,
-          gpu: settings.allowGpu,
-          craft: settings.craft,
-          lookHint: creative?.look ?? pilot?.look,
-          autopilotNotes: [...(creative ? [`format: ${creative.platform} · ${creative.styleHint} · ${creative.durationHintSec}s · ${creative.look} — ${creative.reason}`] : []), ...(pilot?.reasons.filter((reason) => !creative || !reason.startsWith('look:')) ?? [])],
-          onEvent
-        })
-      } finally {
-        remember()
-        runSettings = null
-      }
-    }))
-  })
+  ipcMain.handle('gen:generate', (_e, opts: GenRequest) => startGenerate(opts))
   ipcMain.handle('prompt:enhance', async (_e, req: EnhanceRequest) => {
     try {
       return { ok: true, result: await enhancePrompt(providerRegistry.active(), req) }
@@ -581,59 +664,57 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle('templates:remove', (_e, id: string) => templates.remove(id))
-  ipcMain.handle('gen:cancel', () => {
-    orchestrator.cancel()
-    return true
+  ipcMain.handle('gen:cancel', (_e, projectId?: string) => {
+    const list = [...jobs.values()]
+    // one project's job, else the newest job (single-job callers)
+    const job = (projectId ? list.find((j) => jobProject(j) === projectId || j.id === projectId) : undefined) ?? (projectId ? undefined : list[list.length - 1])
+    if (job) {
+      job.orch.cancel()
+      return true
+    }
+    return false
   })
-  ipcMain.handle('gen:busy', () => busy)
+  ipcMain.handle('gen:busy', () => busyNow())
+  ipcMain.handle('gen:jobs', () => jobsView())
 
-  ipcMain.handle('gen:rerender', async (_e, projectId: string) => {
-    if (busy) return { ok: false, error: 'Another job is running' }
-    // a re-render only draws frames again: no AI, nothing counted
-    return runJob('rerender', projectId, () => withAccess({ projectKey: 'rerender', programmatic: true, title: '' }, () =>
-      orchestrator.rerender(projectId, { quality: settings.quality, gpu: settings.allowGpu, onEvent: pipelineEvent })
-    ))
-  })
+  ipcMain.handle('gen:rerender', (_e, projectId: string) =>
+    editJob('rerender', projectId, (run, onEvent) => run.orch.rerender(projectId, { quality: settings.quality, gpu: settings.allowGpu, onEvent }), { rerender: true })
+  )
 
-  ipcMain.handle('gen:revise', async (_e, projectId: string, sceneId: string, feedback: string) => {
-    if (busy) return { ok: false, error: 'Another job is running' }
+  ipcMain.handle('gen:revise', (_e, projectId: string, sceneId: string, feedback: string) => {
     if (!feedback || !feedback.trim()) return { ok: false, error: 'Feedback is empty' }
-    return runJob('revise', projectId, projectJob(projectId, () =>
-      orchestrator.reviseScene(projectId, sceneId, feedback.trim(), {
+    return editJob('revise', projectId, (run, onEvent) =>
+      run.orch.reviseScene(projectId, sceneId, feedback.trim(), {
         quality: settings.quality,
         gpu: settings.allowGpu,
         craft: settings.craft,
-        onEvent: pipelineEvent
+        onEvent
       })
-    ))
+    )
   })
 
-  ipcMain.handle('gen:applyEdit', async (_e, projectId: string, edited: unknown) => {
-    if (busy) return { ok: false, error: 'Another job is running' }
+  ipcMain.handle('gen:applyEdit', (_e, projectId: string, edited: unknown) => {
     try {
       VideoSpec.parse(edited)
     } catch (e) {
       return { ok: false, error: `Those changes don't make a valid video: ${String((e as Error).message).slice(0, 160)}` }
     }
-    return runJob('revise', projectId, projectJob(projectId, () =>
-      orchestrator.applyEdit(projectId, edited, { quality: settings.quality, gpu: settings.allowGpu, onEvent: pipelineEvent })
-    ))
+    return editJob('revise', projectId, (run, onEvent) => run.orch.applyEdit(projectId, edited, { quality: settings.quality, gpu: settings.allowGpu, onEvent }))
   })
+
   ipcMain.handle('project:history', (_e, id: string) => store.listHistory(id))
   ipcMain.handle('project:historyGet', (_e, id: string, at: number) => store.readHistory(id, at))
 
-  ipcMain.handle('gen:resume', async (_e, projectId: string) => {
-    if (busy) return { ok: false, error: 'Another job is running' }
-    return runJob('resume', projectId, projectJob(projectId, () =>
-      orchestrator.resume(projectId, { quality: settings.quality, gpu: settings.allowGpu, craft: settings.craft, onEvent: pipelineEvent })
-    ))
-  })
+  ipcMain.handle('gen:resume', (_e, projectId: string) =>
+    editJob('resume', projectId, (run, onEvent) => run.orch.resume(projectId, { quality: settings.quality, gpu: settings.allowGpu, craft: settings.craft, onEvent }))
+  )
 
   ipcMain.handle('project:usage', (_e, id: string) => readProjectUsage(store.dir(id)))
 
   ipcMain.handle('project:state', (_e, id: string) => store.readState(id))
 
-  ipcMain.handle('project:delete', (_e, id: string) => {    if (orchestrator.activeProjectId === id) {
+  ipcMain.handle('project:delete', (_e, id: string) => {
+    if ([...jobs.values()].some((j) => jobProject(j) === id)) {
       return { ok: false, error: 'This project is currently generating — stop it first' }
     }
     return { ok: store.delete(id) }
@@ -674,12 +755,12 @@ app.whenReady().then(() => {
   // refresh the plan in the background; offline keeps the last one for display
   void account.sync().catch((err) => console.warn('[account] sync failed', err instanceof Error ? err.message : err))
   registerIpc()
-  registerAssetIpc({ library, router: media, key: keyOf, isBusy: () => busy })
+  registerAssetIpc({ library, router: media, key: keyOf, isBusy: busyNow })
   registerFootageIpc({
     store: footageStore,
     service: footage,
-    isBusy: () => busy,
-    setBusy: (b) => { busy = b },
+    isBusy: busyNow,
+    setBusy: (b) => { footageBusy = b },
     emit,
     window: () => win,
     aiJob: (projectKey, title, fn) => {

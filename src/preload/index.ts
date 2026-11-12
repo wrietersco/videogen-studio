@@ -12,7 +12,7 @@ const api = {
     close: () => ipcRenderer.send('win:close')
   },
   generate: (opts: unknown) => ipcRenderer.invoke('gen:generate', opts),
-  cancel: () => ipcRenderer.invoke('gen:cancel'),
+  cancel: (projectId?: string) => ipcRenderer.invoke('gen:cancel', projectId),
   enhancePrompt: (req: unknown) => ipcRenderer.invoke('prompt:enhance', req),
   templates: {
     list: () => ipcRenderer.invoke('templates:list'),
@@ -20,10 +20,16 @@ const api = {
     remove: (id: string) => ipcRenderer.invoke('templates:remove', id)
   },
   busy: () => ipcRenderer.invoke('gen:busy'),
+  jobs: () => ipcRenderer.invoke('gen:jobs'),
   onEvent: (cb: (event: unknown) => void) => {
     const listener = (_e: unknown, payload: unknown) => cb(payload)
     ipcRenderer.on('gen:event', listener)
     return () => ipcRenderer.removeListener('gen:event', listener)
+  },
+  onJobs: (cb: (payload: unknown) => void) => {
+    const listener = (_e: unknown, payload: unknown) => cb(payload)
+    ipcRenderer.on('gen:jobs', listener)
+    return () => ipcRenderer.removeListener('gen:jobs', listener)
   },
   onUsage: (cb: (payload: unknown) => void) => {
     const listener = (_e: unknown, payload: unknown) => cb(payload)

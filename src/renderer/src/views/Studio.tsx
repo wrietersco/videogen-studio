@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, type EnhancedPrompt, type PipelineEvent, type PlatformId, type PromptTemplate, type StyleFamily } from '../api'
+import { api, type EnhancedPrompt, type JobEvent, type JobInfo, type PipelineEvent, type PlatformId, type PromptTemplate, type StyleFamily } from '../api'
 import { ActivityFeed } from '../components/ActivityFeed'
 import { EnhanceReview, ShapePicker, TemplateBar } from '../components/PromptTools'
 import { PLATFORM_PRESETS } from '@shared/presets'
@@ -62,6 +62,58 @@ function stepFor(events: PipelineEvent[]): number {
 
 type SceneCard = { kind: string; label: string; durationSec: number; thumb?: string; plate?: string; score?: number }
 
+/** what one job looks like on this screen; several can run at once */
+interface JobUi {
+  title: string
+  events: PipelineEvent[]
+  progress: number
+  done: { projectId: string; output: string } | null
+  error: string | null
+  notice: string | null
+  board: { title: string | null; scenes: SceneCard[]; captured: number } | null
+  creative: Extract<PipelineEvent, { stage: 'plan'; status: 'creative' }> | null
+}
+
+const emptyJob = (title = ''): JobUi => ({ title, events: [], progress: 0, done: null, error: null, notice: null, board: null, creative: null })
+
+/** one pipeline event lands in that job's card */
+function reduceJob(j: JobUi, e: JobEvent): JobUi {
+  const next: JobUi = { ...j, events: [...j.events.slice(-120), e] }
+  if (e.stage === 'plan' && e.status === 'creative') next.creative = e
+  if (e.stage === 'plan' && e.status === 'done') next.board = { title: e.title, scenes: e.sceneCards.map((c) => ({ ...c })), captured: 0 }
+  // the director renames each card as it designs the scene; plates preview before frames exist
+  if (e.stage === 'direct' && e.status === 'scene' && next.board) {
+    next.board = {
+      ...next.board,
+      scenes: next.board.scenes.map((s, i) =>
+        i === e.sceneIndex ? { ...s, label: e.headline, kind: e.widgets.length ? e.widgets.join(' + ') : e.background === 'plate' ? 'plate' : 'hero' } : s
+      )
+    }
+  }
+  if (e.stage === 'plates' && e.status === 'scene' && next.board) {
+    next.board = { ...next.board, scenes: next.board.scenes.map((s, i) => (i === e.sceneIndex ? { ...s, plate: e.dataUrl } : s)) }
+  }
+  if (e.stage === 'critic' && e.status === 'scene' && next.board) {
+    next.board = { ...next.board, scenes: next.board.scenes.map((s, i) => (i === e.sceneIndex ? { ...s, score: e.score } : s)) }
+  }
+  if (e.stage === 'thumbs' && e.status === 'progress' && next.board) {
+    next.board = {
+      ...next.board,
+      captured: next.board.captured + 1,
+      scenes: next.board.scenes.map((s, i) => (i === e.index ? { ...s, thumb: e.dataUrl } : s))
+    }
+  }
+  if (e.stage === 'render') {
+    if (e.status === 'progress') next.progress = e.pct
+    if (e.status === 'done') next.progress = 100
+    if (e.status === 'failed') next.error = e.error
+  }
+  if (e.stage === 'pipeline' && e.status === 'failed') next.error = e.error
+  if (e.stage === 'pipeline' && e.status === 'cancelled') next.notice = 'Stopped. Nothing is lost — you can finish it later from 🎞️ My videos.'
+  if (e.stage === 'done') next.done = { projectId: e.projectId, output: e.output }
+  return next
+}
+
 export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor: () => void; onOpenSettings: () => void }) {
   const [prompt, setPrompt] = useState('')
   const [platform, setPlatform] = useState<PlatformId>('tiktok')
@@ -78,20 +130,19 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
   const [duration, setDuration] = useState(30)
   const [showMore, setShowMore] = useState(false)
   const [showCrew, setShowCrew] = useState(false)
-  const [events, setEvents] = useState<PipelineEvent[]>([])
-  const [running, setRunning] = useState(false)
-  const [progress, setProgress] = useState(0)
-  const [done, setDone] = useState<{ projectId: string; output: string } | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
-  const [board, setBoard] = useState<{ title: string | null; scenes: SceneCard[]; captured: number } | null>(null)
-  const [creative, setCreative] = useState<Extract<PipelineEvent, { stage: 'plan'; status: 'creative' }> | null>(null)
+  /** every job this screen has watched, keyed by job id; `focus` is the one on screen */
+  const [jobsUi, setJobsUi] = useState<Record<string, JobUi>>({})
+  const [focus, setFocus] = useState<string | null>(null)
+  const [activeJobs, setActiveJobs] = useState<JobInfo[]>([])
+  /** a Make request is on its way (double-click guard); errors that never became a job */
+  const [starting, setStarting] = useState(false)
+  const [startError, setStartError] = useState<string | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
   const [cfg, setCfg] = useState<SettingsView | null>(null)
   const [account] = useAccount()
   useEffect(() => {
     // the settings as the plan allows them, so the estimate shows what will really run
-    api.effectiveSettings().then(setCfg).catch(() => setError('Could not load your creative settings. Reopen Create to try again.'))
+    api.effectiveSettings().then(setCfg).catch(() => setStartError('Could not load your creative settings. Reopen Create to try again.'))
   }, [account?.mode, account?.view?.entitlements.plan])
   const ent = account?.view?.entitlements ?? null
   const aiOn = account?.mode === 'plan' || account?.mode === 'own-keys'
@@ -99,6 +150,8 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
   /** AI video, or programmatic (free, unlimited, no AI) */
   const [kind, setKind] = useState<'ai' | 'programmatic'>('ai')
   const programmatic = !aiOn || kind === 'programmatic' || aiLeft === 0
+  /** on own keys a programmatic video is still never counted, but the code model and media keys work on it */
+  const ownKeys = account?.mode === 'own-keys'
   const estimate = cfg ? estimateFor(programmatic ? { ...cfg, provider: 'mock' } : cfg, duration) : null
   useEffect(() => {
     api.templates.list().then(setTemplates).catch(() => setTemplates([]))
@@ -151,78 +204,34 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
 
   useEffect(() => {
     unsubRef.current = api.onEvent((e) => {
-      setEvents((prev) => [...prev.slice(-120), e])
-      if (e.stage === 'plan' && e.status === 'creative') setCreative(e)
-      if (e.stage === 'plan' && e.status === 'done') {
-        setBoard({ title: e.title, scenes: e.sceneCards.map((c) => ({ ...c })), captured: 0 })
-      }
-      // the director renames each card as it designs the scene; plates preview before frames exist
-      if (e.stage === 'direct' && e.status === 'scene') {
-        setBoard((b) =>
-          b
-            ? {
-                ...b,
-                scenes: b.scenes.map((s, i) =>
-                  i === e.sceneIndex ? { ...s, label: e.headline, kind: e.widgets.length ? e.widgets.join(' + ') : e.background === 'plate' ? 'plate' : 'hero' } : s
-                )
-              }
-            : b
-        )
-      }
-      if (e.stage === 'plates' && e.status === 'scene') {
-        setBoard((b) => (b ? { ...b, scenes: b.scenes.map((s, i) => (i === e.sceneIndex ? { ...s, plate: e.dataUrl } : s)) } : b))
-      }
-      if (e.stage === 'critic' && e.status === 'scene') {
-        setBoard((b) => (b ? { ...b, scenes: b.scenes.map((s, i) => (i === e.sceneIndex ? { ...s, score: e.score } : s)) } : b))
-      }
-      if (e.stage === 'thumbs' && e.status === 'progress') {
-        setBoard((b) =>
-          b
-            ? {
-                ...b,
-                captured: b.captured + 1,
-                scenes: b.scenes.map((s, i) => (i === e.index ? { ...s, thumb: e.dataUrl } : s))
-              }
-            : b
-        )
-      }
-      if (e.stage === 'render') {
-        if (e.status === 'progress') setProgress(e.pct)
-        if (e.status === 'done') {
-          setProgress(100)
-          setRunning(false)
-        }
-        if (e.status === 'failed') {
-          setError(e.error)
-          setRunning(false)
-        }
-      }
-      if (e.stage === 'pipeline' && e.status === 'failed') {
-        setError(e.error)
-        setRunning(false)
-      }
-      if (e.stage === 'pipeline' && e.status === 'cancelled') {
-        setNotice('Stopped. Nothing is lost — you can finish it later from 🎞️ My videos.')
-        setRunning(false)
-      }
-      if (e.stage === 'done') {
-        setDone({ projectId: e.projectId, output: e.output })
-        setRunning(false)
-      }
+      if (!e.jobId) return
+      setJobsUi((all) => ({ ...all, [e.jobId!]: reduceJob(all[e.jobId!] ?? emptyJob(), e) }))
     })
-    return () => unsubRef.current?.()
+    const seen = new Set<string>()
+    const take = (list: JobInfo[]) => {
+      setActiveJobs(list)
+      setJobsUi((all) => {
+        const next = { ...all }
+        for (const j of list) next[j.id] = next[j.id] ? { ...next[j.id], title: next[j.id].title || j.title } : emptyJob(j.title)
+        return next
+      })
+      // a job this screen has not met yet is the one that was just started: bring it on screen
+      const fresh = list.filter((j) => !seen.has(j.id))
+      for (const j of list) seen.add(j.id)
+      if (fresh.length) setFocus(fresh[fresh.length - 1].id)
+    }
+    api.jobs().then(take).catch(() => {})
+    const offJobs = api.onJobs(take)
+    return () => {
+      unsubRef.current?.()
+      offJobs()
+    }
   }, [])
 
   const generate = async () => {
-    if (!prompt.trim() || running || !cfg) return
-    setEvents([])
-    setProgress(0)
-    setDone(null)
-    setError(null)
-    setNotice(null)
-    setBoard(null)
-    setCreative(null)
-    setRunning(true)
+    if (!prompt.trim() || starting || !cfg) return
+    setStartError(null)
+    setStarting(true)
     const res = await api.generate({
       prompt: prompt.trim(),
       platform,
@@ -231,16 +240,35 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
       shapeLocked: !cfg.autopilot || shapeLocked,
       programmatic
     })
+    setStarting(false)
     if (!res.ok) {
-      setError(res.error ?? 'failed to start')
+      setStartError(res.error ?? 'failed to start')
       if (res.code === 'video_quota_exceeded' || res.code === 'monthly_cost_cap' || res.code === 'ai_blocked') setKind('programmatic')
-      setRunning(false)
     }
   }
 
   const stop = async () => {
-    await api.cancel()
+    await api.cancel(focus ?? undefined)
   }
+
+  /** the job on screen, derived from the per-job cards */
+  const cur = focus ? jobsUi[focus] : undefined
+  const events = cur?.events ?? []
+  const progress = cur?.progress ?? 0
+  const done = cur?.done ?? null
+  const board = cur?.board ?? null
+  const creative = cur?.creative ?? null
+  const error = startError ?? cur?.error ?? null
+  const notice = cur?.notice ?? null
+  const running = Boolean(focus && activeJobs.some((j) => j.id === focus))
+  const atCap = activeJobs.length >= 3
+  /** every job met this session: the live ones, then the finished ones */
+  const knownJobs: Array<{ id: string; title: string; projectId: string | null }> = [
+    ...activeJobs.map((j) => ({ id: j.id, title: j.title, projectId: j.projectId })),
+    ...Object.keys(jobsUi)
+      .filter((id) => !activeJobs.some((a) => a.id === id))
+      .map((id) => ({ id, title: jobsUi[id].title, projectId: jobsUi[id].done?.projectId ?? null }))
+  ].slice(-6)
 
   const step = done ? STEPS.length - 1 : stepFor(events)
   const started = running || events.length > 0
@@ -272,7 +300,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <button
                 onClick={enhance}
-                disabled={!prompt.trim() || enhancing || running}
+                disabled={!prompt.trim() || enhancing}
                 className="rounded-full border-2 border-grape/40 bg-grape-soft px-4 py-1.5 text-sm font-black text-grape transition-all hover:-translate-y-0.5 hover:border-grape active:scale-95 disabled:opacity-40 disabled:hover:translate-y-0"
                 title={prompt.trim() ? 'Rewrite your idea into a brief our video crew understands best — you review it first' : 'Type your idea first'}
               >
@@ -430,6 +458,33 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
           </>
           )}
 
+          {/* the videos being made — several at once; click one to bring it on screen */}
+          {knownJobs.length > 1 && (
+            <div className="mt-6 flex flex-wrap items-center gap-2">
+              {knownJobs.map((j) => {
+                const ui = jobsUi[j.id] ?? emptyJob(j.title)
+                const live = activeJobs.some((a) => a.id === j.id)
+                const pct = ui.progress > 0 ? `${ui.progress}%` : live ? 'working…' : ui.done ? 'ready' : ui.error ? 'failed' : 'stopped'
+                return (
+                  <div
+                    key={j.id}
+                    className={`flex items-center gap-1.5 rounded-full border-2 px-3 py-1.5 text-xs font-bold transition-all ${j.id === focus ? 'border-grape bg-grape-soft text-grape' : 'border-ink/10 bg-white text-ink/65 hover:border-ink/25'}`}
+                  >
+                    <button onClick={() => setFocus(j.id)} className="max-w-[220px] truncate" title={ui.title || j.title}>
+                      {live && <span className="pulse-dot mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-grape align-middle" />}
+                      {ui.title || j.title || 'video'} · {pct}
+                    </button>
+                    {live && (
+                      <button onClick={() => api.cancel(j.projectId ?? j.id)} title="Stop this video" className="text-ink/40 hover:text-coral">
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
           {/* progress */}
           {started && !error && (
             <section className="card slide-up mt-6 p-5">
@@ -543,7 +598,6 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
           )}
           {/* go! — sticks to the bottom so the main action is always in reach */}
           <div className="sticky bottom-0 z-10 mt-6 pb-4">
-          {!running && (
             <div className="mb-2 grid grid-cols-2 gap-2 rounded-2xl bg-white/90 p-1.5 shadow-sm">
               <button
                 onClick={() => (aiOn ? setKind('ai') : window.dispatchEvent(new Event('videogen:sign-in')))}
@@ -559,36 +613,39 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
               <button
                 onClick={() => setKind('programmatic')}
                 className={`rounded-xl px-3 py-2 text-left text-xs font-bold transition-all ${programmatic ? 'bg-mint text-white' : 'text-ink/70 hover:bg-ink/5'}`}
-                title="Made on your PC from templates and free stock — no AI"
+                title={ownKeys ? 'Never counted: the free planner lays it out, your code model authors the scenes and your own keys make the media' : 'Made on your PC from templates and free stock — no AI'}
               >
-                ⚙️ Programmatic
-                <span className="block text-[11px] font-semibold opacity-80">Free · basic graphics · no AI</span>
+                {ownKeys ? '⚙️ Programmatic+' : '⚙️ Programmatic'}
+                <span className="block text-[11px] font-semibold opacity-80">{ownKeys ? 'Not counted · your keys make the art' : 'Free · basic graphics · no AI'}</span>
               </button>
             </div>
-          )}
-          {running ? (
-            <button
-              onClick={stop}
-              className="w-full rounded-2xl border-2 border-coral/40 bg-coral-soft py-4 text-lg font-black text-coral transition-all hover:bg-coral hover:text-white"
-            >
-              ✋ Stop making this video
-            </button>
-          ) : (
+          <div className="flex gap-2">
+            {running && (
+              <button
+                onClick={stop}
+                className="flex-1 rounded-2xl border-2 border-coral/40 bg-coral-soft py-4 text-lg font-black text-coral transition-all hover:bg-coral hover:text-white"
+              >
+                ✋ Stop this video
+              </button>
+            )}
             <button
               onClick={generate}
-              disabled={!prompt.trim() || !cfg}
-              className="btn-primary w-full !rounded-2xl !py-4 !text-lg"
-              title={prompt.trim() ? 'Ctrl+Enter works too' : 'Type your idea first'}
+              disabled={!prompt.trim() || !cfg || starting || atCap}
+              className="btn-primary flex-1 !rounded-2xl !py-4 !text-lg"
+              title={atCap ? '3 videos are already being made — stop one or wait' : prompt.trim() ? 'Ctrl+Enter works too' : 'Type your idea first'}
             >
-              🎬 Make my video
+              {starting ? '⏳ Starting…' : activeJobs.length > 0 ? '🎬 Make another video' : '🎬 Make my video'}
             </button>
-          )}
-          {!running && (
+          </div>
             <div className="mx-auto mt-2 w-fit rounded-full bg-white/90 px-3 py-1 text-center text-xs text-ink/60 shadow-sm">
-              {!prompt.trim()
-                ? '👆 Type your idea above to get started'
+              {atCap
+                ? '⏳ 3 videos are being made at once — stop one or wait for it to finish'
+                : !prompt.trim()
+                ? activeJobs.length > 0 ? '👆 Type another idea to make a second video at the same time' : '👆 Type your idea above to get started'
                 : programmatic
-                  ? '🆓 Basic graphics made on your PC; visuals may not illustrate the subject.'
+                  ? ownKeys
+                    ? '🎨 Not counted: your code model authors the scenes and your own keys make the media. Provider charges appear as it works.'
+                    : '🆓 Basic graphics made on your PC; visuals may not illustrate the subject.'
                 : account?.mode === 'plan'
                   ? `🎟️ Uses 1 of your ${aiLeft ?? '∞'} AI videos this month · editing it later is included`
                 : cfg?.autopilot
@@ -601,7 +658,6 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
                     : `🧾 About ${fmtUsd(estimate.usd)}, billed to your own key · reusing your library makes it cheaper`
                   : null}
             </div>
-          )}
           </div>
         </div>
       </div>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, type PipelineEvent, type ProjectMeta } from '../api'
+import { api, type ProjectMeta } from '../api'
 import { EmptyState } from '../components/ui'
 
 export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) => void }) {
@@ -15,22 +15,26 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
 
   useEffect(() => {
     refresh()
-    // live progress for re-renders triggered from this view
-    const unsub = api.onEvent((e: PipelineEvent) => {
-      if (e.stage === 'render' && e.status === 'progress' && rerendering) {
+    // live progress for re-renders triggered from this view; several jobs can run at
+    // once, so progress and the finished toast belong to the project re-rendered here
+    const unsub = api.onEvent((e) => {
+      const mine = !e.projectId || e.projectId === rerendering?.id
+      if (e.stage === 'render' && e.status === 'progress' && rerendering && mine) {
         setRerendering({ id: rerendering.id, pct: e.pct })
       }
       if (e.stage === 'render' && e.status === 'done') {
-        setRerendering(null)
-        setToast('✔ Re-render complete')
+        if (rerendering && mine) {
+          setRerendering(null)
+          setToast('✔ Re-render complete')
+        }
         refresh()
       }
       if (e.stage === 'pipeline' && e.status === 'cancelled') {
-        setRerendering(null)
+        if (mine) setRerendering(null)
         refresh()
       }
       if (e.stage === 'pipeline' && e.status === 'failed') {
-        setRerendering(null)
+        if (mine) setRerendering(null)
         setToast(`Render failed: ${e.error.slice(0, 120)}`)
         refresh()
       }

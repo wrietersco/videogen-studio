@@ -33,6 +33,8 @@ export default function Editor({ initialProjectId, onBack }: { initialProjectId?
   // live progress for a running scene revision
   useEffect(() => {
     return api.onEvent((e) => {
+      // several jobs can run at once — only this project's events are ours
+      if (e.projectId && e.projectId !== activeId) return
       if (e.stage === 'revise' && e.status === 'failed') {
         setReviseError(e.error.slice(0, 200))
         setRevising(null)

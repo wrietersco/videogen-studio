@@ -95,6 +95,18 @@ export interface ProjectView {
   thumbs: string[]
 }
 
+/** one in-flight generation job (gen:jobs) */
+export interface JobInfo {
+  id: string
+  projectId: string | null
+  title: string
+  kind: 'generate' | 'revise' | 'rerender' | 'resume' | 'library' | 'footage'
+  startedAt: string
+}
+
+/** pipeline events gain the job they belong to */
+export type JobEvent = PipelineEvent & { projectId?: string | null; jobId?: string }
+
 declare global {
   interface Window {
     api: {
@@ -104,7 +116,8 @@ declare global {
         close: () => void
       }
       generate: (opts: GenerateOptionsView) => Promise<{ ok: boolean; error?: string; code?: string }>
-      cancel: () => Promise<boolean>
+      /** stop one project's job, or the newest one when no project is given */
+      cancel: (projectId?: string) => Promise<boolean>
       enhancePrompt: (req: EnhanceRequestView) => Promise<{ ok: true; result: EnhancedPrompt } | { ok: false; error: string }>
       templates: {
         list: () => Promise<PromptTemplate[]>
@@ -112,7 +125,9 @@ declare global {
         remove: (id: string) => Promise<boolean>
       }
       busy: () => Promise<boolean>
-      onEvent: (cb: (event: PipelineEvent) => void) => () => void
+      jobs: () => Promise<JobInfo[]>
+      onEvent: (cb: (event: JobEvent) => void) => () => void
+      onJobs: (cb: (jobs: JobInfo[]) => void) => () => void
       onUsage: (cb: (p: { entry: UsageEntry; totalUsd: number; savedUsd: number }) => void) => () => void
       onUsageRun: (cb: (p: { projectId: string; run: UsageRun }) => void) => () => void
       getProjectUsage: (id: string) => Promise<ProjectUsage>
