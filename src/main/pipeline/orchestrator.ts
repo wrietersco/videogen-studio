@@ -718,6 +718,9 @@ export class Orchestrator {
     const provider = this.providerFor()
     const coder = this.codeProviderFor()
     const vision = this.visionProviderFor()
+    if (isometricOnly && vision.id === 'mock' && coder.id !== 'mock') {
+      throw new Error('A visual reviewer is required to verify a fully isometric animation. Configure an image-capable review model in Settings; your choices were not changed.')
+    }
     if (vision.supportsVision?.() === false) {
       if (isometricOnly) throw new Error('The selected image-review model cannot inspect images. Choose an image-capable model for that role in Settings; your choices were not changed.')
       this.store.appendEvent(projectId, 'custom scenes skipped: selected image-review model cannot inspect images')
