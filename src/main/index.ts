@@ -14,12 +14,15 @@ import { DEFAULT_MEDIA, DEFAULT_SETTINGS, type KeyId, type Settings } from './se
 import { PROVIDER_CAPABILITIES, type ProviderRole } from '@shared/providerRoles'
 import { AssetLibrary } from './assets/library'
 import { registerAssetIpc, registerAssetScheme } from './assets/ipc'
+import { BrandStore } from './brand/store'
+import { registerBrandIpc } from './brand/ipc'
+import { registerReferenceIpc } from './references/ipc'
 import { MediaRouter } from './media/router'
 import { applyAutopilot, decide, decideCreative, honorShape } from './autopilot'
 import { enhancePrompt, type EnhanceRequest } from './promptEnhancer'
 import { PromptTemplateStore, type TemplateInput } from './store/promptTemplates'
 import { ensureBrowser } from './rendererService/hyperframes'
-import { projectsDir, appRoot, libraryDir, builtinPackDir, footageDir } from './paths'
+import { projectsDir, appRoot, libraryDir, builtinPackDir, footageDir, brandDir } from './paths'
 import { FootageStore } from './footage/store'
 import { FootageService } from './footage/service'
 import { registerFootageIpc } from './footage/ipc'
@@ -40,6 +43,7 @@ registerAssetScheme()
 
 const store = new ProjectStore(projectsDir)
 const library = new AssetLibrary(libraryDir, builtinPackDir, () => settings.sharing)
+const brands = new BrandStore(brandDir)
 /** decrypted keys, cached (safeStorage round-trips are not free) */
 const keyCache = new Map<KeyId, string>()
 const storedKey = (id: KeyId): string => {
@@ -412,7 +416,7 @@ function editJob(kind: UsageRun['kind'], projectId: string, body: (run: JobRun, 
   )
 }
 
-type GenRequest = GenerateOptions & { shapeLocked?: boolean; programmatic?: boolean }
+type GenRequest = Omit<GenerateOptions, 'brand'> & { shapeLocked?: boolean; programmatic?: boolean; /** brand kit for this video ('' or absent = none) */ brandKitId?: string; /** where the logo goes for this video only (from the person's prompt) */ brandOverride?: { watermark?: 'off' | 'top-left' | 'top-right'; endCard?: boolean } }
 
 /**
  * Make a new video as one parallel job. The Create screen and the headless
@@ -458,6 +462,7 @@ async function startGenerate(opts: GenRequest, tap?: (ev: Record<string, unknown
           quality: settings.quality,
           gpu: settings.allowGpu,
           craft: settings.craft,
+          brand: opts.brandKitId ? (dir) => brands.attach(String(opts.brandKitId), dir, opts.brandOverride) : undefined,
           lookHint: creative?.look ?? pilot?.look,
           autopilotNotes: [...(creative ? [`format: ${creative.platform} · ${creative.styleHint} · ${creative.durationHintSec}s · ${creative.look} — ${creative.reason}`] : []), ...(pilot?.reasons.filter((reason) => !creative || !reason.startsWith('look:')) ?? [])],
           onEvent
@@ -864,6 +869,8 @@ if (headlessFile) {
     void account.sync().catch((err) => console.warn('[account] sync failed', err instanceof Error ? err.message : err))
     registerIpc()
     registerAssetIpc({ library, router: media, key: keyOf, isBusy: busyNow })
+    registerBrandIpc(brands)
+    registerReferenceIpc()
     registerFootageIpc({
       store: footageStore,
       service: footage,

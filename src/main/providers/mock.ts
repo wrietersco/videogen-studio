@@ -9,6 +9,8 @@ import type {
 import { ProviderError } from './types'
 import { PLATFORM_PRESETS, PACING_TUNING } from '@shared/presets'
 import type { Pacing, Palette, Scene, StyleFamily, VideoSpec } from '@shared/spec'
+import { parseBrief } from '../story/brief'
+import { buildStory, storyTitle } from '../story/arcs'
 
 /**
  * MockProvider — plays the role of OpenAI/Claude/Gemini during development.
@@ -35,7 +37,8 @@ const PALETTES: Record<string, Palette> = {
   forest: { bg: '#0C1A12', surface: '#15281C', fg: '#F0FFF4', muted: '#7FA98C', accent: '#34D399', accent2: '#A3E635' },
   noir: { bg: '#0B0B0C', surface: '#17171A', fg: '#EDEDEE', muted: '#77777E', accent: '#E5E5E0', accent2: '#C4A35A' },
   candy: { bg: '#FFF0F6', surface: '#FFFFFF', fg: '#2B1024', muted: '#9E6B8A', accent: '#FF2E88', accent2: '#7C5CFF' },
-  ocean: { bg: '#04121F', surface: '#0A2338', fg: '#EAF6FF', muted: '#6E93AD', accent: '#22D3EE', accent2: '#3B82F6' }
+  ocean: { bg: '#04121F', surface: '#0A2338', fg: '#EAF6FF', muted: '#6E93AD', accent: '#22D3EE', accent2: '#3B82F6' },
+  dusk: { bg: '#0E1320', surface: '#18203A', fg: '#FBF3E6', muted: '#A8A3B5', accent: '#F28B3C', accent2: '#F6C667' }
 }
 
 const FONTS = {
@@ -53,6 +56,7 @@ interface Mood {
 
 function detectMood(prompt: string, style: StyleFamily): Mood {
   const p = prompt.toLowerCase()
+  if (/\b(golden[- ]hour|sunset|dusk|sunrise|cozy|autumn|campfire)\b/.test(p)) return { palette: PALETTES.dusk, fonts: 'friendly', music: 'cinematic' }
   if (/(crypto|ai|tech|saas|software|dev|code|startup|api|data|cyber)/.test(p)) return { palette: PALETTES.neonTech, fonts: 'tech', music: 'upbeat' }
   if (/(fun|playful|kids|candy|party|birthday|meme|silly)/.test(p)) return { palette: PALETTES.candy, fonts: 'friendly', music: 'playful' }
   if (/(luxury|premium|film|cinematic|noir|drama)/.test(p)) return { palette: PALETTES.noir, fonts: 'editorial', music: 'cinematic' }
@@ -113,7 +117,7 @@ function makeRng(seed: string): () => number {
 
 // ---------- narrative arc builders (the "LLM's" creative core) ----------
 
-type SceneDraft = { kind: Scene['kind']; content: Record<string, unknown>; weight: number }
+type SceneDraft = { kind: Scene['kind']; content: Record<string, unknown>; weight: number; say?: string }
 
 function buildArc(topic: string, style: StyleFamily, totalSec: number, rng: () => number): SceneDraft[] {
   const T = titleCase(topic)
@@ -220,7 +224,8 @@ export class MockProvider implements LLMProvider {
     const platform = payload.platform
     const preset = PLATFORM_PRESETS[platform]
     const style = payload.styleHint ?? detectStyle(payload.userPrompt)
-    const pacing = detectPacing(payload.userPrompt, style, platform)
+    const rv = payload.referenceVideo
+    const pacing = rv?.pacing ?? detectPacing(payload.userPrompt, style, platform)
     const mood = detectMood(payload.userPrompt, style)
     const topic = extractTopic(payload.userPrompt)
 
@@ -228,11 +233,15 @@ export class MockProvider implements LLMProvider {
     const totalSec = Math.min(preset.durationRange[1], Math.max(preset.durationRange[0], requested))
 
     const rng = makeRng(payload.userPrompt + platform + style)
-    const arc = buildArc(topic, style, totalSec, rng)
+    // the story engine writes from the person's own words; 3D and very short films keep the older arcs
+    const brief = parseBrief(payload.userPrompt)
+    const story = style === 'motion3d' || totalSec <= 12 ? [] : buildStory(brief, totalSec, rng, rv?.targetScenes ?? undefined)
+    const arc: SceneDraft[] = story.length ? story : buildArc(topic, style, totalSec, rng)
 
     const scale = PACING_TUNING[pacing].durationScale
     const weightSum = arc.reduce((a, s) => a + s.weight, 0)
     let remaining = totalSec
+    let previous: Scene['transitionIn'] | undefined
     const scenes: Scene[] = arc.map((draft, i) => {
       const isLast = i === arc.length - 1
       let dur = (draft.weight / weightSum) * totalSec * scale
@@ -242,15 +251,16 @@ export class MockProvider implements LLMProvider {
       const base = {
         id: `scene-${i + 1}`,
         durationSec: dur,
-        transitionIn: pickTransition(style, i, rng),
+        transitionIn: pickTransition(style, i, rng, story.length > 0 ? previous : undefined),
         transitionOut: 'cut' as const
       }
+      previous = base.transitionIn
       return { ...base, kind: draft.kind, ...draft.content } as unknown as Scene
     })
 
     const spec: VideoSpec = {
       schemaVersion: 1,
-      title: `${titleCase(topic)} — ${preset.label}`,
+      title: `${story.length ? storyTitle(brief) : titleCase(topic)} — ${preset.label}`,
       platform,
       style,
       pacing,
@@ -259,10 +269,11 @@ export class MockProvider implements LLMProvider {
       palette: mood.palette,
       typography: FONTS[mood.fonts],
       scenes,
-      narration: scenes.map((s) => ({ sceneId: s.id, text: narrationFor(s, topic) })),
+      narration: scenes.map((s, i) => ({ sceneId: s.id, text: arc[i]?.say ?? narrationFor(s, topic) })),
       assetNeeds: [],
       voiceover: [],
       crafts: [],
+      refs: [],
       musicMood: mood.music,
       captionStyle: {
         enabled: true,
@@ -276,8 +287,14 @@ export class MockProvider implements LLMProvider {
 
 type TransitionIn = Scene['transitionIn']
 
-function pickTransition(style: StyleFamily, i: number, rng: () => number): TransitionIn {
+function pickTransition(style: StyleFamily, i: number, rng: () => number, previous?: TransitionIn): TransitionIn {
   if (i === 0) return 'fade'
+  if (previous) {
+    // story films never repeat a transition back to back
+    const opts = (style === 'social' ? ['whip', 'zoom', 'glitch', 'slide'] : ['slide', 'zoom', 'wipe', 'fade']) as TransitionIn[]
+    const choices = opts.filter((o) => o !== previous)
+    return choices[Math.floor(rng() * choices.length) % choices.length]
+  }
   if (style === 'social') {
     const opts = ['whip', 'zoom', 'glitch', 'slide'] as const
     return opts[Math.floor(rng() * opts.length)]
@@ -305,7 +322,7 @@ function narrationFor(scene: Scene, topic: string): string {
   }
 }
 
-function extractPlanPayload(prompt: string): { userPrompt: string; platform: VideoSpec['platform']; styleHint?: StyleFamily; durationHintSec?: number } {
+function extractPlanPayload(prompt: string): { userPrompt: string; platform: VideoSpec['platform']; styleHint?: StyleFamily; durationHintSec?: number; referenceVideo?: { pacing: Pacing; targetScenes: number | null } } {
   try {
     const parsed = JSON.parse(prompt)
     if (parsed && typeof parsed.userPrompt === 'string') return parsed

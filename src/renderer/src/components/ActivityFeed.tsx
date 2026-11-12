@@ -2,6 +2,7 @@ import type { PipelineEvent } from '../api'
 
 const STAGE_META: Record<PipelineEvent['stage'], { label: string; icon: string }> = {
   plan: { label: 'Story writer', icon: '🧠' },
+  references: { label: 'Reference reader', icon: '🖼️' },
   direct: { label: 'Scene designer', icon: '🎬' },
   plates: { label: 'Background painter', icon: '🖼' },
   critic: { label: 'Quality checker', icon: '👁' },
@@ -44,6 +45,13 @@ function toRows(events: PipelineEvent[]): Row[] {
           detail: `“${e.title}” — ${e.scenes} scenes · ${e.durationSec}s`,
           state: 'ok'
         })
+    }
+    if (e.stage === 'references') {
+      if (e.status === 'started') rows.push({ key, ...meta, detail: `reading ${e.total} picture(s)…`, state: 'run' })
+      if (e.status === 'done') {
+        const parts = [e.style ? `${e.style} for the look` : '', e.subject ? `${e.subject} product` : '', e.content ? `${e.content} screenshot` : ''].filter(Boolean)
+        rows.push({ key, ...meta, detail: `${parts.join(' · ') || 'no usable pictures'}${e.usedAi ? '' : ' · read on this computer'}${e.skipped.length ? ` · left out ${e.skipped.length}` : ''}`, state: e.skipped.length ? 'warn' : 'ok' })
+      }
     }
     if (e.stage === 'direct') {
       if (e.status === 'started') rows.push({ key, ...meta, detail: `directing ${e.total} scene(s)…`, state: 'run' })

@@ -5,6 +5,8 @@ import type { DesignContext } from './layout'
 import { fitAttrs } from './layout'
 import type { AnimStep } from './anim'
 import { buildWidget, widgetCSS, type WidgetTheme } from './widgets'
+import { bgArt } from './bgart'
+import { seedOf } from '@shared/look'
 
 /**
  * Directed scenes — the premium presentation path. A scene is
@@ -92,6 +94,12 @@ export function craftedCSS(ctx: DesignContext, th: CraftTheme): string {
     .cr-glow { position: absolute; left: 50%; top: 52%; width: ${Math.round(ctx.width * 1.3)}px; height: ${Math.round(ctx.width * 1.3)}px; transform: translate(-50%, -50%); background: radial-gradient(circle, ${th.accent2}2E 0%, ${th.accent}0F 35%, transparent 62%); }
     .cr-vig { position: absolute; inset: 0; background: radial-gradient(ellipse 75% 60% at 50% 50%, transparent 55%, rgba(3,5,10,0.85) 100%); }
     .cr-plate { position: absolute; left: 0; top: 0; width: ${ctx.width}px; height: ${ctx.height}px; }
+    .cr-bgart { position: absolute; left: 0; top: 0; }
+    .cr-photo { position: absolute; left: 0; top: 0; width: ${ctx.width}px; height: ${ctx.height}px; object-fit: cover; transform-origin: 50% 50%; }
+    .cr-ref { position: absolute; transform-origin: 50% 50%; }
+    .cr-ref img { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .cr-ref.frame { border-radius: ${px(18)}; overflow: hidden; border: ${Math.max(2, Math.round(3 * s))}px solid ${th.hair}; box-shadow: 0 ${px(26)} ${px(80)} rgba(0,0,0,0.55), 0 0 0 ${Math.max(1, Math.round(1.5 * s))}px rgba(0,0,0,0.4); background: #0b0f1a; }
+    .cr-ref.float img { filter: drop-shadow(0 ${px(30)} ${px(60)} rgba(0,0,0,0.55)); }
     .cr-clip { object-fit: cover; transform-origin: 50% 55%; }
     .cr-scrim-top { position: absolute; left: 0; right: 0; top: 0; height: ${Math.round(ctx.height * (ctx.isVertical ? 0.46 : 0.5))}px; background: linear-gradient(180deg, rgba(4,6,9,0.82) 0%, rgba(4,6,9,0.38) 62%, transparent 100%); }
     .cr-scrim-bot { position: absolute; left: 0; right: 0; bottom: 0; height: ${Math.round(ctx.height * 0.34)}px; background: linear-gradient(0deg, rgba(4,6,9,0.88) 0%, rgba(4,6,9,0.42) 60%, transparent 100%); }
@@ -267,11 +275,15 @@ export function renderCraftedScene(
   const parts: string[] = []
   const design = spec.design as FilmDesign
 
+  // ---------- reference picture (the person's own image, shown as itself) ----------
+  const media = craft.media && /^assets\/refs\/ref-\d{1,2}\.(jpg|png)$/.test(craft.media.file) ? craft.media : undefined
+  const photo = media?.fit === 'cover'
+
   // ---------- background ----------
   // a moving clip (engine-chosen motion plate) wins over the painted still
   const clip = craft.background === 'plate' && craft.plate?.clipFile ? craft.plate : undefined
   const clipBackdrop = Boolean(clip?.file && clip.depthFile && clip.clipDurationSec && clip.clipDurationSec < dur)
-  const plate = clip ?? (craft.background === 'plate' && craft.plate?.file && craft.plate.depthFile ? craft.plate : undefined)
+  const plate = media ? undefined : clip ?? (craft.background === 'plate' && craft.plate?.file && craft.plate.depthFile ? craft.plate : undefined)
   const imageLed = Boolean(plate && craft.headlineTreatment === 'visual')
   let plateJob: PlateJob | undefined
   if (plate) {
@@ -302,8 +314,16 @@ export function renderCraftedScene(
       cy: anchor.y,
       seed: index + 1
     }
+  } else if (photo && media) {
+    // a full-bleed photo: slow push-in, text on a scrim (transform only)
+    parts.push(`<img class="cr-photo" id="${id}-photo" src="${esc(media.file)}" alt="" />`)
+    parts.push(R.align === 'left' && ctx.width > ctx.height * 1.15 ? `<div class="cr-scrim-side"></div>` : `<div class="cr-scrim-top"></div>`)
+    parts.push(`<div class="cr-scrim-bot"></div>`)
+    steps.push({ kind: 'tween', t: startSec, sel: `#${id}-photo`, from: { autoAlpha: 0, scale: 1.02 }, to: { autoAlpha: 1, scale: 1.1 }, dur, ease: 'none' })
   } else {
-    parts.push(`<div class="cr-grid" id="${id}-grid"></div><div class="cr-glow" id="${id}-glow"></div><div class="cr-vig"></div>`)
+    // procedural art when the film assigned one, else the plain dot grid
+    const art = bgArt(craft.bgStyle, ctx, { accent: th.accent, accent2: th.accent2, ink: th.ink }, seedOf(spec.title) % 997 + index * 31)
+    parts.push(`${art || `<div class="cr-grid" id="${id}-grid"></div>`}<div class="cr-glow" id="${id}-glow"></div><div class="cr-vig"></div>`)
     // backgrounds stay still: a drifting full-frame gradient is a full repaint
     // every frame under software raster (~25% of render time) — the widgets move
     steps.push({ kind: 'tween', t: startSec, sel: `#${id}-glow`, from: { autoAlpha: 0 }, to: { autoAlpha: 1 }, dur: 0.8, ease: 'power1.out' })
@@ -331,7 +351,7 @@ export function renderCraftedScene(
 
   // ---------- headline ----------
   // hero mode: no widget on a grid scene → the headline owns the centre of the frame
-  const hero = !plate && craft.widgets.every((w) => w.type === 'annotation')
+  const hero = !plate && !media && craft.widgets.every((w) => w.type === 'annotation')
   if (hero) {
     R.headline = { x: R.mid.x, y: R.mid.y + R.mid.h * 0.08, w: R.mid.w, h: R.mid.h * 0.62 }
     R.deck = { x: R.mid.x + R.mid.w * 0.04, y: R.mid.y + R.mid.h * 0.74, w: R.mid.w * 0.92, h: R.mid.h * 0.22 }
@@ -350,7 +370,7 @@ export function renderCraftedScene(
   }
   const accent = new Set(craft.accentWord.split(/\s+/).map(norm).filter(Boolean))
   // The footage or photograph should remain the focal point on plate scenes.
-  const fs = Math.round((th.doc ? (plate ? 100 : 156) : (plate ? 66 : 78)) * s * (craft.headlineTreatment === 'compact' ? 0.7 : 1) * (ctx.width > ctx.height * 1.15 ? 0.9 : 1) * (hero ? (th.doc ? 1.1 : 1.45) : 1))
+  const fs = Math.round((th.doc ? (plate || media ? 100 : 156) : (plate || media ? 66 : 78)) * s * (craft.headlineTreatment === 'compact' ? 0.7 : 1) * (ctx.width > ctx.height * 1.15 ? 0.9 : 1) * (hero ? (th.doc ? 1.1 : 1.45) : 1))
   const lines = balancedLines(craft.headline, 3, R.headline.w, fs * (th.doc ? 0.46 : 0.52))
   const lineHTML = lines
     .map((l) => {
@@ -378,6 +398,29 @@ export function renderCraftedScene(
       `<p class="cr-deck" id="${id}-deck" style="${boxStyle({ ...R.deck, h: R.deck.h })};font-size:${dfs}px;${R.align === 'center' ? 'text-align:center;margin-left:4%' : ''}" ${fitAttrs(R.deck.w, R.deck.h, 'box')}>${esc(craft.deck)}</p>`
     )
     steps.push({ kind: 'tween', t: startSec + 1.1, sel: `#${id}-deck`, from: { autoAlpha: 0, y: 18 * s }, to: { autoAlpha: 0.88, y: 0 }, dur: 0.7, ease: 'power2.out' })
+  }
+
+  // ---------- screenshot / cut-out placed in the middle of the frame ----------
+  if (media && !photo) {
+    // the picture owns the middle and lower band; headline and caption keep theirs
+    const box = { x: R.mid.x, y: R.mid.y, w: R.mid.w, h: R.low.y + R.low.h - R.mid.y }
+    const pad = Math.round(20 * s)
+    const aw = box.w - pad * 2
+    const ah = box.h - pad * 2
+    const k = Math.min(aw / media.width, ah / media.height)
+    const w = Math.round(media.width * k)
+    const h = Math.round(media.height * k)
+    const left = Math.round(box.x + pad + (aw - w) / 2)
+    const top = Math.round(box.y + pad + (ah - h) / 2)
+    const frame = media.fit === 'frame'
+    parts.push(
+      `<div class="cr-ref ${frame ? 'frame' : 'float'}" id="${id}-ref" style="left:${left}px;top:${top}px;width:${w}px;height:${h}px"><img src="${esc(media.file)}" alt="" /></div>`
+    )
+    const t = startSec + 0.55
+    steps.push(
+      { kind: 'tween', t, sel: `#${id}-ref`, from: { autoAlpha: 0, y: 36 * s, scale: 0.95 }, to: { autoAlpha: 1, y: 0, scale: 1 }, dur: 0.75, ease: 'power3.out' }
+    )
+    if (dur > 3) steps.push({ kind: 'tween', t: t + 0.75, sel: `#${id}-ref`, from: { scale: 1 }, to: { scale: 1.04 }, dur: Math.max(0.5, dur - 1.4), ease: 'none' })
   }
 
   // ---------- widgets ----------

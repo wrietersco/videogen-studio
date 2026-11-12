@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { FilmDesign, Plate, SceneCraft, Widget, type VideoSpec } from '@shared/spec'
 import { PLATFORM_PRESETS } from '@shared/presets'
 import { tokenize } from '@shared/assets'
+import { designWithStyle } from '@shared/references'
 import type { LLMProvider } from '../providers/types'
 
 /**
@@ -18,7 +19,7 @@ import type { LLMProvider } from '../providers/types'
  */
 
 /** what the scene director fills in (the engine owns ids, plate files and reviews) */
-export const SceneCraftDraft = SceneCraft.omit({ sceneId: true, review: true }).extend({
+export const SceneCraftDraft = SceneCraft.omit({ sceneId: true, review: true, media: true, bgStyle: true }).extend({
   plate: Plate.omit({ file: true, depthFile: true, anchor: true, clipFile: true, clipDurationSec: true }).optional()
 })
 export type SceneCraftDraft = z.infer<typeof SceneCraftDraft>
@@ -162,6 +163,10 @@ export class SceneDirector {
   }
 
   async directFilm(spec: VideoSpec): Promise<FilmDesign> {
+    return designWithStyle(await this.directFilmBase(spec), spec.styleBrief)
+  }
+
+  private async directFilmBase(spec: VideoSpec): Promise<FilmDesign> {
     if (this.mock) return heuristicDesign(spec)
     filmSchema ??= toSchema(FilmDesign)
     const preset = PLATFORM_PRESETS[spec.platform]
@@ -172,6 +177,7 @@ export class SceneDirector {
       plannedStyle: spec.style,
       scenes: spec.scenes.map((s, i) => `${i + 1}. [${s.kind}] ${sceneText(s)}`),
       narration: spec.narration.map((n) => n.text).join(' '),
+      ...(spec.styleBrief ? { styleReference: { mood: spec.styleBrief.mood, palette: spec.styleBrief.palette, lighting: spec.styleBrief.lighting, composition: spec.styleBrief.composition, note: 'The person attached style pictures. Match this look: it will be applied to imageStyle and the accents afterwards, so choose a series label and look that suit it.' } } : {}),
       platesAvailable: this.opts.platesAvailable,
       note: this.opts.platesAvailable ? '' : 'No image model is configured: choose "infographic" unless the film truly needs documentary chrome (it will run on dark backgrounds).',
       ...(this.opts.lookHint && (this.opts.lookHint === 'infographic' || this.opts.platesAvailable)

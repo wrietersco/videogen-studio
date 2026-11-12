@@ -16,6 +16,25 @@ import type { EnhancedPrompt, PromptSection, PromptTemplate } from '@shared/prom
 import type { AccountStatus } from '../../main/license/session'
 import type { AccessMode } from '../../main/license/access'
 import type { EntitlementView, PlanId, Policy } from '@shared/plans'
+import type { BrandKitPatch, BrandKitView } from '@shared/brand'
+import type { RefRole, VideoBrief } from '@shared/spec'
+
+export type { RefRole, VideoBrief }
+export type VideoReadView = { ok: true; brief: VideoBrief; thumb: string; name: string } | { ok: false; error: string; cancelled?: boolean }
+/** a picture picked for this video: path + the thumbnail and guesses shown on its chip */
+export interface InspectedRefView {
+  path: string
+  name: string
+  width: number
+  height: number
+  alpha: boolean
+  suggestedRole: RefRole
+  thumb: string
+}
+export type InspectResultView = { ok: true; item: InspectedRefView } | { ok: false; name: string; error: string }
+
+export type { BrandKitPatch, BrandKitView }
+export type BrandResult = { ok: true; kit: BrandKitView } | { ok: false; error: string; cancelled?: boolean }
 
 export type { EntitlementView, PlanId, AccessMode }
 export type AccountState = AccountStatus & { mode: AccessMode }
@@ -70,6 +89,14 @@ export interface GenerateOptionsView {
   shapeLocked?: boolean
   /** make it without AI (free, unlimited, not counted) */
   programmatic?: boolean
+  /** brand kit for this video ('' = none) */
+  brandKitId?: string
+  /** pictures attached to this video, each with the role the person confirmed */
+  references?: Array<{ path: string; role: RefRole; note?: string }>
+  /** what a reference video taught the app, as confirmed on the Create screen */
+  video?: VideoBrief
+  /** where the logo goes for this video only (confirmed from the prompt) */
+  brandOverride?: { watermark?: 'off' | 'top-left' | 'top-right'; endCard?: boolean }
 }
 
 export interface EnhanceRequestView {
@@ -224,6 +251,23 @@ declare global {
         play: (file: string) => Promise<boolean>
         reveal: (file: string) => Promise<boolean>
         onEvent: (cb: (event: FootageEvent) => void) => () => void
+      }
+      references: {
+        /** no paths opens a picker; dropped files pass their paths */
+        inspect: (paths?: string[]) => Promise<InspectResultView[]>
+        /** a YouTube link is read by the AI; a video file (path, or a picker) is measured here */
+        readVideo: (req: { kind: 'youtube'; url: string } | { kind: 'file'; path?: string }) => Promise<VideoReadView>
+      }
+      brand: {
+        list: () => Promise<{ kits: BrandKitView[]; lastUsedId: string }>
+        create: (name: string) => Promise<BrandResult>
+        update: (id: string, patch: BrandKitPatch) => Promise<BrandResult>
+        remove: (id: string) => Promise<boolean>
+        /** remember the kit new videos start with ('' = no brand) */
+        setLastUsed: (id: string) => Promise<boolean>
+        /** no path opens a file picker; a slot replaces just that version */
+        setLogo: (id: string, path?: string, slot?: 'onDark' | 'onLight') => Promise<BrandResult>
+        removeLogo: (id: string) => Promise<BrandResult>
       }
       stock: {
         search: (kind: AssetKind, query: string, orientation?: Orientation) => Promise<{ results: StockResult[]; errors: string[] }>

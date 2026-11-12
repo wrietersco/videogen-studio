@@ -9,6 +9,10 @@ import { ErrorCard } from '../components/friendly'
 import { estimateVideoCost, fmtUsd } from '@shared/pricing'
 import type { SettingsView } from '../api'
 import { useAccount } from '../components/Account'
+import { BrandPicker } from '../components/BrandKit'
+import { parseDirectives, type BrandOverride, type Directive } from '@shared/directives'
+import { ReferencePicker, type RefChip } from '../components/References'
+import { VideoReference, type VideoChip } from '../components/VideoReference'
 
 /** the apps people know; each one implies a shape (see @shared/shapes) */
 const PLATFORMS: Array<{ id: PlatformId; label: string; emoji: string }> = [
@@ -45,7 +49,7 @@ const EXAMPLES: Array<{ emoji: string; prompt: string; platform: PlatformId; sty
 
 /** the friendly progress steps people see while the crew works */
 const STEPS: Array<{ emoji: string; label: string; stages: Array<PipelineEvent['stage']> }> = [
-  { emoji: '🧠', label: 'Writing the story', stages: ['plan'] },
+  { emoji: '🧠', label: 'Writing the story', stages: ['plan', 'references'] },
   { emoji: '🎨', label: 'Designing scenes', stages: ['direct', 'plates', 'critic', 'revise'] },
   { emoji: '🧩', label: 'Putting it together', stages: ['compose', 'qa', 'custom', 'thumbs'] },
   { emoji: '🎞️', label: 'Rendering video', stages: ['render'] },
@@ -136,6 +140,18 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
   const [activeJobs, setActiveJobs] = useState<JobInfo[]>([])
   /** a Make request is on its way (double-click guard); errors that never became a job */
   const [starting, setStarting] = useState(false)
+  /** brand kit for the next video ('' = none) */
+  const [brandKitId, setBrandKitId] = useState('')
+  /** pictures attached to the next video */
+  const [refs, setRefs] = useState<RefChip[]>([])
+  /** a reference video's rhythm for the next video */
+  const [video, setVideo] = useState<VideoChip | null>(null)
+  /** where the logo goes for this video, when the prompt said so and the person applied it */
+  const [brandOverride, setBrandOverride] = useState<BrandOverride | undefined>()
+  const [kitInfo, setKitInfo] = useState<{ hasLogo: boolean } | null>(null)
+  /** directive chips the person dismissed */
+  const [dismissed, setDismissed] = useState<string[]>([])
+  const directives: Directive[] = parseDirectives(prompt, refs.map((r) => ({ path: r.path, name: r.name, role: r.role })), kitInfo).filter((d) => !dismissed.includes(d.id))
   const [startError, setStartError] = useState<string | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
   const [cfg, setCfg] = useState<SettingsView | null>(null)
@@ -238,9 +254,19 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
       styleHint: style === 'auto' ? undefined : style,
       durationHintSec: duration,
       shapeLocked: !cfg.autopilot || shapeLocked,
-      programmatic
+      programmatic,
+      brandKitId: brandKitId || undefined,
+      video: video?.brief,
+      brandOverride: brandKitId ? brandOverride : undefined,
+      references: refs.length ? refs.map((r) => ({ path: r.path, role: r.role, note: r.role === 'style' ? undefined : r.note.trim() || undefined })) : undefined
     })
     setStarting(false)
+    if (res.ok) {
+      setRefs([])
+      setVideo(null)
+      setBrandOverride(undefined)
+      setDismissed([])
+    }
     if (!res.ok) {
       setStartError(res.error ?? 'failed to start')
       if (res.code === 'video_quota_exceeded' || res.code === 'monthly_cost_cap' || res.code === 'ai_blocked') setKind('programmatic')
@@ -297,6 +323,36 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
               placeholder="e.g. A fun 30-second video explaining why the sky is blue, for kids"
               className={`field mt-3 w-full resize-y p-4 text-[15px] leading-relaxed ${prompt.split('\n').length > 4 ? 'h-56' : 'h-28'}`}
             />
+            {directives.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-center gap-2" aria-label="What we understood from your words">
+                <span className="text-xs font-bold text-ink/50">We understood:</span>
+                {directives.map((d) => (
+                  <span key={d.id} className={`inline-flex items-center gap-1.5 rounded-full border-2 px-3 py-1 text-xs font-bold ${d.kind === 'blocked' ? 'border-sunny/60 bg-sunny-soft text-ink/80' : 'border-grape/30 bg-grape-soft text-ink'}`} title={d.kind === 'blocked' ? d.why : undefined}>
+                    {d.kind === 'blocked' ? `⚠️ ${d.label}: ${d.why}` : d.label}
+                    {d.kind !== 'blocked' && (
+                      <button
+                        onClick={() => {
+                          if (d.kind === 'logo') setBrandOverride((o) => ({ ...o, ...d.override }))
+                          else setRefs((rs) => rs.map((r) => (r.path === d.path ? { ...r, role: d.role } : r)))
+                          setDismissed((x) => [...x, d.id])
+                        }}
+                        className="rounded-full bg-grape px-2 py-0.5 text-[11px] text-white hover:brightness-110"
+                      >
+                        Apply
+                      </button>
+                    )}
+                    <button onClick={() => setDismissed((x) => [...x, d.id])} className="text-ink/40 hover:text-berry" aria-label="Ignore">
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            {programmatic && (
+              <p className="mt-2 rounded-xl bg-sky-soft px-3 py-2 text-xs leading-relaxed text-ink/70">
+                <b>Programmatic tip:</b> it designs from your own words, so the more you give it, the better it gets. Name the thing, say what it does and who it is for, and add real numbers. Or write your own script: one line per scene, starting with a dash or <i>Scene 1:</i>.
+              </p>
+            )}
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <button
                 onClick={enhance}
@@ -376,6 +432,12 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
               ))}
             </div>
           </section>
+
+          <BrandPicker value={brandKitId} onChange={setBrandKitId} onManage={onOpenSettings} override={brandOverride} onOverride={setBrandOverride} onKitInfo={setKitInfo} />
+
+          <ReferencePicker refs={refs} onChange={setRefs} programmatic={programmatic} onMention={(m) => setPrompt((p) => `${p}${p && !/\s$/.test(p) ? ' ' : ''}@${m} `)} />
+
+          <VideoReference value={video} onChange={setVideo} durationSec={duration} />
 
           {!cfg ? (
             <section className="card mt-4 p-5 text-sm text-ink/60">Loading your creative settings…</section>

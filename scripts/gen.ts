@@ -4,6 +4,9 @@
  *   npm run gen -- --prompt "explain X" --platform tiktok --style social
  *   npm run gen -- --prompt "..." --duration 45 --quality draft
  *   npm run gen -- --prompt "..." --craft classic          (template scenes)
+ *   npm run gen -- --prompt "..." --logo logo.svg --brand-color "#0E7C7B" --tagline "acme.com"
+ *     (makes or updates a brand kit named by --brand-name and puts it on the video)
+ *   npm run gen -- --prompt "..." --ref style:mood.jpg --ref subject:bottle.png:"our smart bottle" --ref content:app.png:"trail map screen"
  *   OPENAI_API_KEY=… npm run gen -- --prompt "..." --provider openai
  *     (real providers read their key from OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY;
  *      painted plates use the first keyed provider that can generate images)
@@ -13,6 +16,8 @@ import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Orchestrator } from '../src/main/pipeline/orchestrator'
 import { ProjectStore } from '../src/main/store/projectStore'
+import { BrandStore } from '../src/main/brand/store'
+import { readFileSync } from 'node:fs'
 import { MockProvider } from '../src/main/providers/mock'
 import { OpenAIProvider } from '../src/main/providers/openai'
 import { AnthropicProvider } from '../src/main/providers/anthropic'
@@ -31,7 +36,12 @@ const { values } = parseArgs({
     quality: { type: 'string', short: 'q', default: 'standard' },
     out: { type: 'string', short: 'o', default: 'projects' },
     craft: { type: 'string', default: 'directed' },
-    provider: { type: 'string', default: 'mock' }
+    provider: { type: 'string', default: 'mock' },
+    logo: { type: 'string' },
+    'brand-name': { type: 'string', default: 'CLI brand' },
+    'brand-color': { type: 'string' },
+    tagline: { type: 'string' },
+    ref: { type: 'string', multiple: true }
   }
 })
 
@@ -59,6 +69,20 @@ if (values.provider && values.provider !== 'mock' && chat.id === 'mock') {
 const painter = [chat, keyed.openai, keyed.gemini].find((p) => p && p.id !== 'mock' && p.generateImage) ?? null
 const orchestrator = new Orchestrator(store, () => chat, () => painter)
 
+// optional brand kit: the same store and code path the app uses
+let brandKitId = ''
+if (values.logo || values['brand-color']) {
+  const brands = new BrandStore(resolve(appRoot, 'brand'))
+  const kit = brands.list().find((k) => k.name === values['brand-name']) ?? brands.create(values['brand-name']!)
+  if (values.logo) await brands.setLogo(kit.id, readFileSync(resolve(values.logo)))
+  brands.update(kit.id, { tagline: values.tagline ?? kit.tagline, ...(values['brand-color'] ? { colors: { primary: values['brand-color'], secondary: null } } : {}) })
+  brandKitId = kit.id
+  const saved = brands.get(kit.id)!
+  console.log(`✓ brand kit "${saved.name}": ${saved.logo ? `logo ${saved.logo.width}×${saved.logo.height}` : 'no logo'} · ${saved.colors.primary ?? 'no color'}`)
+  for (const n of saved.logo?.notes ?? []) console.log(`  · ${n}`)
+}
+const brandStore = brandKitId ? new BrandStore(resolve(appRoot, 'brand')) : null
+
 console.log(`▶ generating: "${values.prompt}" → ${platform}${style ? ` (${style})` : ''}`)
 const started = Date.now()
 
@@ -70,8 +94,16 @@ try {
     durationHintSec: values.duration ? Number(values.duration) : undefined,
     quality: (values.quality as 'draft' | 'standard' | 'delivery') ?? 'standard',
     craft: values.craft === 'classic' ? 'classic' : 'directed',
+    brand: brandStore ? (dir) => brandStore.attach(brandKitId, dir) : undefined,
+    references: (values.ref ?? []).map((r) => {
+      const [role, path, ...note] = r.split(':')
+      return { role: (['subject', 'content'].includes(role) ? role : 'style') as 'style' | 'subject' | 'content', path: resolve(path), note: note.join(':') || undefined }
+    }),
     onEvent: (e) => {
       switch (e.stage) {
+        case 'references':
+          if (e.status === 'done') console.log(`✓ references: ${e.style} look · ${e.subject} product · ${e.content} screenshot${e.usedAi ? ' (AI read)' : ' (read locally)'}${e.skipped.length ? ` · left out: ${e.skipped.join('; ')}` : ''}`)
+          break
         case 'plan':
           if (e.status === 'done') console.log(`✓ plan: "${e.title}" — ${e.scenes} scenes, ${e.durationSec}s`)
           break

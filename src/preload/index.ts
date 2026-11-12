@@ -140,6 +140,19 @@ const api = {
       return () => ipcRenderer.removeListener('footage:event', listener)
     }
   },
+  references: {
+    inspect: (paths?: string[]) => ipcRenderer.invoke('refs:inspect', paths),
+    readVideo: (req: unknown) => ipcRenderer.invoke('refs:readVideo', req)
+  },
+  brand: {
+    list: () => ipcRenderer.invoke('brand:list'),
+    create: (name: string) => ipcRenderer.invoke('brand:create', name),
+    update: (id: string, patch: unknown) => ipcRenderer.invoke('brand:update', id, patch),
+    remove: (id: string) => ipcRenderer.invoke('brand:remove', id),
+    setLastUsed: (id: string) => ipcRenderer.invoke('brand:setLastUsed', id),
+    setLogo: (id: string, path?: string, slot?: string) => ipcRenderer.invoke('brand:setLogo', id, path, slot),
+    removeLogo: (id: string) => ipcRenderer.invoke('brand:removeLogo', id)
+  },
   stock: {
     search: (kind: string, query: string, orientation?: string) => ipcRenderer.invoke('stock:search', kind, query, orientation),
     download: (r: unknown, tags?: string[]) => ipcRenderer.invoke('stock:download', r, tags)

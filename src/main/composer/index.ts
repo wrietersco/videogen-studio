@@ -10,6 +10,7 @@ import { renderScene } from './scenes'
 import { TRANSITIONS } from './anim'
 import { craftTheme, craftedCSS, craftFontCSS, craftFontAssets, plateEngineScript, renderCraftedScene, type PlateJob } from './crafted'
 import { validateSceneSvg } from '../director/customScene'
+import { renderBrand } from './brand'
 
 /**
  * compose() — VideoSpec + platform preset → complete HyperFrames project.
@@ -43,7 +44,7 @@ export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string, au
     cursor = w.end
     return w
   })
-  const totalSec = Math.round(cursor * 100) / 100
+  const contentSec = Math.round(cursor * 100) / 100
 
   // ---- render scenes ----
   const steps: AnimStep[] = []
@@ -112,6 +113,20 @@ export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string, au
     }
   })
 
+  // ---- brand layer: corner logo + closing logo card (extends the film) ----
+  const brandLayer = renderBrand(
+    spec,
+    ctx,
+    theme
+      ? { bg: theme.bg, ink: theme.ink, accent: theme.accent, font: "'Inter', sans-serif", directed: true }
+      : { bg: spec.palette.bg, ink: spec.palette.fg, accent: spec.palette.accent, font: fam(spec.typography.body), directed: false },
+    contentSec
+  )
+  if (brandLayer) steps.push(...brandLayer.steps)
+  // the closing logo card covers the last scene; once it has faded in, the scene steps out of the layout
+  if (brandLayer?.tailSec) steps.push({ kind: 'set', t: contentSec + 0.32, sel: `#scene-${spec.scenes.length}`, set: { autoAlpha: 0 } })
+  const totalSec = Math.round((contentSec + (brandLayer?.tailSec ?? 0)) * 100) / 100
+
   // explainer progress bar spans the whole video
   if (spec.style === 'explainer') {
     steps.push({
@@ -132,7 +147,7 @@ export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string, au
 
   // self-heal: drop any step targeting elements that don't exist in the
   // assembled markup (guarantees no "GSAP target not found" at render time)
-  const markup = sceneHTML.join('\n') + (theme ? '' : kit.atmosphere(ctx))
+  const markup = sceneHTML.join('\n') + (theme ? '' : kit.atmosphere(ctx)) + (brandLayer?.html ?? '')
   const invalid = new Set(validateSelectors(markup, steps).map((i) => i.selector))
   const safeSteps = invalid.size > 0 ? steps.filter((s) => !invalid.has((s as { sel?: string }).sel)) : steps
 
@@ -158,7 +173,7 @@ export function compose(spec: VideoSpec, vendorDir: string, fontsDir: string, au
   const directed = theme
     ? { css: craftFontCSS() + '\n' + craftedCSS(ctx, theme), plateScript: plateEngineScript(plates, ctx.width, ctx.height, theme.accent) }
     : undefined
-  const html = buildDocument(spec, ctx, kit, sceneHTML, safeSteps, threeScripts, sceneStart, totalSec, audio, directed)
+  const html = buildDocument(spec, ctx, kit, sceneHTML, safeSteps, threeScripts, sceneStart, totalSec, audio, directed, brandLayer ? { html: brandLayer.html, css: brandLayer.css } : undefined)
   return { html, assets, needsThree }
 }
 
@@ -608,7 +623,8 @@ function buildDocument(
   sceneStart: Record<string, number>,
   totalSec: number,
   audio?: AudioLayer,
-  directed?: { css: string; plateScript: string }
+  directed?: { css: string; plateScript: string },
+  brand?: { html: string; css: string }
 ): string {
   const ts = typeScale(ctx)
   const capFit = fitAttrs(ctx.captionBand.maxWidthPx, Math.round(ts.caption * 1.22 * 2 + 24 * ctx.scale), 'box')
@@ -647,7 +663,7 @@ function buildDocument(
     return w
   })
 
-  const style = [fontFaceCSS(spec), baseCSS(ctx, spec.captionStyle.uppercase), kit.atmosphereCSS(ctx), directed?.css ?? ''].join('\n')
+  const style = [fontFaceCSS(spec), baseCSS(ctx, spec.captionStyle.uppercase), kit.atmosphereCSS(ctx), directed?.css ?? '', brand?.css ?? ''].join('\n')
   // directed films carry their own word-lit captions; film grain sits over everything
   // (a cached noise tile — a full-frame filter + blend mode costs seconds per
   // frame under software raster)
@@ -684,6 +700,7 @@ ${style}
       <div class="atmo">${directed ? '' : kit.atmosphere(ctx)}</div>
 ${sceneHTML.join('\n')}
 ${captionLayer}
+${brand?.html ?? ''}
 ${grain}
 ${audioClips}
     </div>

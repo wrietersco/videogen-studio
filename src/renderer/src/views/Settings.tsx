@@ -4,6 +4,7 @@ import { ALL_ROLES, PROVIDER_CAPABILITIES, ROLE_LABELS, ROLE_PRIORITY, enforceEx
 import { api, type KeyId, type MediaSettings, type ModelInfo, type ProviderId, type ProviderStatus, type SettingsView } from '../api'
 import { Chip, Meter, Section } from '../components/ui'
 import Updater from '../components/Updater'
+import { BrandKitSettings } from '../components/BrandKit'
 import { PlanPanel, seesInternals, useAccount } from '../components/Account'
 import { PLAN_IDS, DEFAULT_POLICY } from '@shared/plans'
 
@@ -209,6 +210,10 @@ export default function Settings() {
             </div>
           </div>
         )}
+
+        <Section icon="🎨" title="Brand kit" hint="Your logo, colors and fonts, saved once. Pick a kit on the Create screen and the video carries it." tone="cyan">
+          <BrandKitSettings />
+        </Section>
 
         <Section icon="🤖" title="Full autonomous agent" hint="Let the app tune the options for each video, so you only write the idea." tone="violet">
           <label className="flex cursor-pointer items-center gap-3 text-sm font-bold">

@@ -44,11 +44,13 @@ export async function buildAudio(
   projectDir: string,
   musicDir: string,
   /** a library/generated track chosen by the media router (else the user's folder, else an original score) */
-  musicFile?: string | null
+  musicFile?: string | null,
+  /** extra seconds after the last scene (the brand's closing logo card) */
+  tailSec = 0
 ): Promise<AudioResult> {
   const audioDir = join(projectDir, 'assets', 'audio')
   mkdirSync(audioDir, { recursive: true })
-  const total = sceneWindows.at(-1)?.end ?? spec.durationSec
+  const total = (sceneWindows.at(-1)?.end ?? spec.durationSec) + tailSec
   const startOf = new Map(sceneWindows.map((w) => [w.id, w.start]))
   const cuts = sceneWindows.map((w) => w.start)
   const seed = hashSeed(spec.title)

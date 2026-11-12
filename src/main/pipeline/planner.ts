@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { VideoSpec, Scene, PlatformId, StyleFamily, type VideoSpec as VideoSpecT } from '@shared/spec'
+import { VideoSpec, Scene, PlatformId, StyleFamily, type VideoBrief, type VideoSpec as VideoSpecT } from '@shared/spec'
+import { videoSceneBudget } from '@shared/references'
 import { PLATFORM_PRESETS } from '@shared/presets'
 import type { GenerateJSONRequest, LLMProvider } from '../providers/types'
 
@@ -54,6 +55,8 @@ export interface PlanInput {
   sceneCount?: number
   sceneSec?: number
   imageSummaries?: string[]
+  /** the rhythm learned from a reference video (confirmed by the person) */
+  videoBrief?: VideoBrief
   model?: string
 }
 
@@ -103,6 +106,9 @@ export class Planner {
       styleHint: input.styleHint,
       durationHintSec: input.sceneCount && input.sceneSec ? Math.round(input.sceneCount * input.sceneSec * 10) / 10 : input.durationHintSec,
       imageSummaries: input.imageSummaries,
+      referenceVideo: input.videoBrief
+        ? { pacing: input.videoBrief.pacing, cutsPerMinute: input.videoBrief.cutsPerMinute, hook: input.videoBrief.hook, structure: input.videoBrief.structure, captions: input.videoBrief.captions, musicEnergy: input.videoBrief.musicEnergy, notes: input.videoBrief.notes, targetScenes: videoSceneBudget(input.videoBrief, input.durationHintSec ?? preset.defaultDuration), rule: 'Borrow its rhythm and the order of its beats only. Never reuse its wording, script, footage, music or any person or brand in it.' }
+        : undefined,
       ...(input.sceneCount && input.sceneSec
         ? {
             sceneGrid: `Plan exactly ${input.sceneCount} scenes of ${input.sceneSec} seconds each. Every scene shows a different step of the story and has exactly one narration line of ${gridWordBudget(input.sceneSec).min}–${gridWordBudget(input.sceneSec).max} words that describes what that scene shows; no scene is left without narration.`

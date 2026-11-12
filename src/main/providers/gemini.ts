@@ -97,6 +97,28 @@ export class GeminiProvider implements LLMProvider {
     return json.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? ''
   }
 
+  /**
+   * Read a public video by its link: the video is never downloaded here. Only
+   * the first `endSec` seconds are read, at low resolution, and the answer is
+   * forced into `jsonSchema`. Anything said or shown in the video is data,
+   * not instructions.
+   */
+  async readVideoUrl<T>(req: { url: string; system: string; prompt: string; jsonSchema: Record<string, unknown>; model?: string; endSec?: number }): Promise<T> {
+    const model = req.model ?? 'gemini-3.1-flash-lite'
+    const json = await this.request<{ candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> } & UsageMeta>('POST', `/models/${model}:generateContent`, {
+      contents: [{ role: 'user', parts: [{ fileData: { fileUri: req.url }, videoMetadata: { startOffset: '0s', endOffset: `${Math.max(10, Math.round(req.endSec ?? 180))}s` } }, { text: req.prompt }] }],
+      systemInstruction: { parts: [{ text: req.system }] },
+      generationConfig: { responseMimeType: 'application/json', responseSchema: toOpenApiish(req.jsonSchema), temperature: 0.3, maxOutputTokens: 1500, mediaResolution: 'MEDIA_RESOLUTION_LOW' }
+    })
+    this.meterText(model, json)
+    const text = json.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? ''
+    try {
+      return JSON.parse(text) as T
+    } catch (e) {
+      throw new ProviderError(`unparseable JSON: ${(e as Error).message}`, this.id, 'schema-violation')
+    }
+  }
+
   /** native image output (aspect ratio is requested; the plate engine crops to the exact canvas) */
   async generateImage(req: ImageGenRequest): Promise<Buffer> {
     const model = req.model ?? this.imageModelOverride?.() ?? DEFAULT_IMAGE_MODEL

@@ -1,5 +1,13 @@
 import { join } from 'node:path'
 import { VideoSpec } from '@shared/spec'
+import type { SpecBrand, VideoBrief } from '@shared/spec'
+import { applyBrand } from '@shared/brand'
+import { brandTailSec } from '../composer/brand'
+import { readProjectBrand } from '../brand/store'
+import { intakeRefs, type RefInput } from '../references/intake'
+import { readReferences } from '../references/analyze'
+import { applyVideoBrief, paletteWithStyle, placeReferences } from '@shared/references'
+import { varyBackgrounds } from '@shared/look'
 import type { PlatformId, StyleFamily } from '@shared/spec'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import type { MediaRouter } from '../media/router'
@@ -139,6 +147,12 @@ export interface GenerateOptions {
   lookHint?: 'documentary' | 'infographic'
   /** autopilot's reasons, written to the project's activity log */
   autopilotNotes?: string[]
+  /** the chosen brand kit: copies its logo into the project folder and returns the brand block (null = unbranded) */
+  brand?: (projectDir: string) => SpecBrand | null
+  /** pictures attached to this video, each with the role the person confirmed */
+  references?: RefInput[]
+  /** what a reference video taught the app, as the person confirmed it */
+  video?: VideoBrief
   onEvent?: (e: PipelineEvent) => void
 }
 
@@ -146,6 +160,8 @@ type CraftMode = 'directed' | 'classic'
 
 export type PipelineEvent =
   | { stage: 'plan'; status: 'started' }
+  | { stage: 'references'; status: 'started'; total: number }
+  | { stage: 'references'; status: 'done'; style: number; subject: number; content: number; usedAi: boolean; skipped: string[] }
   | { stage: 'plan'; status: 'creative'; platform: PlatformId; styleHint: StyleFamily; durationHintSec: number; look: 'documentary' | 'infographic'; reason: string }
   | {
       stage: 'plan'
@@ -567,11 +583,25 @@ export class Orchestrator {
         styleHint: opts.styleHint,
         durationHintSec: opts.durationHintSec,
         sceneCount: opts.sceneCount,
-        sceneSec: opts.sceneSec
+        sceneSec: opts.sceneSec,
+        videoBrief: opts.video
       })
     } catch (err) {
       this.store.setStatus(projectId, 'error', String(err))
       throw err
+    }
+    // a reference video's rhythm: pace, captions, music energy, accents
+    if (opts.video) {
+      spec = applyVideoBrief(spec, opts.video)
+      this.store.appendEvent(projectId, `video reference: ${opts.video.pacing} pace${opts.video.title ? ` · ${opts.video.title}` : ''}`)
+    }
+    // pictures the person attached: stored, read, and later placed by the app
+    if (opts.references?.length) spec = await this.runReferences(projectId, spec, opts.prompt, opts.references, emit)
+    // the person's brand kit: its colors and logo are applied by the app, never by a model
+    const brand = opts.brand?.(this.store.dir(projectId)) ?? null
+    if (brand) {
+      spec = applyBrand({ ...spec, brand })
+      this.store.appendEvent(projectId, `brand: ${brand.name}${brand.logo ? ' · logo' : ''}${brand.colors ? ` · ${brand.colors.primary}` : ''}`)
     }
     // rename project folder title now that we have a real title
     const meta = this.store.readMeta(projectId)
@@ -647,6 +677,33 @@ export class Orchestrator {
 
   // ---------------- shared stage implementations (used by generate + resume) ----------------
 
+  /**
+   * Prepare references: check and store each picture, read the look of the
+   * style ones (one vision call counted in this video's cost; colors are also
+   * found locally), and keep what the director and composer need in the spec.
+   */
+  private async runReferences(projectId: string, spec: VideoSpec, prompt: string, inputs: RefInput[], emit: (e: PipelineEvent) => void): Promise<VideoSpec> {
+    emit({ stage: 'references', status: 'started', total: inputs.length })
+    const dir = this.store.dir(projectId)
+    const { refs, skipped } = await intakeRefs(inputs, dir)
+    for (const s of skipped) this.store.appendEvent(projectId, `references: left out ${s}`)
+    let next: VideoSpec = { ...spec, refs }
+    let usedAi = false
+    if (refs.length) {
+      const reading = await readReferences(this.visionProviderFor(), refs, dir, prompt).catch(() => null)
+      usedAi = Boolean(reading?.usedAi)
+      if (reading) {
+        next = { ...next, refs: refs.map((r) => ({ ...r, about: reading.about.get(r.id) ?? r.about })), styleBrief: reading.brief }
+        next.palette = paletteWithStyle(next.palette, reading.brief)
+      }
+      this.store.appendEvent(projectId, `references: ${refs.length} picture(s)${next.styleBrief ? ` · look ${next.styleBrief.palette.join(' ')}${next.styleBrief.mood ? ` · ${next.styleBrief.mood}` : ''}` : ''}${usedAi ? '' : ' · read on this computer'}`)
+    }
+    this.store.saveSpec(projectId, next)
+    const count = (role: string) => next.refs.filter((r) => r.role === role).length
+    emit({ stage: 'references', status: 'done', style: count('style'), subject: count('subject'), content: count('content'), usedAi, skipped })
+    return next
+  }
+
   private async runCustomScenes(
     projectId: string,
     spec: VideoSpec,
@@ -665,7 +722,8 @@ export class Orchestrator {
       if (isometricOnly) throw new Error('Isometric animation requires a configured writing model')
       return spec
     }
-    const ids = isometricOnly && targeted ? [...targeted.keys()] : isometricOnly ? spec.scenes.filter(s => !spec.customVideos?.some(c => c.sceneId === s.id && /^assets\/custom\/[A-Za-z0-9._-]+\.mp4$/.test(c.file) && existsSync(join(this.store.dir(projectId), c.file)))).map(s => s.id) : targeted ? [...targeted.keys()] : await chooseCustomScenes(provider.id === 'mock' ? coder : provider, spec, prompt)
+    const hasMedia = new Set(spec.crafts.filter((c) => c.media).map((c) => c.sceneId))
+    const ids = isometricOnly && targeted ? [...targeted.keys()] : isometricOnly ? spec.scenes.filter(s => !spec.customVideos?.some(c => c.sceneId === s.id && /^assets\/custom\/[A-Za-z0-9._-]+\.mp4$/.test(c.file) && existsSync(join(this.store.dir(projectId), c.file)))).map(s => s.id) : targeted ? [...targeted.keys()] : (await chooseCustomScenes(provider.id === 'mock' ? coder : provider, spec, prompt)).filter((id) => !hasMedia.has(id))
     if (!ids.length) return spec
     emit({ stage: 'custom', status: 'started', total: ids.length })
     const dir = this.store.dir(projectId)
@@ -883,8 +941,13 @@ export class Orchestrator {
     const design = spec.design ?? (await director.directFilm(spec))
     if (!spec.design) emit({ stage: 'direct', status: 'film', look: design.look, series: design.series })
     const previous = new Map(spec.crafts.map((c) => [c.sceneId, c]))
-    let next: VideoSpec = { ...spec, design }
+    // a brand kit's accents replace the film director's (made readable on the film's backdrop)
+    let next: VideoSpec = applyBrand({ ...spec, design })
     next = { ...next, crafts: await director.directScenes(next, design, only?.notes, only?.ids) }
+    // reference pictures take their scenes (again after any scene is re-directed)
+    next = { ...next, crafts: placeReferences(next) }
+    // scenes with nothing behind them get varied procedural backgrounds, never the same twice in a row
+    next = { ...next, crafts: varyBackgrounds(next) }
     // the engine's call: which motion requests become moving clips (budgeted per film)
     next.crafts = pickClipScenes(next.crafts, next.scenes.reduce((t, s) => t + s.durationSec, 0))
     // money guard: finished plates survive re-direction — an unchanged (or, on
@@ -1185,12 +1248,13 @@ export class Orchestrator {
     })
     // audio is enhancement-only: any failure degrades to a silent video
     const musicFile = this.media
-      ? await this.media.music(spec, acc, projectId).catch((e: Error) => {
+      ? await this.media.music(spec, acc + brandTailSec(spec), projectId).catch((e: Error) => {
           this.store.appendEvent(projectId, `music: built-in score (${e.message.slice(0, 120)})`)
           return null
         })
       : null
-    const audio = await buildAudio(spec, sceneWindows, this.store.dir(projectId), musicDir, musicFile).catch((e: Error) => {
+    // the closing logo card plays after the last scene; the music carries through it
+    const audio = await buildAudio(spec, sceneWindows, this.store.dir(projectId), musicDir, musicFile, brandTailSec(spec)).catch((e: Error) => {
       this.store.appendEvent(projectId, `audio: silent (${e.message.slice(0, 120)})`)
       return { clips: [], captions: [], hasNarration: false }
     })
@@ -1304,6 +1368,8 @@ export class Orchestrator {
         userPrompt: meta.prompt,
         platform: meta.platform as VideoSpec['platform']
       })
+      const brand = readProjectBrand(this.store.dir(projectId))
+      if (brand) spec = applyBrand({ ...spec, brand })
       const fresh = this.store.readMeta(projectId)
       if (fresh) {
         fresh.title = spec.title

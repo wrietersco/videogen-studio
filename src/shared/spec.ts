@@ -174,6 +174,76 @@ export const Plate = z.object({
 })
 export type Plate = z.infer<typeof Plate>
 
+// ---------------- reference images (phase 2) ----------------
+
+export const RefRole = z.enum(['style', 'subject', 'content'])
+export type RefRole = z.infer<typeof RefRole>
+
+/** a picture the person attached to this video; the file lives in the project's assets/refs folder */
+export const RefImage = z.object({
+  id: z.string().regex(/^ref-\d{1,2}$/),
+  role: RefRole,
+  file: z.string().regex(/^assets\/refs\/ref-\d{1,2}\.(jpg|png)$/),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  /** a cut-out with a transparent background (a product shot, say) */
+  alpha: z.boolean().default(false),
+  /** the file's original name, for display */
+  name: z.string().max(80).default(''),
+  /** the person's own words: what this is */
+  note: z.string().max(80).default(''),
+  /** one short line from the vision model (or empty): what the picture shows */
+  about: z.string().max(160).default('')
+})
+export type RefImage = z.infer<typeof RefImage>
+
+/** the look read from the style images: feeds the film director and the painted plates */
+export const StyleBrief = z.object({
+  palette: z.array(z.string().regex(/^#[0-9a-f]{6}$/i)).max(5).default([]),
+  mood: z.string().max(120).default(''),
+  composition: z.string().max(160).default(''),
+  lighting: z.string().max(100).default(''),
+  /** art direction sentence appended to every painted plate */
+  imageStyle: z.string().max(300).default(''),
+  /** where it came from: the vision model, or just the colors found on this computer */
+  source: z.enum(['vision', 'local']).default('local')
+})
+export type StyleBrief = z.infer<typeof StyleBrief>
+
+/**
+ * What the person's reference video taught the app, kept abstract on purpose:
+ * rhythm, structure and mood. Never its script, footage or music. The person
+ * sees and edits this before it is used.
+ */
+export const VideoBrief = z.object({
+  source: z.enum(['youtube', 'file']),
+  url: z.string().max(200).default(''),
+  title: z.string().max(120).default(''),
+  durationSec: z.number().min(0).default(0),
+  /** how fast it cuts: measured on a file, estimated by the AI for a link */
+  cutsPerMinute: z.number().min(0).max(240).default(0),
+  pacing: z.enum(['calm', 'standard', 'energetic', 'frantic']),
+  hook: z.enum(['question', 'statement', 'stat', 'story', 'visual']).default('statement'),
+  /** the beats it moves through, in a few words each: ["hook", "problem", "demo", "call to action"] */
+  structure: z.array(z.string().max(60)).max(8).default([]),
+  captions: z.enum(['big', 'small', 'none']).default('small'),
+  musicEnergy: z.enum(['low', 'medium', 'high']).default('medium'),
+  palette: z.array(z.string().regex(/^#[0-9a-f]{6}$/i)).max(5).default([]),
+  notes: z.string().max(300).default('')
+})
+export type VideoBrief = z.infer<typeof VideoBrief>
+
+/** a reference picture placed in one scene as the picture itself, never redrawn by a model */
+export const CraftMedia = z.object({
+  refId: z.string(),
+  file: z.string().regex(/^assets\/refs\/ref-\d{1,2}\.(jpg|png)$/),
+  /** cover = full-bleed photo · frame = screenshot in a window frame · float = cut-out over the grid */
+  fit: z.enum(['cover', 'frame', 'float']),
+  width: z.number().int().positive(),
+  height: z.number().int().positive()
+})
+export type CraftMedia = z.infer<typeof CraftMedia>
+
 const num = z.number()
 /** Premium parametric widgets — the director only picks one and fills its data. */
 export const Widget = z.discriminatedUnion('type', [
@@ -191,9 +261,15 @@ export const Widget = z.discriminatedUnion('type', [
 ])
 export type Widget = z.infer<typeof Widget>
 
+/** procedural background art for scenes with no picture behind them (static vector, cheap to render) */
+export const BgStyle = z.enum(['grid', 'contours', 'rings', 'rays', 'blueprint', 'waves', 'spotlight'])
+export type BgStyle = z.infer<typeof BgStyle>
+
 export const SceneCraft = z.object({
   sceneId: z.string(),
   background: z.enum(['grid', 'plate']).default('grid'),
+  /** which procedural background a grid scene wears (assigned by the app, not the director) */
+  bgStyle: BgStyle.default('grid'),
   plate: Plate.optional(),
   /** on-screen headline (≤ 9 words) and the one word painted in the accent */
   headline: z.string().max(90),
@@ -211,6 +287,8 @@ export const SceneCraft = z.object({
   /** kinetic caption, lit word by word; keyWord is painted in the accent */
   caption: z.string().max(140).default(''),
   keyWord: z.string().max(24).default(''),
+  /** a reference picture shown as itself in this scene (placed by the app, never chosen by a model) */
+  media: CraftMedia.optional(),
   /** critic verdict (filled by the vision critic, informational) */
   review: z.object({ score: z.number(), notes: z.array(z.string()) }).optional()
 })
@@ -230,6 +308,23 @@ export const VoiceTake = z.object({
   words: z.array(z.object({ word: z.string(), startSec: z.number(), endSec: z.number() })).default([])
 })
 export type VoiceTake = z.infer<typeof VoiceTake>
+
+const Hex = z.string().regex(/^#[0-9a-f]{6}$/i)
+const BrandFile = z.string().regex(/^assets\/brand\/[A-Za-z0-9._-]+\.png$/)
+
+/** the brand kit chosen for this video: placed by the composer, never drawn by a model */
+export const SpecBrand = z.object({
+  kitId: z.string().max(60),
+  name: z.string().max(60),
+  tagline: z.string().max(60).default(''),
+  colors: z.object({ primary: Hex, secondary: Hex.optional() }).optional(),
+  fonts: z.object({ display: z.string().max(40).optional(), body: z.string().max(40).optional() }).optional(),
+  /** project-relative transparent PNGs: one for dark backgrounds, one for light */
+  logo: z.object({ onDark: BrandFile, onLight: BrandFile, aspect: z.number().positive() }).optional(),
+  watermark: z.enum(['off', 'top-left', 'top-right']).default('top-right'),
+  endCard: z.boolean().default(true)
+})
+export type SpecBrand = z.infer<typeof SpecBrand>
 
 export const VideoSpec = z.object({
   schemaVersion: z.literal(1).default(1),
@@ -269,6 +364,13 @@ export const VideoSpec = z.object({
   voiceover: z.array(VoiceTake).default([]),
   /** directed mode: film design system + per-scene crafts (absent = classic template scenes) */
   design: FilmDesign.optional(),
+  /** brand kit in effect (absent = unbranded) */
+  brand: SpecBrand.optional(),
+  /** reference pictures attached to this video, and the look read from the style ones */
+  refs: z.array(RefImage).default([]),
+  styleBrief: StyleBrief.optional(),
+  /** the rhythm and structure learned from a reference video (confirmed by the person) */
+  videoBrief: VideoBrief.optional(),
   crafts: z.array(SceneCraft).default([]),
   /** Model-authored vector scenes; markup is validated before use. */
   customScenes: z.array(z.object({ sceneId: z.string(), svg: z.string().max(100000) })).optional(),

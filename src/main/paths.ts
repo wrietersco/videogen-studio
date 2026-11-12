@@ -39,6 +39,8 @@ export const isPackaged =
 export const projectsDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'projects') : resolve(appRoot, 'projects')
 /** the user's asset library (generated, uploaded, downloaded) — outlives projects */
 export const libraryDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'library') : resolve(appRoot, 'library')
+/** brand kits (logos, colors) — kept apart from the library so logos are never in share packs */
+export const brandDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'brand') : resolve(appRoot, 'brand')
 /** read-only starter pack shipped with the app */
 export const builtinPackDir = resolve(appRoot, 'resources', 'asset-pack')
 /** footage projects: indexes, keyframes and rendered edits (the user's own video folders stay where they are) */
