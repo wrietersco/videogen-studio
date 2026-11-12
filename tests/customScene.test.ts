@@ -16,6 +16,16 @@ import sharp from 'sharp'
 const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#123456"/><g id="motion1"><circle cx="50" cy="50" r="20" fill="#fff"/></g></svg>'
 
 describe('custom scene authoring', () => {
+  it('fails before authoring if the selected isometric reviewer cannot see', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'isometric factory', platform: 'tiktok' })
+    const store = new ProjectStore(mkdtempSync(join(tmpdir(), 'isometric-no-vision-')))
+    const project = store.create('isometric factory', 'test')
+    const generateText = vi.fn()
+    const provider = { id: 'deepseek', supportsVision: () => false, generateText } as unknown as LLMProvider
+    const orch = new Orchestrator(store, () => provider, () => null, null, () => provider, () => provider)
+    await expect((orch as any).runCustomScenes(project.id, spec, 'isometric factory', { clips: [], captions: [] }, () => {}, undefined, true)).rejects.toThrow('selected image-review model cannot inspect images')
+    expect(generateText).not.toHaveBeenCalled()
+  })
   it('preserves the mixed soundtrack when a scene revision reads the composition', () => {
     const html = '<audio id="audio-clip-1" class="clip" src="assets/audio/mix.m4a" data-start="0" data-duration="40.00" data-track-index="0" data-volume="1"></audio>'
     expect(extractAudioLayer(html).clips).toEqual([{ file: 'assets/audio/mix.m4a', startSec: 0, durationSec: 40, trackIndex: 0, volume: 1 }])

@@ -116,7 +116,7 @@ describe('DeepSeek adapter', () => {
     expect(bodies[1].model).toBe('deepseek-flash')
   })
 
-  it('sends visual judgements to the model that can see, and keeps writing on the chosen model', async () => {
+  it('never substitutes another model for visual review', async () => {
     const bodies: Array<Record<string, unknown>> = []
     vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
       bodies.push(JSON.parse(String(init?.body)))
@@ -125,10 +125,11 @@ describe('DeepSeek adapter', () => {
     const pro = new DeepseekProvider(() => 'k', () => 'deepseek-v4-pro')
     const image = [{ mimeType: 'image/jpeg', base64: 'AAAA' }]
     const schema = { system: 's', prompt: 'p', schemaName: 'Review', jsonSchema: { type: 'object' } }
-    await pro.generateJSON({ ...schema, images: image })
+    await expect(pro.generateJSON({ ...schema, images: image })).rejects.toThrow('cannot review images')
     await pro.generateJSON(schema)
-    await pro.generateText({ system: 's', prompt: 'write the code', images: image })
-    expect(bodies.map((b) => b.model)).toEqual(['deepseek-flash', 'deepseek-v4-pro', 'deepseek-v4-pro'])
+    await expect(pro.generateText({ system: 's', prompt: 'write the code', images: image })).rejects.toThrow('cannot review images')
+    expect(bodies.map((b) => b.model)).toEqual(['deepseek-v4-pro'])
+    expect(pro.supportsVision()).toBe(false)
   })
 
   it('maps a 401 to an auth ProviderError', async () => {

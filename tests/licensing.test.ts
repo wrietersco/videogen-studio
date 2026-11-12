@@ -17,8 +17,17 @@ import { createApp } from '../server/src/app'
 import { devVerifier, hashKey, newLicenseKey, LICENSE_KEY_RE } from '../server/src/auth'
 import { MemoryStore } from '../server/src/memoryStore'
 import { matchRoute, meterCall } from '../server/src/upstream'
+import { aiVideosLeft } from '../src/renderer/src/aiAllowance'
 
 const NOW = new Date('2026-11-15T12:00:00Z')
+describe('Create screen AI allowance', () => {
+  it('preserves unlimited plans while blocking unavailable or exhausted allowances', () => {
+    expect(aiVideosLeft({ aiVideosLeft: null })).toBeNull()
+    expect(aiVideosLeft({ aiVideosLeft: 0 })).toBe(0)
+    expect(aiVideosLeft({ aiVideosLeft: 3 })).toBe(3)
+    expect(aiVideosLeft(undefined)).toBe(0)
+  })
+})
 const acct = (over: Partial<Account> = {}): Account => ({ uid: 'u1', email: 'a@b.co', emailVerified: true, status: 'active', licenseId: null, trialEndsAt: null, ...over })
 const lic = (over: Partial<License> = {}): License => ({ id: 'lic_1', plan: 'pro', seats: 1, status: 'active', paidThrough: null, allowOwnKeys: false, ...over })
 const usage = (over: Partial<MonthUsage> = {}): MonthUsage => ({ month: '2026-11', videoKeys: [], costUsd: 0, utilityByDay: {}, ...over })
@@ -356,6 +365,28 @@ describe('desktop access', () => {
 })
 
 // ---------------- desktop: Google sign-in hand-off ----------------
+
+describe('saved account startup', () => {
+  it('restores an encrypted session after the operating system keychain becomes ready', async () => {
+    const { mkdtempSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { AccountSession } = await import('../src/main/license/session')
+    const dir = mkdtempSync(join(tmpdir(), 'vg-account-reload-'))
+    writeFileSync(join(dir, 'account.json'), JSON.stringify({ email: 'test@example.invalid', uid: 'test-user', refreshToken: 'enc:fixture', deviceId: 'device-test', view: null }))
+    let ready = false
+    const session = new AccountSession({
+      dir, appVersion: 'test', encrypt: s => s,
+      decrypt: () => { if (!ready) throw new Error('keychain unavailable'); return 'fixture-token' },
+      onChange: () => undefined, openExternal: () => undefined
+    })
+    expect(session.signedIn).toBe(false)
+    ready = true
+    session.reload()
+    expect(session.signedIn).toBe(true)
+    expect(session.status().email).toBe('test@example.invalid')
+  })
+})
 
 describe('Google sign-in hand-off', () => {
   it('accepts the session only from the page that knows this attempt\'s state', async () => {

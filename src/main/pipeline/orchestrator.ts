@@ -716,6 +716,11 @@ export class Orchestrator {
     const provider = this.providerFor()
     const coder = this.codeProviderFor()
     const vision = this.visionProviderFor()
+    if (vision.supportsVision?.() === false) {
+      if (isometricOnly) throw new Error('The selected image-review model cannot inspect images. Choose an image-capable model for that role in Settings; your choices were not changed.')
+      this.store.appendEvent(projectId, 'custom scenes skipped: selected image-review model cannot inspect images')
+      return spec
+    }
     // the writer may be the free engine while a real code model authors the
     // scenes (programmatic runs on own keys) — the gate is the code model
     if (coder.id === 'mock') {
