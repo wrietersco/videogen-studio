@@ -125,3 +125,37 @@ describe('review edits', () => {
     expect(reviewBeats(signIn, false)[0].removable).toBe(false)
   })
 })
+
+describe('saved steps and reference looks', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'vg-store2-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('keeps the steps of a finished video with the app and forgets them with it', () => {
+    const store = new AppReconStore(dir, seal)
+    const app = store.save(input())
+    expect(store.get(app.id)?.hasPlan).toBe(false)
+    expect(store.plan(app.id)).toBeNull()
+    const plan = { playbook: { version: 1, title: 't', startUrl: 'https://app.example.com/', steps: [] }, beats: [], loginFocus: false, notes: ['n'] } as never
+    store.savePlan(app.id, plan)
+    expect(store.get(app.id)?.hasPlan).toBe(true)
+    expect(store.list()[0].hasPlan).toBe(true)
+    expect(store.plan(app.id)).toMatchObject({ notes: ['n'] })
+    store.remove(app.id)
+    expect(existsSync(join(dir, 'plans', `${app.id}.json`))).toBe(false)
+  })
+
+  it('accepts up to three reference pictures and one video, and drops junk', () => {
+    const v = validateApp({ url: 'https://a.example.com', signIn: 'none', styleImages: ['a.png', 'b.png', 'c.png', 'd.png', 5, ''], styleVideo: 'v.mp4' })
+    expect(v.ok && v.value.styleImages).toEqual(['a.png', 'b.png', 'c.png'])
+    expect(v.ok && v.value.styleVideo).toBe('v.mp4')
+    const none = validateApp({ url: 'https://a.example.com', signIn: 'none' })
+    expect(none.ok && none.value.styleImages).toEqual([])
+  })
+
+  it('an app saved before looks existed still lists with an empty look', () => {
+    const store = new AppReconStore(dir, seal)
+    const app = store.save(input())
+    expect(store.get(app.id)?.styleImages).toEqual([])
+  })
+})

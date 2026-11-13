@@ -52,11 +52,16 @@ export interface AppInput {
   reviewFirst: boolean
   /** a brand kit whose logo and colour go on a launch film's cards ('' = none) */
   brandId?: string
+  /** reference pictures (up to 3) whose colours steer the backdrop and cards, and one reference video whose pace steers the music */
+  styleImages: string[]
+  styleVideo?: string
 }
 
 export interface SavedApp extends Omit<AppInput, 'password'> {
   id: string
   hasPassword: boolean
+  /** the steps of the last finished video are kept, so a later run can reuse them */
+  hasPlan?: boolean
   createdAt: string
   updatedAt: string
   lastRunAt?: string
@@ -171,7 +176,9 @@ export function validateApp(raw: unknown): { ok: true; value: AppInput } | { ok:
       targetSec: Number.isFinite(target) ? Math.max(20, Math.min(120, Math.round(target))) : 44,
       useAi: r.useAi !== false,
       reviewFirst: r.reviewFirst === true,
-      brandId: typeof r.brandId === 'string' && /^[\w-]{1,60}$/.test(r.brandId) ? r.brandId : undefined
+      brandId: typeof r.brandId === 'string' && /^[\w-]{1,60}$/.test(r.brandId) ? r.brandId : undefined,
+      styleImages: (Array.isArray(r.styleImages) ? r.styleImages : []).filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length < 600).slice(0, 3),
+      styleVideo: typeof r.styleVideo === 'string' && r.styleVideo.length > 0 && r.styleVideo.length < 600 ? r.styleVideo : undefined
     }
   }
 }

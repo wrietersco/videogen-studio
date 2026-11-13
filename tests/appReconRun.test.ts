@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { findChrome } from '../src/main/appRecon/browser'
+import { canShowWindow, findChrome } from '../src/main/appRecon/browser'
 import { planBeats } from '../src/main/appRecon/planner'
 import { runAppRecording, type RunHooks, type RunInput } from '../src/main/appRecon/run'
 import { DEMO_PASS, OTP_USER, startAppSite, type AppSite, DEMO_USER } from './fixtures/appSite'
@@ -126,6 +126,49 @@ describe.skipIf(!findChrome())('a whole run against the test web app', () => {
     expect(out.actions).toBeLessThan(40)
     expect(['done', 'pages', 'actions']).toContain(out.stoppedBy)
   }, 120000)
+
+  it('reuses saved steps: a moved button is found by its name, a vanished one is left out, and nothing is explored', async () => {
+    const first = await runAppRecording(base('reuse-src', { context: 'Show the dashboard and the customers' }), hooks())
+    const plan = structuredClone(first.plan)
+    plan.beats.push({ beat: 99, kind: 'page', chapter: 'Stats', facts: ['The stats button is pressed'], fallback: 'Stats load.' })
+    plan.playbook.steps.push(
+      { id: 'x1', beat: 99, kind: 'goto', url: `${site.url}/app` },
+      { id: 'x2', beat: 99, kind: 'click', selector: '#button-that-moved', label: 'Load stats' },
+      { id: 'x3', beat: 99, kind: 'click', selector: '#button-that-vanished', label: 'Nonexistent thing' }
+    )
+    const loginsBefore = site.state.logins
+    const out = await runAppRecording(base('reuse', { reuse: plan }), hooks())
+    expect(out.pages).toBeLessThanOrEqual(1) // the app was not explored again
+    expect(site.state.logins - loginsBefore).toBe(1) // one sign-in for the check; the recording's own is the second
+    const notes = out.plan.notes.join('\n')
+    expect(notes).toContain('Repaired:')
+    expect(notes).toMatch(/x2.*Load stats.*#stats/)
+    expect(notes).toMatch(/x3.*Nonexistent thing.*left out/)
+    const steps = out.plan.playbook.steps
+    expect(steps.find((x) => x.id === 'x2')?.selector).toBe('#stats')
+    expect(steps.some((x) => x.id === 'x3')).toBe(false)
+    expect(steps.filter((x) => x.beat === 0).length).toBe(first.plan.playbook.steps.filter((x) => x.beat === 0).length) // the sign-in steps are untouched
+  }, 180000)
+
+  it('reusing steps that all still work changes nothing', async () => {
+    const first = await runAppRecording(base('reuse-ok-src', { context: 'Show the dashboard' }), hooks())
+    const out = await runAppRecording(base('reuse-ok', { reuse: first.plan }), hooks())
+    expect(out.plan.notes.join(' ')).toContain('still work')
+    expect(out.plan.playbook.steps.map((x) => x.id)).toEqual(first.plan.playbook.steps.map((x) => x.id))
+  }, 180000)
+
+  it.skipIf(!canShowWindow())('Take over: a visible window opens with the same session, and the run carries on after Done', async () => {
+    const reasons: string[] = []
+    const h: RunHooks = {
+      progress: () => undefined,
+      handoff: async (info) => {
+        reasons.push(info.reason)
+      }
+    }
+    const out = await runAppRecording(base('takeover', { control: { takeover: true }, stopAfter: 'explore' }), h)
+    expect(reasons).toContain('takeover')
+    expect(out.pages).toBeGreaterThanOrEqual(3) // exploring went on afterwards
+  }, 180000)
 
   it('records the planned steps with the real engine and finds nothing unblurred (no video made here)', async () => {
     const out = await runAppRecording(base('record', { context: 'Show the dashboard', stopAfter: 'record' }), hooks())

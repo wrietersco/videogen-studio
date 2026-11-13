@@ -33,23 +33,25 @@ interface Form {
   useAi: boolean
   reviewFirst: boolean
   brandId: string
+  styleImages: string[]
+  styleVideo: string
 }
 
 const blank = (): Form => ({
   name: '', url: '', context: '', document: null, signIn: 'saved', username: '', password: '', hasPassword: false, guardrailText: '', checks: { ...DEFAULT_CHECKS }, depth: 'standard',
-  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, useAi: true, reviewFirst: false, brandId: ''
+  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, useAi: true, reviewFirst: false, brandId: '', styleImages: [], styleVideo: ''
 })
 
 const fromApp = (a: SavedApp): Form => ({
   id: a.id, name: a.name, url: a.url, context: a.context, document: a.document ?? null, signIn: a.signIn, username: a.username ?? '', password: '', hasPassword: a.hasPassword, guardrailText: a.guardrailText,
   checks: a.checks, depth: a.depth, revealUsername: a.revealUsername, mode: a.mode, feature: a.launch?.feature ?? '', tagline: a.launch?.tagline ?? 'Simple. Fast. Safe.', closing: a.launch?.closing ?? 'Try it today',
-  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, useAi: a.useAi, reviewFirst: a.reviewFirst, brandId: a.brandId ?? ''
+  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, useAi: a.useAi, reviewFirst: a.reviewFirst, brandId: a.brandId ?? '', styleImages: a.styleImages ?? [], styleVideo: a.styleVideo ?? ''
 })
 
 const toInput = (f: Form): AppInput => ({
   id: f.id, name: f.name, url: f.url, context: f.context, document: f.document, signIn: f.signIn, username: f.username || undefined, password: f.password || undefined, guardrailText: f.guardrailText,
   checks: f.checks, depth: f.depth, revealUsername: f.revealUsername, mode: f.mode,
-  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, useAi: f.useAi, reviewFirst: f.reviewFirst, brandId: f.brandId || undefined
+  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, useAi: f.useAi, reviewFirst: f.reviewFirst, brandId: f.brandId || undefined, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined
 })
 
 const STAGES: Array<{ id: string; label: string }> = [
@@ -129,11 +131,19 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
     }
   }
 
+  const [reuse, setReuse] = useState(false)
+  const pickStyle = async (kind: 'images' | 'video') => {
+    const r = await api.appRec.pickStyle(kind)
+    if (!r.ok) return
+    if (kind === 'images') set('styleImages', [...new Set([...form.styleImages, ...r.paths])].slice(0, 3))
+    else set('styleVideo', r.paths[0] ?? '')
+  }
+
   const make = async () => {
     const app = await save()
     if (!app) return
     setLive(null)
-    const r = await api.appRec.start(app.id)
+    const r = await api.appRec.start(app.id, { reuse: reuse && !!app.hasPlan })
     if (!r.ok) setError(r.error)
   }
 
@@ -262,6 +272,23 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
             )}
           </Section>
 
+          <Section icon="🎨" title="Look (optional)" hint="Reference pictures steer the colours of the backdrop and cards; a reference video steers the pace of the music. They are read on this computer and never uploaded.">
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={() => pickStyle('images')} disabled={form.styleImages.length >= 3} className="btn-ghost !px-3 !py-1 !text-xs">🖼️ Add pictures</button>
+              <button onClick={() => pickStyle('video')} className="btn-ghost !px-3 !py-1 !text-xs">🎞️ Pick a video</button>
+              {form.styleImages.map((f) => (
+                <span key={f} className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-ink/70">
+                  {f.split(/[\\/]/).pop()} <button aria-label={`Remove ${f}`} onClick={() => set('styleImages', form.styleImages.filter((x) => x !== f))} className="ml-1 text-ink/40">×</button>
+                </span>
+              ))}
+              {form.styleVideo && (
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-ink/70">
+                  🎞️ {form.styleVideo.split(/[\\/]/).pop()} <button aria-label="Remove the video" onClick={() => set('styleVideo', '')} className="ml-1 text-ink/40">×</button>
+                </span>
+              )}
+            </div>
+          </Section>
+
           <Section icon="🛡️" title="Restrictions (optional)" hint="Nothing is restricted unless you tick it or type a rule. Rules we cannot check automatically are shown back to you.">
             {noRestrictions && (
               <div className="mb-3 rounded-xl bg-sunny-soft px-3 py-2 text-xs font-semibold text-ink/80">
@@ -298,6 +325,12 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
             <label className="mt-2 flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.reviewFirst} onChange={(e) => set('reviewFirst', e.target.checked)} /> Let me review the steps before recording
             </label>
+            {apps.find((a) => a.id === form.id)?.hasPlan && (
+              <label className="mt-2 flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={reuse} onChange={(e) => setReuse(e.target.checked)} /> Reuse the steps from the last video{' '}
+                <span className="text-xs text-ink/50">(faster; only steps that no longer work are repaired, and the others are left alone)</span>
+              </label>
+            )}
           </Section>
         </div>
 
@@ -327,7 +360,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
           )}
         </div>
 
-        {live && <RunPanel live={live} onClose={() => setLive(null)} onReviewAnswered={() => setLive((l) => (l ? { ...l, review: null } : l))} />}
+        {live && <RunPanel live={live} onClose={() => setLive(null)} onReviewAnswered={() => setLive((l) => (l ? { ...l, review: null } : l))} onHandoffDone={() => setLive((l) => (l ? { ...l, handoff: null } : l))} />}
 
         {myRuns.length > 0 && (
           <div className="mt-8">
@@ -351,7 +384,22 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
   )
 }
 
-function RunPanel({ live, onClose, onReviewAnswered }: { live: Live; onClose: () => void; onReviewAnswered: () => void }) {
+/** asks the engine to hand over the browser at the next page; it opens a window with the same session */
+function TakeOver() {
+  const [asked, setAsked] = useState(false)
+  return (
+    <button
+      disabled={asked}
+      title="Opens a browser window with the same session so you can open a page or sort something out yourself, then press Done"
+      onClick={() => { setAsked(true); void api.appRec.takeover() }}
+      className="btn-ghost !px-3 !py-1 !text-xs"
+    >
+      {asked ? '✋ Taking over after this page…' : '✋ Take over'}
+    </button>
+  )
+}
+
+function RunPanel({ live, onClose, onReviewAnswered, onHandoffDone }: { live: Live; onClose: () => void; onReviewAnswered: () => void; onHandoffDone: () => void }) {
   const idx = STAGES.findIndex((s) => s.id === live.stage)
   const done = live.result
   return (
@@ -359,6 +407,7 @@ function RunPanel({ live, onClose, onReviewAnswered }: { live: Live; onClose: ()
       <div className="flex items-center gap-3">
         <div className="text-base font-black">{done ? (done.status === 'done' ? '✅ Your video is ready' : done.status === 'cancelled' ? '⏹️ Stopped' : '⚠️ It did not finish') : '🤖 The app is driving a browser'}</div>
         <div className="flex-1" />
+        {!done && live.stage === 'explore' && !live.handoff && <TakeOver />}
         {!done && <button onClick={() => api.appRec.cancel()} className="btn-ghost !px-3 !py-1 !text-xs">⏹ Stop</button>}
         {done && <button onClick={onClose} className="btn-ghost !px-3 !py-1 !text-xs">Close</button>}
       </div>
@@ -379,7 +428,7 @@ function RunPanel({ live, onClose, onReviewAnswered }: { live: Live; onClose: ()
         <div className="mt-4 rounded-xl bg-sunny-soft px-4 py-3">
           <div className="text-sm font-bold">👋 We need you</div>
           <div className="mt-1 text-sm">{live.handoff}</div>
-          <button onClick={() => api.appRec.handoffDone()} className="btn-primary mt-3 !px-5 !py-2 !text-sm">✅ Done</button>
+          <button onClick={() => { void api.appRec.handoffDone(); onHandoffDone() }} className="btn-primary mt-3 !px-5 !py-2 !text-sm">✅ Done</button>
         </div>
       )}
 

@@ -4,6 +4,7 @@ import { join, resolve, sep } from 'node:path'
 import { isAppId, isRunId, validateApp, type ReviewEdits, type RunEvent, type RunRecord } from '../../shared/appRecording'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { applyReviewEdits, reviewBeats } from './planner'
+import { readStyle } from './style'
 import { RunCancelled, runAppRecording, type RunHooks, type RunInput, type RunOutput } from './run'
 import { meter } from '../usage/meter'
 import type { AppReconStore } from './store'
@@ -31,7 +32,7 @@ const MAX_DOC = 200 * 1024
 
 export function registerAppReconIpc(d: AppReconIpcDeps): void {
   const runner = d.runner ?? runAppRecording
-  let current: { runId: string; appId: string; abort: AbortController; handoff?: () => void; review?: (edits: ReviewEdits | null) => void } | null = null
+  let current: { runId: string; appId: string; abort: AbortController; handoff?: () => void; review?: (edits: ReviewEdits | null) => void; control: { takeover: boolean } } | null = null
   const fail = (err: unknown) => ({ ok: false as const, error: String((err as Error)?.message ?? err) })
   const send = (e: RunEvent) => d.emit('apprec:event', e)
   const notify = (title: string, body: string) => {
@@ -88,10 +89,32 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
     }
   })
 
-  ipcMain.handle('apprec:start', async (_e, id: unknown) => {
+  /** pick reference pictures or one reference video; only the paths are kept (the files stay where they are) */
+  ipcMain.handle('apprec:pickStyle', async (_e, kind: unknown) => {
+    const w = d.window()
+    const images = kind !== 'video'
+    const opts = {
+      properties: images ? (['openFile', 'multiSelections'] as Array<'openFile' | 'multiSelections'>) : (['openFile'] as Array<'openFile'>),
+      filters: images ? [{ name: 'Pictures', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] : [{ name: 'Video', extensions: ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi'] }]
+    }
+    const res = await (w ? dialog.showOpenDialog(w, opts) : dialog.showOpenDialog(opts))
+    if (res.canceled || !res.filePaths.length) return { ok: false as const, cancelled: true }
+    return { ok: true as const, paths: res.filePaths.map((p) => resolve(p)).slice(0, images ? 3 : 1) }
+  })
+
+  ipcMain.handle('apprec:takeover', () => {
+    if (!current) return false
+    current.control.takeover = true
+    return true
+  })
+
+  ipcMain.handle('apprec:start', async (_e, id: unknown, opts?: unknown) => {
     if (!isAppId(id)) return fail('Invalid app')
     const app = d.store.get(id)
     if (!app) return fail('That app no longer exists')
+    const reuse = !!(opts && typeof opts === 'object' && (opts as { reuse?: unknown }).reuse === true)
+    const savedPlan = reuse ? d.store.plan(id) : null
+    if (reuse && !savedPlan) return fail('There are no saved steps for this app yet. Make a video first.')
     if (current || d.isBusy()) return fail('Another job is running. Wait for it to finish, then try again.')
     const login = d.store.secrets(id)
     if (app.signIn === 'saved' && !login) return fail('Add the username and password first')
@@ -100,7 +123,8 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
 
     const rec = d.store.newRun(id)
     const abort = new AbortController()
-    current = { runId: rec.id, appId: id, abort }
+    const control = { takeover: false }
+    current = { runId: rec.id, appId: id, abort, control }
     d.setBusy(true)
     send({ kind: 'started', runId: rec.id, appId: id })
 
@@ -144,11 +168,27 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
       targetSec: app.targetSec,
       reviewFirst: app.reviewFirst,
       brand: app.mode === 'launch' && app.brandId ? (d.brand?.(app.brandId) ?? undefined) : undefined,
-      signal: abort.signal
+      signal: abort.signal,
+      reuse: savedPlan ?? undefined,
+      control
     }
-    const exec = () => {
+    let styleNotes: string[] = []
+    const exec = async () => {
       const p = useAi ? d.providers() : { chat: null, speech: null }
-      return runner({ ...base, chat: p.chat, speech: p.speech }, hooks)
+      // reference pictures and a reference video steer the colours and the music; a reading that fails never stops the run
+      let look: RunInput['look']
+      let musicMood: RunInput['musicMood']
+      if (app.styleImages.length || app.styleVideo) {
+        try {
+          const st = await readStyle(app.styleImages, app.styleVideo)
+          look = st.look
+          musicMood = st.musicMood
+          styleNotes = st.notes
+        } catch (err) {
+          styleNotes = [`The reference could not be used: ${String((err as Error)?.message ?? err)}`]
+        }
+      }
+      return runner({ ...base, chat: p.chat, speech: p.speech, look, musicMood }, hooks)
     }
 
     void (async () => {
@@ -170,6 +210,8 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
           enforced: out.enforced,
           advisory: out.advisory
         }
+        if (out.video) d.store.savePlan(id, out.plan)
+        record.notes = [...record.notes, ...styleNotes]
         d.store.saveRun(record)
         send({ kind: 'done', runId: rec.id, run: record })
         notify('Your app video is ready', app.name)

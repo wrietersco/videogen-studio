@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join, resolve, sep } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { isAppId, isRunId, type AppInput, type RunRecord, type SavedApp } from '../../shared/appRecording'
+import type { Plan } from './planner'
 
 /**
  * Saved apps and their runs, on this computer.
@@ -44,7 +45,24 @@ export class AppReconStore {
   }
 
   list(): SavedApp[] {
-    return this.readJson<SavedApp[]>(this.appsFile, []).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    return this.readJson<SavedApp[]>(this.appsFile, [])
+      .map((a) => ({ ...a, styleImages: a.styleImages ?? [], hasPlan: existsSync(this.planFile(a.id)) }))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  }
+
+  private planFile(id: string): string {
+    if (!isAppId(id)) throw new Error('Invalid app id')
+    return join(this.rootDir, 'plans', `${id}.json`)
+  }
+
+  /** the steps of the last finished video (already free of private data) */
+  plan(id: string): Plan | null {
+    return this.readJson<Plan | null>(this.planFile(id), null)
+  }
+
+  savePlan(id: string, plan: Plan): void {
+    mkdirSync(join(this.rootDir, 'plans'), { recursive: true })
+    writeFileSync(this.planFile(id), JSON.stringify(plan, null, 2))
   }
 
   get(id: string): SavedApp | null {
@@ -79,7 +97,7 @@ export class AppReconStore {
     }
     writeFileSync(this.appsFile, JSON.stringify([...apps.filter((a) => a.id !== id), app], null, 2))
     writeFileSync(this.secretsFile, JSON.stringify(secrets, null, 2))
-    return app
+    return { ...app, hasPlan: existsSync(this.planFile(id)) }
   }
 
   /** the stored login, decrypted: for the engine only, never sent to the screen */
@@ -100,6 +118,7 @@ export class AppReconStore {
     const secrets = this.readJson<Record<string, unknown>>(this.secretsFile, {})
     delete secrets[id]
     writeFileSync(this.secretsFile, JSON.stringify(secrets, null, 2))
+    rmSync(this.planFile(id), { force: true })
     for (const r of this.runs(id)) rmSync(this.runDir(r.id), { recursive: true, force: true })
   }
 

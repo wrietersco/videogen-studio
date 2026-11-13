@@ -90,6 +90,10 @@ export interface RunOptions {
   /** pace of the human-like motion; 0 = as fast as possible (rehearsal) */
   pace?: number
   log?: (msg: string) => void
+  /** a step whose target moved is pointed at the same-named control; one that is gone is dropped (a rehearsal of saved steps) */
+  repair?: boolean
+  /** called after each beat (the rehearsal looks at the page the beat ended on) */
+  afterBeat?: (beat: number) => Promise<void>
 }
 
 export interface RunResult {
@@ -99,6 +103,47 @@ export interface RunResult {
   navigations: Take['navigations']
   log: Take['log']
   redactionMisses: number
+  /** with repair on: the steps as they should be recorded, and what was changed */
+  playbook?: Playbook
+  repairs?: string[]
+}
+
+/** the control a saved step meant, found again by its name when its address in the page changed; null unless exactly one fits */
+async function findByLabel(page: Page, step: Step): Promise<string | null> {
+  const label = (step.label ?? '').trim()
+  if (!label) return null
+  return page.evaluate(
+    (want, isType) => {
+      const norm = (t: string) => t.replace(/\s+/g, ' ').trim().toLowerCase()
+      const shown = (el: Element) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 }
+      const path = (el: Element): string => {
+        if (el.id) return '#' + CSS.escape(el.id)
+        const name = el.getAttribute('name')
+        if (name && document.querySelectorAll(el.tagName.toLowerCase() + '[name="' + name + '"]').length === 1) return el.tagName.toLowerCase() + '[name="' + name + '"]'
+        const parts: string[] = []
+        for (let n: Element | null = el; n && n.nodeType === 1 && n !== document.body; n = n.parentElement) {
+          if (n.id) { parts.unshift('#' + CSS.escape(n.id)); break }
+          const same = Array.from(n.parentElement?.children ?? []).filter((c) => c.tagName === n!.tagName)
+          parts.unshift(n.tagName.toLowerCase() + (same.length > 1 ? ':nth-of-type(' + (same.indexOf(n) + 1) + ')' : ''))
+        }
+        return parts.join(' > ')
+      }
+      const nameOf = (el: Element): string => {
+        const i = el as HTMLInputElement
+        const lab = i.labels && i.labels[0] ? i.labels[0].innerText : ''
+        return norm(lab || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('name') || (el as HTMLElement).innerText || i.value || el.getAttribute('title') || '')
+      }
+      const pool = Array.from(document.querySelectorAll(isType ? 'input,select,textarea' : 'button,input[type=submit],input[type=button],a[href],[role=button]')).filter(shown)
+      const w = norm(want)
+      const exact = pool.filter((el) => nameOf(el) === w)
+      if (exact.length === 1) return path(exact[0])
+      if (exact.length > 1) return null
+      const part = pool.filter((el) => { const n = nameOf(el); return n && (n.includes(w) || w.includes(n)) })
+      return part.length === 1 ? path(part[0]) : null
+    },
+    label,
+    step.kind === 'type'
+  ).catch(() => null)
 }
 
 /** installs the cursor and redaction on every page this tab will ever open */
@@ -191,14 +236,32 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
     return null
   }
 
-  const beatIds = [...new Set(playbook.steps.map((s) => s.beat))].sort((a, b) => a - b)
+  const repairs: string[] = []
+  const dropped = new Set<string>()
+  const steps = o.repair ? playbook.steps.map((st) => ({ ...st, expect: st.expect ? { ...st.expect } : undefined })) : playbook.steps
+  /** where a step's target is now; 'gone' (repair mode only) when it cannot be found any more */
+  const locate = async (step: Step): Promise<Rect | 'gone' | null> => {
+    const r = await rectOf(step.selector!)
+    if (r || !o.repair) return r
+    const fixed = await findByLabel(page, step)
+    if (fixed) {
+      repairs.push(`${step.id}: "${step.label}" moved, now found as ${fixed}`)
+      step.selector = fixed
+      const again = await rectOf(fixed)
+      if (again) return again
+    }
+    repairs.push(`${step.id}: "${step.label ?? step.selector}" is no longer there, so that step is left out`)
+    dropped.add(step.id)
+    return 'gone'
+  }
+  const beatIds = [...new Set(steps.map((s) => s.beat))].sort((a, b) => a - b)
   for (const beat of beatIds) {
     const startedAt = t()
     const startMs = Date.now()
     let focus: (Rect & { zoom: number }) | undefined
     let focusKind: Step['focus']
     let focusRect: Rect | null = null
-    for (const step of playbook.steps.filter((s) => s.beat === beat)) {
+    for (const step of steps.filter((s) => s.beat === beat)) {
       try {
         if (step.kind === 'goto') {
           const url = step.url ?? playbook.startUrl
@@ -208,7 +271,9 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           await page.mouse.move(mouse.x, mouse.y) // the pointer reappears on the new page
           say(step.id, `opened ${url}`)
         } else if (step.kind === 'type' && step.selector) {
-          const r = await rectOf(step.selector)
+          const found = await locate(step)
+          if (found === 'gone') continue
+          const r = found
           if (!r) return { ok: false, failure: `${step.id}: could not find "${step.label ?? step.selector}"`, beats, navigations, log, redactionMisses: misses }
           await glide(r.x + Math.min(r.w * 0.5, 120), r.y + r.h / 2, 600)
           await sleep(180 * pace)
@@ -230,7 +295,9 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           focusRect = r
           focusKind = step.focus
         } else if (step.kind === 'click' && step.selector) {
-          const r = await rectOf(step.selector)
+          const found = await locate(step)
+          if (found === 'gone') continue
+          const r = found
           if (!r) return { ok: false, failure: `${step.id}: could not find "${step.label ?? step.selector}"`, beats, navigations, log, redactionMisses: misses }
           const info = await page.$eval(step.selector, (el) => {
             const h = el as HTMLElement
@@ -264,7 +331,11 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           await o.onHandoff?.(step)
         }
         const problem = await checkExpect(step)
-        if (problem) return { ok: false, failure: `${step.id}: ${problem}`, beats, navigations, log, redactionMisses: misses }
+        if (problem && o.repair) {
+          // a check that no longer holds must not stop the film: it is taken off the step
+          repairs.push(`${step.id}: ${problem}, so that check is left out`)
+          step.expect = undefined
+        } else if (problem) return { ok: false, failure: `${step.id}: ${problem}`, beats, navigations, log, redactionMisses: misses }
         await sleep(200 * pace)
         await verify(step.id)
         if (step.focus) focusKind = step.focus
@@ -296,6 +367,8 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
     if (left > 0 && pace !== 0) await sleep(left)
     if (focusKind && focusKind !== 'page' && focusRect) focus = { ...focusRect, zoom: 1 }
     beats.push({ beat, startSec: startedAt, endSec: t(), focus, url: page.url() })
+    await o.afterBeat?.(beat)
   }
-  return { ok: true, beats, navigations, log, redactionMisses: misses }
+  const kept = steps.filter((st) => !dropped.has(st.id))
+  return { ok: true, beats, navigations, log, redactionMisses: misses, ...(o.repair ? { playbook: { ...playbook, steps: kept }, repairs } : {}) }
 }

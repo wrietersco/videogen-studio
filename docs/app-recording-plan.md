@@ -447,12 +447,16 @@ Built, tested with the local test web app, and driven through the real Electron 
 
 Found only by driving the real app (and fixed): the temporary browser folder could not be deleted on Windows and turned a finished video into a failure; the review panel stayed visible after it was answered; the free-engine wording repeated back-links. Found by the new tests: the username field was not blurred in the recording.
 
-**Not in this release** (honest list):
+**Added after the release (not yet in an installer):**
 
-- **Reference pictures and videos steering the style** of a recording (only the brand kit's logo and colour are used, on launch-film cards).
-- **"Take over" button.** Stop and the hand-off banner exist; taking control mid-run does not.
+- **Reuse the steps (R22).** The steps of the last finished video are kept with the app. "Reuse the steps from the last video" signs in once, runs them quickly to see which still work, finds a moved button again by its name, leaves out a step whose control is gone (and says so), removes a check that no longer holds, and then records. Nothing is explored again. Tested with the test web app and in the real app (recording started after 6 s instead of 13 s).
+- **Take over.** While the app is being explored, "Take over" opens a visible window with the same session (cookies are copied across); you open a page or sort something out and press Done. The page you ended on is visited next. Not offered while recording, because the video is being captured. Sessions held only in a page's local storage are not carried across.
+- **Look.** Up to three reference pictures colour the backdrop around the browser window and the cards; a reference video's cutting pace picks upbeat or calm music. Read on this computer, never uploaded. The files stay where they are.
+
+**Not built** (honest list):
+
 - **"I'll sign in myself"** opens a real window and is covered by the same hand-off code as the one-time-code test, but the visible-window path itself is not automated.
 - **Recordings appear on this page, not in My videos**, with Play and Show in folder (the Footage feature works the same way). Scene-by-scene editing is not offered for them.
-- **Repairing a saved app when it changes (R22)**, authenticator-secret storage, and the language check (D6).
+- Authenticator-secret storage and the language check (D6).
 - **Scope rules** such as "only customer01" are shown as not enforced and force the review, as planned; they are not enforced automatically.
 - **Desktop apps** (still waiting for your clarification of the original wording).

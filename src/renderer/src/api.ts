@@ -269,7 +269,9 @@ declare global {
         save: (app: AppInput) => Promise<{ ok: true; app: SavedApp } | { ok: false; error: string }>
         remove: (id: string) => Promise<{ ok: boolean; error?: string }>
         attach: () => Promise<{ ok: true; document: { name: string; text: string } } | { ok: false; error: string; cancelled?: boolean }>
-        start: (id: string) => Promise<{ ok: true; runId: string } | { ok: false; error: string }>
+        start: (id: string, opts?: { reuse?: boolean }) => Promise<{ ok: true; runId: string } | { ok: false; error: string }>
+        pickStyle: (kind: 'images' | 'video') => Promise<{ ok: true; paths: string[] } | { ok: false; cancelled: true }>
+        takeover: () => Promise<boolean>
         cancel: () => Promise<boolean>
         handoffDone: () => Promise<boolean>
         review: (edits: ReviewEdits | null) => Promise<boolean>

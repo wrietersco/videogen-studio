@@ -68,6 +68,8 @@ export interface ExploreInput {
   revealIdentifiers: boolean
   log?: (m: string) => void
   signal?: AbortSignal
+  /** called before each page: the person may have taken over; a returned address is visited next */
+  pause?: () => Promise<string | void>
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -131,6 +133,8 @@ export async function explore(inp: ExploreInput): Promise<Exploration> {
   const queue: Array<{ url: string; from?: string }> = [{ url: /^https?:/.test(page.url()) ? page.url() : inp.startUrl }]
 
   while (queue.length) {
+    const extra = await inp.pause?.()
+    if (extra) queue.unshift({ url: extra, from: 'you' })
     const why = limit()
     if (why) { stoppedBy = why; break }
     const next = queue.shift()!

@@ -117,10 +117,11 @@ export function buildCaptions(beats: Array<{ start: number; end: number; voiceSt
 /** the browser window the page is shown in (canvas 1920×1080) */
 const WIN = { x: 110, y: 40, w: 1700, bar: 46, h: 1002 }
 const PAGE = { x: WIN.x, y: WIN.y + WIN.bar, w: WIN.w, h: WIN.h - WIN.bar }
+const DEFAULT_BACKDROP: [string, string] = ['#22325a', '#0a0f1e']
 const FONT = ['C:/Windows/Fonts/segoeui.ttf', '/System/Library/Fonts/Supplemental/Arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'].find(existsSync)
 
 /** backdrop, window and address bar as one still picture, and the mask that rounds the page's lower corners */
-async function drawFrame(dir: string, secure: boolean): Promise<{ bg: string; mask: string }> {
+async function drawFrame(dir: string, secure: boolean, backdrop: [string, string] = DEFAULT_BACKDROP): Promise<{ bg: string; mask: string }> {
   const bg = join(dir, 'frame-bg.png')
   const mask = join(dir, 'frame-mask.png')
   // drawn inside the address pill (30 px tall); a padlock for https, a warning ring otherwise
@@ -129,7 +130,7 @@ async function drawFrame(dir: string, secure: boolean): Promise<{ bg: string; ma
     : `<circle cx="20" cy="15" r="9" fill="none" stroke="#b26a00" stroke-width="2.4"/><rect x="18.8" y="9.5" width="2.4" height="7" fill="#b26a00"/><circle cx="20" cy="20" r="1.5" fill="#b26a00"/>`
   const svg = `<svg width="1920" height="1080" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22325a"/><stop offset="1" stop-color="#0a0f1e"/></linearGradient>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${backdrop[0]}"/><stop offset="1" stop-color="${backdrop[1]}"/></linearGradient>
     <filter id="s" x="-10%" y="-10%" width="120%" height="130%"><feGaussianBlur stdDeviation="24"/></filter>
   </defs>
   <rect width="1920" height="1080" fill="url(#g)"/>
@@ -180,14 +181,14 @@ export interface CardPlan {
 }
 
 /** the card's still picture: the same backdrop as the browser scene, a soft glow, and the label pill */
-async function drawCard(dir: string, name: string, card: CardPlan, glowX: number): Promise<string> {
+async function drawCard(dir: string, name: string, card: CardPlan, glowX: number, backdrop: [string, string] = DEFAULT_BACKDROP): Promise<string> {
   const file = join(dir, `${name}.png`)
   const accent = '#' + (card.accent ?? '4f8cff')
   const pillW = card.pill ? Math.max(150, card.pill.length * 21 + 70) : 0
   const pill = card.pill ? `<rect x="${(1920 - pillW) / 2}" y="318" width="${pillW}" height="56" rx="28" fill="${accent}"/>` : ''
   const svg = `<svg width="1920" height="1080" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22325a"/><stop offset="1" stop-color="#0a0f1e"/></linearGradient>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${backdrop[0]}"/><stop offset="1" stop-color="${backdrop[1]}"/></linearGradient>
     <radialGradient id="r" cx="${glowX}" cy="0.5" r="0.55"><stop offset="0" stop-color="${accent}" stop-opacity=".34"/><stop offset="1" stop-color="${accent}" stop-opacity="0"/></radialGradient>
   </defs>
   <rect width="1920" height="1080" fill="url(#g)"/><rect width="1920" height="1080" fill="url(#r)"/>${pill}
@@ -234,6 +235,8 @@ export interface ProduceInput {
   targetSec?: number
   /** keep the intermediate files */
   keep?: boolean
+  /** colours taken from the person's reference pictures */
+  look?: { backdrop: [string, string]; accent: string }
 }
 
 export interface ProduceResult {
@@ -299,7 +302,7 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   const x = `min(max((${CX})*iw-iw/zoom/2,0),iw-iw/zoom)`
   const y = `min(max((${CY})*ih-ih/zoom/2,0),ih-ih/zoom)`
   const secure = inp.take.navigations.some((n) => n.url.startsWith('https:'))
-  const { bg, mask } = await drawFrame(inp.dir, secure)
+  const { bg, mask } = await drawFrame(inp.dir, secure, inp.look?.backdrop)
   const addr = addressTimeline(inp.take, inp.offsetSec, demo)
     .map((a) => (FONT ? `,drawtext=fontfile='${filterPath(FONT)}':text='${dt(a.text)}':x=${WIN.x + 116 + 44}:y=${WIN.y + 12}:fontsize=21:fontcolor=0x3c4043:enable='between(t,${num(a.from)},${num(a.to)})'` : ''))
     .join('')
@@ -314,7 +317,7 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   let last = 'demo'
   let n = 4
   if (inp.intro) {
-    inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-intro', inp.intro, 0.3))
+    inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-intro', inp.intro, 0.3, inp.look?.backdrop))
     const t = cardText(inp.intro)
     graph.push(`[${n}:v]${norm}${t ? ',' + t : ''},trim=duration=${num(introSec)},setpts=PTS-STARTPTS[intro]`)
     graph.push(`[intro][${last}]xfade=transition=fade:duration=${X}:offset=${num(introSec - X)}[v1]`)
@@ -322,7 +325,7 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
     n++
   }
   if (inp.outro) {
-    inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-outro', inp.outro, 0.7))
+    inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-outro', inp.outro, 0.7, inp.look?.backdrop))
     const t = cardText(inp.outro)
     graph.push(`[${n}:v]${norm}${t ? ',' + t : ''},fade=t=out:st=${num(outroSec - 0.8)}:d=0.8,trim=duration=${num(outroSec)},setpts=PTS-STARTPTS[outro]`)
     graph.push(`[${last}][outro]xfade=transition=fade:duration=${X}:offset=${num(outroStart)}[v2]`)
