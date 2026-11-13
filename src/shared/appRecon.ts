@@ -41,7 +41,9 @@ export const AppPage = z.object({
   fields: z.array(AppField),
   controls: z.array(AppControl),
   /** the visible message on the page, if any (flash banners, errors) */
-  notices: z.array(z.string())
+  notices: z.array(z.string()),
+  /** the start of what the page says, and the labels drawn in its charts or graphs: what a writer may describe */
+  text: z.string().optional()
 })
 export type AppPage = z.infer<typeof AppPage>
 

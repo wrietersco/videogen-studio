@@ -3,6 +3,7 @@
 import type { Page } from 'puppeteer-core'
 import type { AppPage } from '@shared/appRecon'
 import { pathTemplate } from './detect'
+import { fieldFor, labelMatches, pageMatches, type Directive } from './directives'
 import type { PolicyGate } from './policy'
 import { scoutPage } from './scout'
 
@@ -41,6 +42,8 @@ export interface Interaction {
   /** a form was submitted: this may have created or changed data */
   writes: boolean
   after?: AppPage
+  /** the person asked for exactly this, in their own words */
+  asked?: string
 }
 
 export interface Visit {
@@ -50,6 +53,16 @@ export interface Visit {
   via: 'start' | 'link'
   fromLabel?: string
   interactions: Interaction[]
+  /** the person named this page */
+  asked?: string
+}
+
+/** what became of one step the person typed */
+export interface AskedStep {
+  directive: Directive
+  done: boolean
+  /** why not, in words a person can act on */
+  why?: string
 }
 
 export interface Exploration {
@@ -57,6 +70,8 @@ export interface Exploration {
   actions: number
   stoppedBy: 'done' | 'pages' | 'actions' | 'time' | 'cancelled'
   elapsedMs: number
+  /** the steps the person typed, and whether each could be carried out */
+  asked?: AskedStep[]
 }
 
 export interface ExploreInput {
@@ -70,6 +85,10 @@ export interface ExploreInput {
   signal?: AbortSignal
   /** called before each page: the person may have taken over; a returned address is visited next */
   pause?: () => Promise<string | void>
+  /** steps the person typed: they are looked for first and carried out as written */
+  directives?: Directive[]
+  /** the person wrote a list of steps, so once all of them are done there is nothing more to look for */
+  scripted?: boolean
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -78,6 +97,43 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 export async function settle(page: Page): Promise<void> {
   await page.waitForNetworkIdle({ idleTime: 350, timeout: 4000 }).catch(() => undefined)
   await sleep(150)
+}
+
+const INTERSTITIAL = /checking your browser|just a moment|verifying (?:you are human|your browser|your connection)|please wait while we (?:check|verify)|ddos protection|one more step|attention required/i
+
+/** a "checking your browser" page that some sites show for a few seconds before the app. It is not the app. */
+export async function isInterstitial(page: Page): Promise<boolean> {
+  const info = await page
+    .evaluate(() => {
+      const text = (document.body?.innerText ?? '').trim()
+      return { title: document.title, text: text.slice(0, 500), len: text.length, controls: document.querySelectorAll('input:not([type=hidden]),a[href],button').length }
+    })
+    .catch(() => null)
+  // the page is changing under us: look again
+  if (!info) return true
+  return info.len < 500 && info.controls < 3 && INTERSTITIAL.test(`${info.title} ${info.text}`)
+}
+
+/** waits for such a page to let the browser through by itself; false when it never did */
+export async function passInterstitial(page: Page, ms = 25000): Promise<boolean> {
+  if (!(await isInterstitial(page))) return true
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    await sleep(400)
+    if (!(await isInterstitial(page))) {
+      await settle(page)
+      return true
+    }
+  }
+  return false
+}
+
+/** open an address and wait until the app itself is on screen; false when a browser check never went away */
+export async function openPage(page: Page, url: string, timeout = 20000): Promise<boolean> {
+  await page.goto(url, { waitUntil: 'load', timeout })
+  const through = await passInterstitial(page)
+  await settle(page)
+  return through
 }
 
 /** something cheap that changes when the page changes */
@@ -131,6 +187,8 @@ export async function explore(inp: ExploreInput): Promise<Exploration> {
     inp.signal?.aborted ? 'cancelled' : Date.now() - t0 > lim.ms ? 'time' : visits.length >= lim.pages ? 'pages' : actions >= lim.actions ? 'actions' : null
 
   const queue: Array<{ url: string; from?: string }> = [{ url: /^https?:/.test(page.url()) ? page.url() : inp.startUrl }]
+  const asked: AskedStep[] = (inp.directives ?? []).map((directive) => ({ directive, done: false }))
+  const allDone = () => asked.length > 0 && asked.every((a) => a.done)
 
   while (queue.length) {
     const extra = await inp.pause?.()
@@ -145,10 +203,12 @@ export async function explore(inp: ExploreInput): Promise<Exploration> {
     templates.set(tpl, (templates.get(tpl) ?? 0) + 1)
     try {
       if (normalize(page.url()) !== key) {
-        await page.goto(next.url, { waitUntil: 'load', timeout: 20000 })
         actions++
-      }
-      await settle(page)
+        if (!(await openPage(page, next.url))) {
+          say(`could not open ${next.url}: the site's browser check did not go away`)
+          continue
+        }
+      } else await settle(page)
     } catch (err) {
       say(`could not open ${next.url}: ${(err as Error).message.slice(0, 80)}`)
       continue
@@ -157,6 +217,64 @@ export async function explore(inp: ExploreInput): Promise<Exploration> {
     const visit: Visit = { index: visits.length, page: sp, via: visits.length === 0 ? 'start' : 'link', fromLabel: next.from, interactions: [] }
     visits.push(visit)
     say(`page ${visits.length}: "${sp.title || sp.url}" (${sp.fields.length} fields, ${sp.controls.length} controls)`)
+
+    // what the person asked for comes first
+    for (const a of asked) {
+      if (a.done || a.directive.kind !== 'open') continue
+      if (pageMatches(sp, next.from, a.directive.target)) {
+        a.done = true
+        visit.asked = a.directive.said
+        say(`this is the "${a.directive.target}" page that was asked for`)
+      }
+    }
+    for (let i = 0; i < asked.length; i++) {
+      const a = asked[i]
+      const d = a.directive
+      if (a.done || d.kind !== 'type') continue
+      // the page named just before this step, if any, is where it belongs
+      const before = asked.slice(0, i).reverse().find((x) => x.directive.kind === 'open')?.directive
+      const here = before && before.kind === 'open' ? pageMatches(sp, next.from, before.target) : visits.length === 1
+      const field = fieldFor(sp.fields, d.into, here)
+      if (!field) {
+        if (here) {
+          const names = sp.fields.filter((f) => !f.sensitive).map((f) => f.label || f.name).filter(Boolean).slice(0, 6)
+          a.why = `no box called "${d.into || 'search'}" was found on ${sp.title || sp.url} (${sp.fields.length ? `its boxes are: ${names.join(', ') || 'unnamed'}` : 'it has no boxes to type in'})`
+        }
+        continue
+      }
+      try {
+        const fp = await fingerprint(page)
+        const steps: ExploredStep[] = [{ kind: 'type', selector: field.selector, label: field.label || d.into || 'search', text: d.text }]
+        await page.click(field.selector, { count: 3 })
+        await page.keyboard.type(d.text, { delay: 25 })
+        actions++
+        await settle(page)
+        let changed = (await fingerprint(page)) !== fp
+        if (!changed) {
+          // a search box waits for Enter; a filter that already reacted is left alone
+          await page.keyboard.press('Enter')
+          actions++
+          await settle(page)
+          changed = (await fingerprint(page)) !== fp
+          if (changed) steps.push({ kind: 'press', text: 'Enter' })
+        }
+        const after = await scoutPage(page, outDir, `p${visits.length}-asked${i + 1}`, { revealIdentifiers: false }).catch(() => undefined)
+        visit.interactions.push({ steps, changed, writes: false, after, asked: d.said })
+        a.done = true
+        a.why = undefined
+        say(`typed "${d.text}" into ${field.label || 'the box'} as asked${changed ? ': the page changed' : ''}`)
+      } catch (err) {
+        a.why = `typing into "${field.label || d.into}" did not work (${(err as Error).message.slice(0, 60)})`
+      }
+    }
+    if (inp.scripted && allDone()) {
+      say('everything that was asked for has been done, so nothing else needs exploring')
+      break
+    }
+    if (visit.interactions.some((x) => x.asked)) {
+      await page.goto(sp.url, { waitUntil: 'load', timeout: 20000 }).catch(() => undefined)
+      await settle(page)
+    }
 
     if (inp.depth !== 'quick') {
       try {
@@ -173,12 +291,20 @@ export async function explore(inp: ExploreInput): Promise<Exploration> {
       if (!gate.hostAllowed(c.href)) continue
       if (!gate.peekClick({ label: c.label, kind: 'link', href: c.href }).allow) continue
       const k = normalize(c.href)
-      if (!seen.has(k) && !queue.some((q) => normalize(q.url) === k)) queue.push({ url: c.href, from: c.label })
+      if (seen.has(k) || queue.some((q) => normalize(q.url) === k)) continue
+      // a link to a page the person named jumps the queue
+      const wanted = asked.some((a) => !a.done && a.directive.kind === 'open' && labelMatches(c.label, a.directive.target))
+      if (wanted) queue.unshift({ url: c.href, from: c.label })
+      else queue.push({ url: c.href, from: c.label })
     }
   }
   if (!queue.length && stoppedBy === 'done') stoppedBy = 'done'
   say(`explored ${visits.length} pages with ${actions} actions (${stoppedBy === 'done' ? 'nothing left to visit' : `stopped by the ${stoppedBy} limit`})`)
-  return { visits, actions, stoppedBy, elapsedMs: Date.now() - t0 }
+  for (const a of asked) {
+    if (a.done || a.why) continue
+    a.why = a.directive.kind === 'open' ? `no page or link called "${a.directive.target}" was found` : `no box called "${a.directive.into || 'search'}" was found on the pages that were explored`
+  }
+  return { visits, actions, stoppedBy, elapsedMs: Date.now() - t0, asked }
 }
 
 /** try what a person would try on this page; returns how many actions were taken */

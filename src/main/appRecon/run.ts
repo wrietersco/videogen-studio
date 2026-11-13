@@ -5,7 +5,8 @@ import type { AppMap, AppPage, Playbook, Step, Take } from '@shared/appRecon'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { enforcePolicy, launch } from './browser'
 import { scrubMap } from './detect'
-import { checkCompatibility, explore, settle, type Depth, type Exploration } from './explore'
+import { parseDirectives } from './directives'
+import { checkCompatibility, explore, openPage, passInterstitial, settle, type Depth, type Exploration } from './explore'
 import { narrate, type LaunchInfo } from './narrate'
 import { planBeats, type Plan } from './planner'
 import { interpretGuardrails, PolicyGate, type RestrictionChecks } from './policy'
@@ -154,16 +155,39 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
         await removeQuietly(join(inp.runDir, 'profile-takeover'))
       }
     }
-    await page.goto(inp.startUrl, { waitUntil: 'load', timeout: 30000 })
-    await settle(page)
+    if (!(await openPage(page, inp.startUrl, 30000))) throw new Error(BROWSER_CHECK)
     const compat = await checkCompatibility(page)
     hooks.progress('explore', `Compatibility: ${compat.reason}`)
     if (compat.level === 'unlikely') throw new Error(`This app probably cannot be recorded. ${compat.reason}`)
     check()
 
     const first = await scoutPage(page, scoutDir, 'p0-start', { revealIdentifiers: reveal })
-    let map = buildAppMap(inp.startUrl, [first])
+    const pages: AppPage[] = [first]
+    let map = buildAppMap(inp.startUrl, pages)
+    // the sign-in is often one click away from the page the app opens on
+    if (!map.login.detected && inp.signIn !== 'none') {
+      const door = first.controls.find((c) => SIGN_IN_LINK.test(c.label.trim()) && (!c.href || gate.hostAllowed(c.href)) && gate.peekClick({ label: c.label, kind: c.kind, href: c.href }).allow)
+      if (door) {
+        hooks.progress('explore', `Opening "${door.label.trim()}"`)
+        if (door.kind === 'link' && door.href) {
+          if (!(await openPage(page, door.href))) throw new Error(BROWSER_CHECK)
+        } else {
+          await page.click(door.selector).catch(() => undefined)
+          await passInterstitial(page)
+          await settle(page)
+        }
+        pages.push(await scoutPage(page, scoutDir, 'p0-sign-in', { revealIdentifiers: reveal }))
+        map = buildAppMap(inp.startUrl, pages)
+      }
+    }
     const L = map.login
+    if (inp.signIn === 'saved' && inp.vault && !(L.detected && L.usernameSelector && L.passwordSelector && L.submitSelector)) {
+      throw new Error(
+        `No sign-in form was found at ${displayHost(inp.startUrl)}, so the saved login could not be used and no video was made. ` +
+          `The page that opened is "${first.title || first.url}". Put the address of the sign-in page in "Your app", choose "I'll sign in myself", or choose "No sign-in needed" if the app is public.`
+      )
+    }
+    let signedIn = false
 
     if (L.detected && useVault && L.usernameSelector && L.passwordSelector && L.submitSelector) {
       hooks.progress('explore', 'Signing in (attempt 1 of 2)')
@@ -188,15 +212,26 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
         hooks.progress('explore', 'The app asks for a one-time code')
         await hooks.handoff({ reason: 'code', url: page.url(), message: 'Type the one-time code in the browser window, then press Done.' })
       }
+      signedIn = true
     } else if (L.detected && inp.signIn === 'self') {
       hooks.progress('explore', 'Waiting for you to sign in')
       await hooks.handoff({ reason: 'sign-in', url: page.url(), message: 'Sign in to the app in the browser window, then press Done.' })
       await settle(page)
+      signedIn = true
     }
     check()
+    // the address the person gave is where the video is meant to be: go back to it once signed in
+    if (signedIn && !sameAddress(page.url(), inp.startUrl) && !sameAddress(L.pageUrl ?? '', inp.startUrl)) {
+      hooks.progress('explore', 'Opening the page you asked for')
+      await openPage(page, inp.startUrl).catch(() => false)
+      // an app that sends a signed-in person elsewhere is left where it put them
+    }
+
+    const directives = inp.reuse ? [] : parseDirectives(inp.context)
+    const scripted = directives.some((d) => d.kind === 'type') || (directives.length > 0 && /->|→|=>|⇒|➜|>>/.test(inp.context))
+    if (directives.length) say(`Steps you asked for: ${directives.map((d) => (d.kind === 'open' ? `open "${d.target}"` : `type "${d.text}" into "${d.into || 'the search box'}"`)).join(', then ')}`)
 
     let exploration: Exploration = { visits: [], actions: 0, stoppedBy: 'done', elapsedMs: 0 }
-    const pages: AppPage[] = [first]
     let reused: Plan | null = null
     const reuseNotes: string[] = []
     const pause = async (): Promise<string | void> => {
@@ -229,8 +264,14 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       await settle(page)
     } else {
       hooks.progress('explore', 'Exploring the app')
-      exploration = await explore({ page, gate, startUrl: inp.startUrl, outDir: scoutDir, depth: inp.depth, revealIdentifiers: reveal, log: say, signal: inp.signal, pause })
+      exploration = await explore({ page, gate, startUrl: inp.startUrl, outDir: scoutDir, depth: inp.depth, revealIdentifiers: reveal, log: say, signal: inp.signal, pause, directives, scripted })
       pages.push(...exploration.visits.map((v) => v.page))
+      // a typed step that could not be done stops the run here, before anything is recorded or paid for
+      const missed = (exploration.asked ?? []).filter((a) => !a.done)
+      const hard = missed.filter((a) => a.directive.kind === 'type')
+      if (hard.length && exploration.stoppedBy !== 'cancelled') {
+        throw new Error(`A step you asked for could not be done, so no video was made: ${hard.map((a) => `"${a.directive.said}" (${a.why})`).join('; ')}. Reword the step with the name the box has on screen, or use Take over to open the right page.`)
+      }
     }
     check()
     map = buildAppMap(inp.startUrl, pages)
@@ -243,7 +284,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     hooks.progress('plan', 'Choosing what the video shows')
     let plan: Plan = reused
       ? { ...reused, notes: [...reused.notes.filter((n) => !n.startsWith('Repaired: ') && !n.startsWith('The saved steps') && !/explored page/.test(n)), ...reuseNotes] }
-      : planBeats({ map: safeMap, exploration, context: inp.context, startUrl: inp.startUrl, targetSec: inp.targetSec ?? inp.launch?.targetSec, hasVault: useVault, secrets })
+      : planBeats({ map: safeMap, exploration, context: inp.context, startUrl: inp.startUrl, targetSec: inp.targetSec ?? inp.launch?.targetSec, hasVault: useVault, secrets, scripted })
     writeFileSync(join(inp.runDir, 'playbook.json'), JSON.stringify(plan.playbook, null, 2))
     writeFileSync(join(inp.runDir, 'beats.json'), JSON.stringify(plan.beats, null, 2))
     const base: RunOutput = {
@@ -274,7 +315,8 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     await enforcePolicy(rpage, gate)
     await prepare(rpage, recRedaction)
     if (cookies.length) await rpage.setCookie(...cookies.map((c) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path, expires: c.expires, httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite })))
-    await rpage.goto(plan.playbook.startUrl, { waitUntil: 'load', timeout: 30000 })
+    // a browser check is waited out before the camera rolls, so it is never in the film
+    if (!(await openPage(rpage, plan.playbook.startUrl, 30000))) throw new Error(BROWSER_CHECK)
     await new Promise((r) => setTimeout(r, 400))
     const rec = new FrameRecorder(rpage, join(inp.runDir, 'frames'))
     await rec.start(2560, 1440)
@@ -314,6 +356,29 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       await removeQuietly(join(inp.runDir, 'frames'))
       await removeQuietly(join(inp.runDir, 'profile'))
     }
+  }
+}
+
+const BROWSER_CHECK = 'The site kept showing its "checking your browser" page and never opened the app, so no video was made. Choose "I\'ll sign in myself" so the check runs in a window you can see, or ask whoever runs the site to let this computer through.'
+/** a link or button that leads to the sign-in form */
+const SIGN_IN_LINK = /^(?:login\s+)?(?:log\s?-?in|sign\s?-?in|sign\s?-?on|member\s+login|account\s+login)$/i
+
+function displayHost(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return url
+  }
+}
+
+/** the same page, whatever the query string or a trailing slash says */
+function sameAddress(a: string, b: string): boolean {
+  try {
+    const x = new URL(a)
+    const y = new URL(b)
+    return x.host === y.host && x.pathname.replace(/\/+$/, '') === y.pathname.replace(/\/+$/, '')
+  } catch {
+    return false
   }
 }
 

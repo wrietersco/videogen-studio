@@ -19,6 +19,7 @@ interface RawPage {
   fields: RawField[]
   controls: AppControl[]
   notices: string[]
+  text: string
 }
 
 const EXTRACT = String.raw`(() => {
@@ -51,7 +52,11 @@ const EXTRACT = String.raw`(() => {
     .map((el) => ({ selector: path(el), label: text(el), kind: el.tagName === 'A' ? 'link' : 'button', href: el.tagName === 'A' ? el.href : undefined, rect: rect(el) }));
   const notices = [...document.querySelectorAll('[role=alert],[role=status],.flash,.alert,.error,.notification,.message,#flash')]
     .filter(shown).map(text).filter(Boolean).slice(0, 4);
+  const main = document.querySelector('main,[role=main]') || document.body;
+  const said = ((main && main.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 1400);
+  const drawn = [...new Set([...document.querySelectorAll('svg text')].filter(shown).map((t) => (t.textContent || '').replace(/\s+/g, ' ').trim()).filter((t) => t.length > 1 && t.length < 60))].slice(0, 60);
   return {
+    text: said + (drawn.length ? ' | Labels drawn on the page: ' + drawn.join(', ') : ''),
     title: document.title,
     headings: [...document.querySelectorAll('h1,h2,h3')].filter(shown).map(text).filter(Boolean).slice(0, 8),
     fields, controls, notices
@@ -76,7 +81,7 @@ export async function scoutPage(page: Page, outDir: string, name: string, opts: 
   const file = `${name}.jpg`
   await page.screenshot({ path: join(outDir, file) as `${string}.jpg`, type: 'jpeg', quality: 85 })
   await style.evaluate((el) => el.remove())
-  return { url: page.url(), title: raw.title, screenshot: file, headings: raw.headings, fields, controls: raw.controls, notices: raw.notices }
+  return { url: page.url(), title: raw.title, screenshot: file, headings: raw.headings, fields, controls: raw.controls, notices: raw.notices, text: raw.text }
 }
 
 const LOGIN_WORDS = /\b(log\s?-?in|sign\s?-?in|submit|continue|next|enter)\b/i

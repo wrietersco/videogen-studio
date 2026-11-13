@@ -136,6 +136,7 @@ export function scrubMap(map: AppMap, opts: { kinds?: PrivateKind[]; values?: st
       title: s(p.title),
       headings: p.headings.map(s),
       notices: p.notices.map(s),
+      text: p.text === undefined ? undefined : s(p.text),
       controls: p.controls.map((c) => ({ ...c, label: s(c.label), href: c.href ? sanitizeAddress(c.href, true) : undefined })),
       fields: p.fields.map((f) => ({ ...f, label: s(f.label) }))
     }))

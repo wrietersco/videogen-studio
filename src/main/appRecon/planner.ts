@@ -40,6 +40,8 @@ export interface PlanInput {
   hasVault: boolean
   /** values that must never appear in what a writer sees */
   secrets: string[]
+  /** the person wrote the steps themselves: show those pages, and only those */
+  scripted?: boolean
 }
 
 export interface Plan {
@@ -103,7 +105,13 @@ function factsFor(v: Visit, secrets: string[]): string[] {
   if (buttons.length) out.push(`Buttons: ${buttons.join(', ')}`)
   const fields = p.fields.filter((f) => !f.sensitive && f.label).slice(0, 4).map((f) => s(f.label))
   if (fields.length) out.push(`Fields: ${fields.join(', ')}`)
-  for (const i of v.interactions.filter((x) => x.changed && !x.writes).slice(0, 1)) {
+  if (p.text) out.push(`On screen: ${s(p.text).slice(0, 600)}`)
+  for (const i of v.interactions.filter((x) => x.asked && x.steps.some((t) => t.kind === 'type')).slice(0, 2)) {
+    const t = i.steps.find((x) => x.kind === 'type')!
+    out.push(`The person types "${t.text}" into the ${s(t.label || 'search')} box${i.changed ? ' and the page updates to show only matching results' : ''}`)
+    if (i.after?.text) out.push(`After typing, the page shows: ${s(i.after.text).slice(0, 600)}`)
+  }
+  for (const i of v.interactions.filter((x) => x.changed && !x.writes && !x.asked).slice(0, 1)) {
     out.push(`Doing "${i.steps.map((t) => t.label || t.text || t.kind).join(' then ')}" changes what the page shows`)
   }
   return out
@@ -125,7 +133,7 @@ function pageLine(v: Visit, chapter: string, first: boolean, secrets: string[], 
   const parts: string[] = [first ? `After signing in you arrive at ${chapter}.` : OPENERS[position % OPENERS.length](chapter)]
   if (heads.length) parts.push(`It covers ${list(heads)}.`)
   if (fields.length) parts.push(`There is room to fill in ${list(fields)}.`)
-  const ch = v.interactions.find((i) => i.changed && !i.writes)
+  const ch = v.interactions.find((i) => i.asked) ?? v.interactions.find((i) => i.changed && !i.writes)
   if (ch) {
     const typed = ch.steps.find((t) => t.kind === 'type')
     parts.push(typed ? `Typing in the ${s(typed.label || 'search')} box updates what the page shows.` : `Pressing ${s(ch.steps[0]?.label || 'a button')} updates what the page shows.`)
@@ -138,7 +146,7 @@ function pageLine(v: Visit, chapter: string, first: boolean, secrets: string[], 
 export function planBeats(inp: PlanInput): Plan {
   const { map, exploration, context } = inp
   const notes: string[] = []
-  const loginFocus = LOGIN_FOCUS.test(context)
+  const loginFocus = !inp.scripted && LOGIN_FOCUS.test(context)
   const keywords = new Set(words(context))
   const writeIntent = WRITE_INTENT.test(context)
   const maxBeats = Math.max(4, Math.min(8, Math.round((inp.targetSec ?? 44) / 7)))
@@ -188,7 +196,10 @@ export function planBeats(inp: PlanInput): Plan {
   const scored = candidates.map((v) => ({ v, score: scoreVisit(v, keywords, writeIntent) }))
   const chosen = [...scored].sort((a, b) => b.score - a.score).slice(0, room).sort((a, b) => a.v.index - b.v.index)
   // after a login-focused sign-in only the landing page adds anything
-  const picked = signIn && loginFocus ? chosen.filter((c) => c.v.index === 0).slice(0, Math.min(room, 1)) : chosen
+  const asked = (v: Visit) => !!v.asked || v.interactions.some((i) => i.asked)
+  const picked = inp.scripted && candidates.some(asked)
+    ? scored.filter((c) => asked(c.v)).slice(0, Math.max(1, maxBeats - beat))
+    : signIn && loginFocus ? chosen.filter((c) => c.v.index === 0).slice(0, Math.min(room, 1)) : chosen
   if (candidates.length > picked.length) notes.push(`${candidates.length - picked.length} explored page(s) left out to keep the video short`)
 
   let first = true
@@ -196,7 +207,9 @@ export function planBeats(inp: PlanInput): Plan {
     const chapter = chapterOf(v.page, v.index + 1, inp.secrets)
     const justArrived = signIn && v.index === 0
     if (!justArrived) steps.push({ id: id(), beat, kind: 'goto', url: v.page.url, intent: 'navigate', focus: 'page' })
-    const act = v.interactions.find((i) => i.changed && (writeIntent || !i.writes))
+    const doneAsked = v.interactions.filter((i) => i.asked)
+    const act = doneAsked.length ? undefined : v.interactions.find((i) => i.changed && (writeIntent || !i.writes))
+    for (const i of doneAsked) for (const e of i.steps) steps.push(toStep(e, id(), beat))
     if (act) for (const e of act.steps) steps.push(toStep(e, id(), beat))
     if (!steps.some((s) => s.beat === beat)) steps.push({ id: id(), beat, kind: 'wait', focus: 'page' })
     beats.push({ beat, kind: 'page', chapter, facts: factsFor(v, inp.secrets), fallback: pageLine(v, chapter, first && signIn, inp.secrets, beats.length) })
