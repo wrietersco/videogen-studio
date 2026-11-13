@@ -1,7 +1,7 @@
 # App-recording videos — implementation plan
 
-**Version 1.2 (final) · 2026-11-13 · branch `app-recording-proof`**
-*1.1: full exploration is now the default; restrictions are opt-in checkboxes and typed rules. 1.2: explorer defined (section 5.1), stale wording fixed.*
+**Version 1.3 · 2026-11-13 · shipped in v0.3.27**
+*1.1: full exploration is now the default; restrictions are opt-in checkboxes and typed rules. 1.2: explorer defined (section 5.1), stale wording fixed. 1.3: status of what shipped (section 16).*
 
 This is the plan for the feature where a person gives VideoGen Studio a web-app address and a login, and the app explores it, rehearses it, records it with private data hidden, and turns the recording into a finished video.
 
@@ -431,3 +431,28 @@ Desktop apps (needs your clarification of "select a desktop application from the
 | Critique items you accepted (consent, injection, banner, test account, cost, repair, login options) | R9, R12, R15–R19, R22 |
 | "make this video like a new feature launch video" | R14 |
 | "one page, not separate screens" | Section 1 |
+
+---
+
+## 16. Status at release (v0.3.27)
+
+Built, tested with the local test web app, and driven through the real Electron app in programmatic mode (no AI keys):
+
+| Area | State |
+|---|---|
+| M0: restrictions engine, private-data detection, blur v2 (shadow DOM, frames, privacy mode), test web app | Done. 17 defects from section 3.1 fixed or covered, except D6 (language check) |
+| M1: one page, saved apps, sealed logins, one-time-code hand-off, review, results, launch film with brand kit logo and colour, fallback browser | Done |
+| M2: explorer (Quick, Standard, Thorough), beat planner, editable review | Done. Depth limits are the starting values from section 5.1 and have not been tuned on real apps |
+| Free engine without AI keys | Done and tested; AI writer and voice follow the plan's rules |
+
+Found only by driving the real app (and fixed): the temporary browser folder could not be deleted on Windows and turned a finished video into a failure; the review panel stayed visible after it was answered; the free-engine wording repeated back-links. Found by the new tests: the username field was not blurred in the recording.
+
+**Not in this release** (honest list):
+
+- **Reference pictures and videos steering the style** of a recording (only the brand kit's logo and colour are used, on launch-film cards).
+- **"Take over" button.** Stop and the hand-off banner exist; taking control mid-run does not.
+- **"I'll sign in myself"** opens a real window and is covered by the same hand-off code as the one-time-code test, but the visible-window path itself is not automated.
+- **Recordings appear on this page, not in My videos**, with Play and Show in folder (the Footage feature works the same way). Scene-by-scene editing is not offered for them.
+- **Repairing a saved app when it changes (R22)**, authenticator-secret storage, and the language check (D6).
+- **Scope rules** such as "only customer01" are shown as not enforced and force the review, as planned; they are not enforced automatically.
+- **Desktop apps** (still waiting for your clarification of the original wording).
