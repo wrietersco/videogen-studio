@@ -38,6 +38,8 @@ export interface NarrateInput {
   secrets: string[]
   /** length to aim for (walkthroughs only; a launch film carries its own) */
   targetSec?: number
+  /** the person's brand: its accent colour (hex without #) and logo file go on the launch cards */
+  brand?: { accent?: string; logo?: string }
   dir: string
   say: (m: string) => void
 }
@@ -128,8 +130,8 @@ export async function narrate(inp: NarrateInput): Promise<Narration> {
   let outro: CardPlan | undefined
   const sp = (c: CardPlan) => (c.pcm.length ? c.pcm.length / SR : readSec(c.text))
   if (launch && introText && outroText) {
-    intro = { pill: 'NEW', headline: launch.feature, sub: launch.tagline, text: introText, pcm: await voiceOf('voice-intro', introText) }
-    outro = { pill: launch.cta, headline: launch.feature, sub: launch.closing, text: outroText, pcm: await voiceOf('voice-outro', outroText), accent: '35c48b' }
+    intro = { pill: 'NEW', headline: launch.feature, sub: launch.tagline, text: introText, pcm: await voiceOf('voice-intro', introText), accent: inp.brand?.accent, logo: inp.brand?.logo }
+    outro = { pill: launch.cta, headline: launch.feature, sub: launch.closing, text: outroText, pcm: await voiceOf('voice-outro', outroText), accent: inp.brand?.accent ?? '35c48b', logo: inp.brand?.logo }
     // spread the time left over between the beats, so the film lands on its target length
     const introSec = Math.max(4.2, sp(intro) + 1.4)
     const outroMin = sp(outro) + 2.3

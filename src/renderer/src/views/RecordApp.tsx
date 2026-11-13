@@ -32,23 +32,24 @@ interface Form {
   targetSec: number
   useAi: boolean
   reviewFirst: boolean
+  brandId: string
 }
 
 const blank = (): Form => ({
   name: '', url: '', context: '', document: null, signIn: 'saved', username: '', password: '', hasPassword: false, guardrailText: '', checks: { ...DEFAULT_CHECKS }, depth: 'standard',
-  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, useAi: true, reviewFirst: false
+  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, useAi: true, reviewFirst: false, brandId: ''
 })
 
 const fromApp = (a: SavedApp): Form => ({
   id: a.id, name: a.name, url: a.url, context: a.context, document: a.document ?? null, signIn: a.signIn, username: a.username ?? '', password: '', hasPassword: a.hasPassword, guardrailText: a.guardrailText,
   checks: a.checks, depth: a.depth, revealUsername: a.revealUsername, mode: a.mode, feature: a.launch?.feature ?? '', tagline: a.launch?.tagline ?? 'Simple. Fast. Safe.', closing: a.launch?.closing ?? 'Try it today',
-  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, useAi: a.useAi, reviewFirst: a.reviewFirst
+  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, useAi: a.useAi, reviewFirst: a.reviewFirst, brandId: a.brandId ?? ''
 })
 
 const toInput = (f: Form): AppInput => ({
   id: f.id, name: f.name, url: f.url, context: f.context, document: f.document, signIn: f.signIn, username: f.username || undefined, password: f.password || undefined, guardrailText: f.guardrailText,
   checks: f.checks, depth: f.depth, revealUsername: f.revealUsername, mode: f.mode,
-  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, useAi: f.useAi, reviewFirst: f.reviewFirst
+  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, useAi: f.useAi, reviewFirst: f.reviewFirst, brandId: f.brandId || undefined
 })
 
 const STAGES: Array<{ id: string; label: string }> = [
@@ -75,6 +76,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
   const [ai, setAi] = useState<{ available: boolean; reason?: string }>({ available: false })
   const [form, setForm] = useState<Form>(blank)
   const [live, setLive] = useState<Live | null>(null)
+  const [kits, setKits] = useState<Array<{ id: string; name: string }>>([])
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const formRef = useRef(form)
@@ -91,6 +93,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
 
   useEffect(() => {
     void refresh()
+    void api.brand.list().then((b) => setKits(b.kits.map((k) => ({ id: k.id, name: k.name })))).catch(() => undefined)
     return api.appRec.onEvent((e: RunEvent) => {
       if (e.kind === 'started') setLive({ runId: e.runId, stage: 'explore', message: 'Starting…', logs: [], handoff: null, review: null, result: null })
       else if (e.kind === 'stage') setLive((l) => (l && l.runId === e.runId ? { ...l, stage: e.stage, message: e.message } : l))
@@ -247,6 +250,14 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
                 <input aria-label="Tagline" value={form.tagline} onChange={(e) => set('tagline', e.target.value)} placeholder="Tagline" className="field px-4 py-2.5 text-sm" />
                 <input aria-label="Closing line" value={form.closing} onChange={(e) => set('closing', e.target.value)} placeholder="Closing line" className="field px-4 py-2.5 text-sm" />
                 <input aria-label="Call to action" value={form.cta} onChange={(e) => set('cta', e.target.value)} placeholder="Label, e.g. Available now" className="field px-4 py-2.5 text-sm" />
+                <label className="flex items-center gap-2 text-xs text-ink/70 md:col-span-2">
+                  Brand kit for the title and closing cards
+                  <select aria-label="Brand kit" value={form.brandId} onChange={(e) => set('brandId', e.target.value)} className="field !py-1 px-3 text-xs">
+                    <option value="">No brand</option>
+                    {kits.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
+                  </select>
+                  <span className="text-ink/45">{kits.length ? 'Its logo and colour appear on the cards.' : 'Make a kit in Create → Brand to use a logo here.'}</span>
+                </label>
               </div>
             )}
           </Section>

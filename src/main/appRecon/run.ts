@@ -53,6 +53,8 @@ export interface RunInput {
   /** stop early (tests, and "just show me the plan") */
   stopAfter?: 'explore' | 'plan' | 'record'
   musicMood?: 'corporate' | 'upbeat'
+  /** the person's brand kit: accent colour (hex without #) and logo file for the title and closing cards */
+  brand?: { accent?: string; logo?: string }
 }
 
 export interface RunHooks {
@@ -184,7 +186,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
 
     // ------------------------------------------------------------ script
     hooks.progress('script', 'Writing and voicing the script')
-    const narration = await narrate({ chat: inp.chat, speech: inp.speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: inp.context, secrets, targetSec: inp.targetSec, dir: inp.runDir, say })
+    const narration = await narrate({ chat: inp.chat, speech: inp.speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: inp.context, secrets, targetSec: inp.targetSec, brand: inp.brand, dir: inp.runDir, say })
     check()
 
     // ------------------------------------------------------------ record

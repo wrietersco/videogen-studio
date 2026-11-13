@@ -50,6 +50,8 @@ export interface AppInput {
   /** use the AI writer and voice when the plan allows; off = the free engine */
   useAi: boolean
   reviewFirst: boolean
+  /** a brand kit whose logo and colour go on a launch film's cards ('' = none) */
+  brandId?: string
 }
 
 export interface SavedApp extends Omit<AppInput, 'password'> {
@@ -168,7 +170,8 @@ export function validateApp(raw: unknown): { ok: true; value: AppInput } | { ok:
       launch,
       targetSec: Number.isFinite(target) ? Math.max(20, Math.min(120, Math.round(target))) : 44,
       useAi: r.useAi !== false,
-      reviewFirst: r.reviewFirst === true
+      reviewFirst: r.reviewFirst === true,
+      brandId: typeof r.brandId === 'string' && /^[\w-]{1,60}$/.test(r.brandId) ? r.brandId : undefined
     }
   }
 }

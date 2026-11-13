@@ -20,6 +20,8 @@ export interface AppReconIpcDeps {
   providers: () => { chat: LLMProvider | null; speech: SpeechProvider | null }
   /** runs work that calls AI models as one AI video of the person's plan */
   aiJob: <T>(projectKey: string, title: string, fn: () => Promise<T>) => Promise<T>
+  /** a brand kit's accent colour (hex without #) and logo file, when it has them */
+  brand?: (id: string) => { accent?: string; logo?: string } | null
   /** replaceable for tests */
   runner?: (input: RunInput, hooks: RunHooks) => Promise<RunOutput>
 }
@@ -141,6 +143,7 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
       depth: app.depth,
       targetSec: app.targetSec,
       reviewFirst: app.reviewFirst,
+      brand: app.mode === 'launch' && app.brandId ? (d.brand?.(app.brandId) ?? undefined) : undefined,
       signal: abort.signal
     }
     const exec = () => {

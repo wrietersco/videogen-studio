@@ -24,6 +24,7 @@ import { PromptTemplateStore, type TemplateInput } from './store/promptTemplates
 import { ensureBrowser } from './rendererService/hyperframes'
 import { projectsDir, appRoot, libraryDir, builtinPackDir, footageDir, brandDir, appReconDir } from './paths'
 import { AppReconStore } from './appRecon/store'
+import { luminanceOf } from '@shared/brand'
 import { registerAppReconIpc } from './appRecon/ipc'
 import { FootageStore } from './footage/store'
 import { FootageService } from './footage/service'
@@ -918,6 +919,14 @@ if (headlessFile) {
       window: () => win,
       isBusy: busyNow,
       setBusy: (b) => { footageBusy = b },
+      brand: (id) => {
+        const kit = brands.get(id)
+        if (!kit) return null
+        const primary = kit.colors.primary
+        // a very dark brand colour would vanish on the dark card, so it is left out (the card keeps its own accent)
+        const accent = primary && luminanceOf(primary) >= 0.08 ? primary.replace('#', '') : undefined
+        return { accent, logo: brands.logoPath(id, 'onDark') ?? undefined }
+      },
       // the free engine always works; the AI writer and voice follow the plan, like every other AI feature
       ai: () =>
         mode === 'programmatic'

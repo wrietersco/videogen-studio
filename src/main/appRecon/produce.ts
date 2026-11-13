@@ -175,6 +175,8 @@ export interface CardPlan {
   pcm: Float32Array
   /** accent colour of the card, hex without # */
   accent?: string
+  /** the brand's logo (a transparent PNG for dark backgrounds), shown above the label */
+  logo?: string
 }
 
 /** the card's still picture: the same backdrop as the browser scene, a soft glow, and the label pill */
@@ -190,7 +192,12 @@ async function drawCard(dir: string, name: string, card: CardPlan, glowX: number
   </defs>
   <rect width="1920" height="1080" fill="url(#g)"/><rect width="1920" height="1080" fill="url(#r)"/>${pill}
 </svg>`
-  await sharp(Buffer.from(svg)).png().toFile(file)
+  const base = sharp(Buffer.from(svg))
+  if (card.logo && existsSync(card.logo)) {
+    const logo = await sharp(card.logo).resize({ width: 380, height: 110, fit: 'inside' }).png().toBuffer({ resolveWithObject: true })
+    base.composite([{ input: logo.data, left: Math.round((1920 - logo.info.width) / 2), top: 190 + Math.round((110 - logo.info.height) / 2) }])
+  }
+  await base.png().toFile(file)
   return file
 }
 
