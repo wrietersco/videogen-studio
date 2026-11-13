@@ -36,7 +36,6 @@ import { AccountError, AccountSession, newProjectKey, type AccountStatus } from 
 import { accessMode, effectiveSettings, programmaticSettings, type AccessMode } from './license/access'
 import { setManagedRouter, withProject } from './license/route'
 import { setClipCap } from './director/director'
-import { runProof } from './appRecon/proof'
 
 /**
  * Electron main process — owns the pipeline, project store, provider keys
@@ -875,53 +874,7 @@ async function runHeadless(file: string): Promise<void> {
   writeFileSync(join(process.cwd(), 'headless-result.json'), JSON.stringify({ tookMs: Date.now() - started, results }, null, 2))
 }
 
-// ---------------- headless app-walkthrough proof (electron . --headless-recon=<outDir>) ----------------
-
-const RECON_FLAG = '--headless-recon='
-const reconOut = process.argv.find((a) => a.startsWith(RECON_FLAG))?.slice(RECON_FLAG.length)
-
-/**
- * Records a sign-in walkthrough of a public practice site with the app's own
- * writer and narrator (keys never leave the main process). A test entry point
- * for the app-recording feature, in the same spirit as --headless-gen.
- */
-async function runReconHeadless(outDir: string): Promise<void> {
-  loadSettings()
-  account.reload()
-  await account.sync().catch((err) => console.warn('[recon] account sync failed —', err instanceof Error ? err.message : err))
-  if (planEnt()?.allowOwnKeys ?? false) settings.useOwnKeys = true
-  applyAccess()
-  const chat = providerRegistry.forRole('text')
-  const speech = mode === 'own-keys' ? media.speech() : null
-  console.log(`[recon] mode=${mode} writer=${chat?.id ?? '-'} narrator=${speech ? `${speech.label} ${speech.model}` : 'none'}`)
-  if (mode !== 'own-keys') throw new Error(`own-keys mode is not active (mode=${mode})`)
-  const r = await runProof({
-    outDir,
-    startUrl: 'https://the-internet.herokuapp.com/login',
-    topic: 'a secured application, focused around the login flow',
-    guardrailText: 'Do not delete or update any data. Only record the sign-in and sign-out.',
-    vault: { username: 'tomsmith', password: 'SuperSecretPassword!' }, // the practice site publishes these itself
-    revealUsername: true,
-    launch: process.argv.includes('--plain') ? undefined : { feature: 'Secure sign-in', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44 },
-    chat: chat && chat.id !== 'mock' ? chat : null,
-    speech,
-    log: (m) => console.log(m)
-  })
-  console.log(`[recon] done → ${r.video} (${r.durationSec.toFixed(1)}s)`)
-}
-
-if (reconOut) {
-  app.whenReady().then(async () => {
-    try {
-      await runReconHeadless(reconOut)
-    } catch (err) {
-      console.error('[recon]', err)
-      process.exitCode = 1
-    } finally {
-      app.exit(process.exitCode === 1 ? 1 : 0)
-    }
-  })
-} else if (headlessFile) {
+if (headlessFile) {
   app.whenReady().then(async () => {
     try {
       await runHeadless(headlessFile)
@@ -1002,6 +955,6 @@ app.on('window-all-closed', () => {
   // a headless run has no main window: the hidden helper windows (storyboard
   // captures, coded-scene renders) open and close while jobs are still going,
   // and must not take the app down with them — runHeadless exits when done
-  if (headlessFile || reconOut) return
+  if (headlessFile) return
   if (process.platform !== 'darwin') app.quit()
 })

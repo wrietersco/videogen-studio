@@ -137,6 +137,21 @@ describe('planning without a browser', () => {
     expect(plan.playbook.steps.every((s) => s.beat < plan.beats.length)).toBe(true)
   })
 
+  it('writes varied, plain stock lines that do not repeat back-links', () => {
+    const pages = [
+      page('https://a.example.com/', 'Home', { controls: [{ selector: 'a', label: 'Billing', kind: 'link', href: 'https://a.example.com/billing' }, { selector: 'b', label: 'Team', kind: 'link', href: 'https://a.example.com/team' }] }),
+      page('https://a.example.com/billing', 'Billing', { controls: [{ selector: 'a', label: 'Home', kind: 'link', href: 'https://a.example.com/' }] }),
+      page('https://a.example.com/team', 'Team', { controls: [{ selector: 'a', label: 'Home', kind: 'link', href: 'https://a.example.com/' }], fields: [{ selector: '#n', label: 'Invite by name', inputType: 'text', name: 'n', kind: 'text', sensitive: false }] })
+    ]
+    const visits = pages.map((p, index) => ({ index, page: p, via: index ? ('link' as const) : ('start' as const), interactions: [] }))
+    const plan = planBeats({ map: map(pages), exploration: { visits, actions: 0, stoppedBy: 'done', elapsedMs: 0 }, context: '', startUrl: 'https://a.example.com/', targetSec: 44, hasVault: false, secrets: [] })
+    const lines = plan.beats.map((b) => b.fallback)
+    expect(lines.join(' ')).not.toMatch(/move to Home|reach Home/)
+    expect(new Set(lines.map((l) => l.split('.')[0])).size).toBe(lines.length)
+    expect(plan.beats.find((b) => b.chapter === 'Team')?.fallback).toContain('Invite by name')
+    expect(plan.beats.find((b) => b.chapter === 'Home')?.fallback).toContain('Billing and Team')
+  })
+
   it('still makes a one-beat video when nothing could be explored', () => {
     const plan = planBeats({ map: map([]), exploration: { visits: [], actions: 0, stoppedBy: 'done', elapsedMs: 0 }, context: '', startUrl: 'https://a.example.com/', hasVault: false, secrets: [] })
     expect(plan.beats).toHaveLength(1)

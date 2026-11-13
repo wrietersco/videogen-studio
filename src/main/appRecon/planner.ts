@@ -109,20 +109,30 @@ function factsFor(v: Visit, secrets: string[]): string[] {
   return out
 }
 
-function pageLine(v: Visit, chapter: string, first: boolean, secrets: string[]): string {
+const OPENERS = [(c: string) => `Next, ${c}.`, (c: string) => `Now the ${c} page.`, (c: string) => `Here is ${c}.`, (c: string) => `Then, ${c}.`]
+/** links that only lead back to where the viewer has been */
+const BACK_LINK = /^(home|back|dashboard|overview|main|menu|logo)$/i
+
+/** the stock line for a page: only what is on the page, in varied plain words */
+function pageLine(v: Visit, chapter: string, first: boolean, secrets: string[], position: number): string {
   const s = (t: string) => scrubText(t, { values: secrets })
   const p = v.page
-  const heads = p.headings.slice(1, 3).map(s).filter((h) => h.length < 60)
-  const links = p.controls.filter((c) => c.kind === 'link' && c.label).slice(0, 3).map((c) => s(c.label)).filter((l) => l.length < 30)
-  let line = first ? `After signing in you arrive at ${chapter}.` : `Next, ${chapter}.`
-  if (heads.length) line += ` It covers ${list(heads)}.`
-  if (links.length) line += ` From here you can move to ${list(links)}.`
+  const heads = p.headings.slice(1, 3).map(s).filter((h) => h.length < 60 && h.toLowerCase() !== chapter.toLowerCase())
+  const links = [...new Set(p.controls.filter((c) => c.kind === 'link' && c.label).map((c) => s(c.label)))]
+    .filter((l) => l.length < 30 && !BACK_LINK.test(l.trim()) && l.toLowerCase() !== chapter.toLowerCase())
+    .slice(0, 3)
+  const fields = [...new Set(p.fields.filter((f) => !f.sensitive && f.label).map((f) => s(f.label)))].filter((f) => f.length < 30).slice(0, 3)
+  const parts: string[] = [first ? `After signing in you arrive at ${chapter}.` : OPENERS[position % OPENERS.length](chapter)]
+  if (heads.length) parts.push(`It covers ${list(heads)}.`)
+  if (fields.length) parts.push(`There is room to fill in ${list(fields)}.`)
   const ch = v.interactions.find((i) => i.changed && !i.writes)
   if (ch) {
     const typed = ch.steps.find((t) => t.kind === 'type')
-    line += typed ? ` Typing in the ${s(typed.label || 'search')} box updates what the page shows.` : ` Pressing ${s(ch.steps[0]?.label || 'a button')} updates what the page shows.`
+    parts.push(typed ? `Typing in the ${s(typed.label || 'search')} box updates what the page shows.` : `Pressing ${s(ch.steps[0]?.label || 'a button')} updates what the page shows.`)
   }
-  return line
+  if (links.length >= 2 && (first || parts.length < 3)) parts.push(`From here you can reach ${list(links)}.`)
+  if (parts.length === 1) parts.push('Take a moment to look around it.')
+  return parts.join(' ')
 }
 
 export function planBeats(inp: PlanInput): Plan {
@@ -189,7 +199,7 @@ export function planBeats(inp: PlanInput): Plan {
     const act = v.interactions.find((i) => i.changed && (writeIntent || !i.writes))
     if (act) for (const e of act.steps) steps.push(toStep(e, id(), beat))
     if (!steps.some((s) => s.beat === beat)) steps.push({ id: id(), beat, kind: 'wait', focus: 'page' })
-    beats.push({ beat, kind: 'page', chapter, facts: factsFor(v, inp.secrets), fallback: pageLine(v, chapter, first && signIn, inp.secrets) })
+    beats.push({ beat, kind: 'page', chapter, facts: factsFor(v, inp.secrets), fallback: pageLine(v, chapter, first && signIn, inp.secrets, beats.length) })
     first = false
     beat++
   }

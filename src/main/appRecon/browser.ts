@@ -30,7 +30,33 @@ export function findChrome(): string | null {
   } catch {
     /* no puppeteer cache */
   }
+  return findHeadlessShell()
+}
+
+/**
+ * The app already downloads a headless Chrome for rendering videos. It can
+ * record (headless) when no Edge or Chrome is installed, but it cannot show a
+ * window, so "I'll sign in myself" is not possible with it.
+ */
+export function findHeadlessShell(): string | null {
+  const base = join(homedir(), '.cache', 'hyperframes', 'chrome', 'chrome-headless-shell')
+  const exeName = process.platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell'
+  try {
+    for (const v of readdirSync(base).sort().reverse()) {
+      for (const inner of readdirSync(join(base, v))) {
+        const exe = join(base, v, inner, exeName)
+        if (existsSync(exe)) return exe
+      }
+    }
+  } catch {
+    /* not downloaded yet */
+  }
   return null
+}
+
+/** true when the browser can open a visible window (a person can sign in, or type a code) */
+export function canShowWindow(path: string | null = findChrome()): boolean {
+  return !!path && !/headless-shell/i.test(path)
 }
 
 export interface LaunchOptions {
@@ -45,10 +71,13 @@ export interface LaunchOptions {
 
 export async function launch(opts: LaunchOptions): Promise<Browser> {
   const executablePath = findChrome()
-  if (!executablePath) throw new Error('No Chrome or Edge was found on this computer')
+  if (!executablePath) throw new Error('No Edge or Chrome was found on this computer, and the app has not downloaded its own browser yet. Install Edge or Chrome and try again.')
+  const wantsWindow = opts.headless === false
+  if (wantsWindow && !canShowWindow(executablePath)) throw new Error("“I’ll sign in myself” needs Edge or Chrome installed, because it opens a window for you. Install one, or save a login instead.")
   return puppeteer.launch({
     executablePath,
-    headless: opts.headless ?? true,
+    // the downloaded headless-only browser uses the classic headless mode
+    headless: wantsWindow ? false : /headless-shell/i.test(executablePath) ? 'shell' : true,
     userDataDir: opts.userDataDir,
     defaultViewport: { width: opts.width ?? 1280, height: opts.height ?? 720, deviceScaleFactor: opts.scale ?? 2 },
     args: ['--hide-scrollbars', '--force-color-profile=srgb', '--font-render-hinting=none', '--no-first-run', '--disable-extensions', '--lang=en-US', '--disable-features=Translate,MediaRouter']

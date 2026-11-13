@@ -316,7 +316,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
           )}
         </div>
 
-        {live && <RunPanel live={live} onClose={() => setLive(null)} />}
+        {live && <RunPanel live={live} onClose={() => setLive(null)} onReviewAnswered={() => setLive((l) => (l ? { ...l, review: null } : l))} />}
 
         {myRuns.length > 0 && (
           <div className="mt-8">
@@ -340,7 +340,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
   )
 }
 
-function RunPanel({ live, onClose }: { live: Live; onClose: () => void }) {
+function RunPanel({ live, onClose, onReviewAnswered }: { live: Live; onClose: () => void; onReviewAnswered: () => void }) {
   const idx = STAGES.findIndex((s) => s.id === live.stage)
   const done = live.result
   return (
@@ -372,7 +372,7 @@ function RunPanel({ live, onClose }: { live: Live; onClose: () => void }) {
         </div>
       )}
 
-      {live.review && <ReviewPanel beats={live.review.beats} advisory={live.review.advisory} notes={live.review.notes} />}
+      {live.review && <ReviewPanel beats={live.review.beats} advisory={live.review.advisory} notes={live.review.notes} onAnswered={onReviewAnswered} />}
 
       {!done && live.logs.length > 0 && (
         <details className="mt-3 text-xs text-ink/55">
@@ -402,7 +402,7 @@ function RunPanel({ live, onClose }: { live: Live; onClose: () => void }) {
   )
 }
 
-function ReviewPanel({ beats, advisory, notes }: { beats: ReviewBeat[]; advisory: string[]; notes: string[] }) {
+function ReviewPanel({ beats, advisory, notes, onAnswered }: { beats: ReviewBeat[]; advisory: string[]; notes: string[]; onAnswered: () => void }) {
   const [text, setText] = useState<Record<number, string>>(() => Object.fromEntries(beats.map((b) => [b.beat, b.text])))
   const [removed, setRemoved] = useState<number[]>([])
   return (
@@ -426,12 +426,15 @@ function ReviewPanel({ beats, advisory, notes }: { beats: ReviewBeat[]; advisory
       {notes.length > 0 && <div className="mt-2 text-[11px] text-ink/50">{notes.join(' · ')}</div>}
       <div className="mt-3 flex gap-2">
         <button
-          onClick={() => api.appRec.review({ removeBeats: removed, lines: Object.fromEntries(beats.filter((b) => text[b.beat] !== b.text).map((b) => [b.beat, text[b.beat]])) })}
+          onClick={async () => {
+            await api.appRec.review({ removeBeats: removed, lines: Object.fromEntries(beats.filter((b) => text[b.beat] !== b.text).map((b) => [b.beat, text[b.beat]])) })
+            onAnswered()
+          }}
           className="btn-primary !px-5 !py-2 !text-sm"
         >
           ✅ Approve and record
         </button>
-        <button onClick={() => api.appRec.review(null)} className="btn-ghost !py-2 !text-sm">Cancel</button>
+        <button onClick={async () => { await api.appRec.review(null); onAnswered() }} className="btn-ghost !py-2 !text-sm">Cancel</button>
       </div>
     </div>
   )

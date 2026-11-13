@@ -54,7 +54,8 @@ export class AppReconStore {
   save(input: AppInput): SavedApp {
     const apps = this.readJson<SavedApp[]>(this.appsFile, [])
     const now = new Date().toISOString()
-    const existing = input.id ? apps.find((a) => a.id === input.id) : undefined
+    // saving the same app again (same name and address) updates it instead of making a copy
+    const existing = input.id ? apps.find((a) => a.id === input.id) : apps.find((a) => a.url === input.url && a.name === input.name)
     if (input.id && !existing) throw new Error('That app no longer exists')
     const secrets = this.readJson<Record<string, { u: string; p: string }>>(this.secretsFile, {})
     const id = existing?.id ?? rid('app', 6)

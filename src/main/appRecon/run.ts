@@ -226,14 +226,26 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       targetSec: inp.mode === 'launch' ? inp.launch?.targetSec : undefined,
       keep: false
     })
-    if (!inp.keepFiles) {
-      rmSync(join(inp.runDir, 'frames'), { recursive: true, force: true })
-      rmSync(join(inp.runDir, 'profile'), { recursive: true, force: true })
-    }
     return { ...base, plan, video: res.file, durationSec: res.durationSec, redactionMisses: take.redactionMisses }
   } finally {
     inp.signal?.removeEventListener('abort', onAbort)
     await browser.close().catch(() => undefined)
-    if (!inp.keepFiles) rmSync(join(inp.runDir, 'profile'), { recursive: true, force: true })
+    // temporary files go once the browser has let go of them; a stubborn file never fails a finished run
+    if (!inp.keepFiles) {
+      await removeQuietly(join(inp.runDir, 'frames'))
+      await removeQuietly(join(inp.runDir, 'profile'))
+    }
+  }
+}
+
+/** remove a folder, waiting out Windows file locks; gives up quietly */
+export async function removeQuietly(path: string, tries = 8): Promise<void> {
+  for (let i = 0; i < tries; i++) {
+    try {
+      rmSync(path, { recursive: true, force: true })
+      return
+    } catch {
+      await new Promise((r) => setTimeout(r, 400))
+    }
   }
 }

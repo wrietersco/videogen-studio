@@ -65,6 +65,14 @@ describe('saved apps', () => {
     expect(store.secrets(app.id)?.password).toBe('new-pass-9')
   })
 
+  it('saving the same app again updates it instead of making a copy', () => {
+    const a = store.save(input())
+    const b = store.save(input({ context: 'changed' }))
+    expect(b.id).toBe(a.id)
+    expect(store.list()).toHaveLength(1)
+    expect(store.get(a.id)?.context).toBe('changed')
+  })
+
   it('refuses to save a stored login without a password', () => {
     expect(() => store.save(input({ password: undefined }))).toThrow(/password/)
   })
