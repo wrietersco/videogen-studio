@@ -90,6 +90,8 @@ export interface ImageGenRequest {
 export interface LLMProvider {
   readonly id: ProviderId
   readonly label: string
+  /** False when the selected model is known not to accept images. */
+  supportsVision?(): boolean
   isConfigured(): Promise<boolean>
   listModels(): Promise<ModelInfo[]>
   /** curated image-generation catalog when the provider offers one */

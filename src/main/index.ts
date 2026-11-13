@@ -6,7 +6,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 
 // ESM output: derive the directory from import.meta.url
 const moduleDir = dirname(fileURLToPath(import.meta.url))
 import { VideoSpec } from '@shared/spec'
-import { Orchestrator, GenerationCancelled, type GenerateOptions } from './pipeline/orchestrator'
+import { Orchestrator, GenerationCancelled, isIsometricOnlyBrief, type GenerateOptions } from './pipeline/orchestrator'
 import { ProjectStore } from './store/projectStore'
 import { providerRegistry } from './providers/registry'
 import type { LLMProvider, ProviderId } from './providers/types'
@@ -389,7 +389,10 @@ function startJob(kind: UsageRun['kind'], o: { title: string; projectId: string 
   }
   emitJobs()
   meter
-    .scope(usage, () => body(run, onEvent))
+    .scope(usage, () => {
+      if (o.projectId) meter.bindProject(store.dir(o.projectId))
+      return body(run, onEvent)
+    })
     .catch((err) => {
       if (!(err instanceof GenerationCancelled)) {
         emit('gen:event', { stage: 'pipeline', status: 'failed', error: String(err), projectId: jobProject(job), jobId: job.id })
@@ -397,10 +400,15 @@ function startJob(kind: UsageRun['kind'], o: { title: string; projectId: string 
     })
     .finally(() => {
       const id = jobProject(job)
-      const closed = meter.close(usage, id ? store.dir(id) : null)
-      jobs.delete(job.id)
-      if (id) emit('usage:run', { projectId: id, run: closed })
-      emitJobs()
+      try {
+        const closed = meter.close(usage, id ? store.dir(id) : null)
+        if (id) emit('usage:run', { projectId: id, run: closed })
+      } catch (err) {
+        console.warn('[usage] could not finish receipt', err)
+      } finally {
+        jobs.delete(job.id)
+        emitJobs()
+      }
     })
   return { ok: true }
 }
@@ -426,6 +434,10 @@ type GenRequest = Omit<GenerateOptions, 'brand'> & { shapeLocked?: boolean; prog
  */
 async function startGenerate(opts: GenRequest, tap?: (ev: Record<string, unknown>) => void): Promise<{ ok: true } | { ok: false; error: string; code?: string }> {
   const programmatic = opts.programmatic === true || mode === 'programmatic'
+  if (mode !== 'programmatic' && isIsometricOnlyBrief(opts.prompt)) {
+    const vision = providerRegistry.forRole('image-process') ?? providerRegistry.active()
+    if (vision.supportsVision?.() === false) return { ok: false, error: 'The selected image-review model cannot inspect images. Choose an image-capable model for that role in Settings; your choices were not changed.' }
+  }
   const projectKey = newProjectKey()
   const title = opts.prompt.slice(0, 120)
   const gate = jobGate(null)

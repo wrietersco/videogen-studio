@@ -7,7 +7,8 @@ import { templateSkeleton } from '@shared/promptTemplates'
 import { CostReceipt } from '../components/CostReceipt'
 import { ErrorCard } from '../components/friendly'
 import { estimateVideoCost, fmtUsd } from '@shared/pricing'
-import type { SettingsView } from '../api'
+import type { AccountState, SettingsView } from '../api'
+import { aiVideosLeft } from '../aiAllowance'
 import { useAccount } from '../components/Account'
 import { BrandPicker } from '../components/BrandKit'
 import { parseDirectives, type BrandOverride, type Directive } from '@shared/directives'
@@ -154,7 +155,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
   const directives: Directive[] = parseDirectives(prompt, refs.map((r) => ({ path: r.path, name: r.name, role: r.role })), kitInfo).filter((d) => !dismissed.includes(d.id))
   const [startError, setStartError] = useState<string | null>(null)
   const unsubRef = useRef<(() => void) | null>(null)
-  const [cfg, setCfg] = useState<SettingsView | null>(null)
+  const [cfg, setCfg] = useState<(SettingsView & { mode: AccountState['mode'] }) | null>(null)
   const [account] = useAccount()
   useEffect(() => {
     // the settings as the plan allows them, so the estimate shows what will really run
@@ -162,7 +163,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
   }, [account?.mode, account?.view?.entitlements.plan])
   const ent = account?.view?.entitlements ?? null
   const aiOn = account?.mode === 'plan' || account?.mode === 'own-keys'
-  const aiLeft = account?.mode === 'plan' ? (ent?.usage.aiVideosLeft ?? 0) : null
+  const aiLeft = account?.mode === 'plan' ? aiVideosLeft(ent?.usage) : null
   /** AI video, or programmatic (free, unlimited, no AI) */
   const [kind, setKind] = useState<'ai' | 'programmatic'>('ai')
   const programmatic = !aiOn || kind === 'programmatic' || aiLeft === 0
@@ -245,7 +246,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
   }, [])
 
   const generate = async () => {
-    if (!prompt.trim() || starting || !cfg) return
+    if (!prompt.trim() || starting || !cfg || !account || cfg.mode !== account.mode) return
     setStartError(null)
     setStarting(true)
     const res = await api.generate({
@@ -692,7 +693,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
             )}
             <button
               onClick={generate}
-              disabled={!prompt.trim() || !cfg || starting || atCap}
+              disabled={!prompt.trim() || !cfg || !account || cfg.mode !== account.mode || starting || atCap}
               className="btn-primary flex-1 !rounded-2xl !py-4 !text-lg"
               title={atCap ? '3 videos are already being made — stop one or wait' : prompt.trim() ? 'Ctrl+Enter works too' : 'Type your idea first'}
             >

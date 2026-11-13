@@ -49,10 +49,6 @@ const CHAT_MODELS: ModelInfo[] = [
 const DEFAULT_CHAT_MODEL = 'deepseek-flash'
 /** tokens kept free for the model's thinking, on top of the answer budget a caller asks for */
 const THINKING_HEADROOM = 12000
-/** the model that can see; V4 Pro cannot, so a judgement that carries images rides on this one */
-const VISION_MODEL = 'deepseek-flash'
-const visionOf = (model: string): string => (CHAT_MODELS.find((m) => m.id === model)?.supportsVision === false ? VISION_MODEL : model)
-
 /** Renamed ids keep older saved selections working (the old chat/reasoner split is one thinking-mode model now). */
 const CHAT_MODEL_ALIASES: Record<string, string> = {
   'deepseek-chat': 'deepseek-flash',
@@ -78,16 +74,19 @@ export class DeepseekProvider implements LLMProvider {
     return this.key().length > 0
   }
 
+  supportsVision(): boolean {
+    const model = resolveChatModel(this.modelOverride?.())
+    return CHAT_MODELS.find(m => m.id === model)?.supportsVision !== false
+  }
+
   /** Curated catalog — hardcoded, no /models round-trip. */
   async listModels(): Promise<ModelInfo[]> {
     return CHAT_MODELS
   }
 
   async generateJSON<T>(req: GenerateJSONRequest): Promise<T> {
-    // structured calls with images are visual judgements (review, locate, score): they need a model that sees.
-    // Writing calls keep the chosen model — their callers retry without images when it cannot see.
-    const chosen = resolveChatModel(this.modelOverride?.())
-    const model = req.images?.length ? visionOf(chosen) : chosen
+    const model = resolveChatModel(this.modelOverride?.())
+    if (req.images?.length && !this.supportsVision()) throw new ProviderError(`Selected model ${model} cannot review images. Choose an image-capable model for this role in Settings.`, this.id, 'invalid-request')
     const text = await this.chat(model, {
       system: `${req.system}\n\nRespond with ONLY a JSON value matching this schema (no prose, no code fences):\n${JSON.stringify(req.jsonSchema)}`,
       prompt: req.prompt,
@@ -101,6 +100,7 @@ export class DeepseekProvider implements LLMProvider {
 
   async generateText(req: GenerateTextRequest): Promise<string> {
     const model = resolveChatModel(this.modelOverride?.())
+    if (req.images?.length && !this.supportsVision()) throw new ProviderError(`Selected model ${model} cannot review images. Choose an image-capable model for this role in Settings.`, this.id, 'invalid-request')
     return this.chat(model, {
       system: req.system,
       prompt: req.prompt,

@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { randomUUID } from 'node:crypto'
 import { priceUsage, type MediaKind, type UsageNumbers } from '@shared/pricing'
 
 /**
@@ -27,6 +28,8 @@ export interface UsageEntry {
 }
 
 export interface UsageRun {
+  /** Stable run identity makes checkpoints idempotent. */
+  id?: string
   kind: 'generate' | 'revise' | 'rerender' | 'resume' | 'library' | 'footage'
   startedAt: string
   endedAt?: string
@@ -45,10 +48,12 @@ export interface ProjectUsage {
 export interface OpenRun {
   run: UsageRun
   stage: string
+  projectDir?: string
+  checkpointedEntries?: number
 }
 
 const fresh = (kind: UsageRun['kind']): OpenRun => ({
-  run: { kind, startedAt: new Date().toISOString(), entries: [], totalUsd: 0, savedUsd: 0 },
+  run: { id: randomUUID(), kind, startedAt: new Date().toISOString(), entries: [], totalUsd: 0, savedUsd: 0 },
   stage: 'setup'
 })
 
@@ -75,6 +80,27 @@ class UsageMeter {
   /** run `fn` with every meter.record made inside it (however deep) filed under `open` */
   scope<T>(open: OpenRun, fn: () => Promise<T>): Promise<T> {
     return this.scoped.run(open, fn)
+  }
+
+  /** Bind only this async job's ledger after its project exists. */
+  bindProject(projectDir: string): void {
+    const open = this.active()
+    if (!open) return
+    if (open.projectDir && open.projectDir !== projectDir) throw new Error('Usage run is already bound to another project')
+    open.projectDir = projectDir
+    this.checkpoint(open)
+  }
+
+  private checkpoint(open: OpenRun): void {
+    if (!open.projectDir || !open.run.entries.length || open.checkpointedEntries === open.run.entries.length) return
+    try {
+      this.save(open.run, open.projectDir)
+      open.checkpointedEntries = open.run.entries.length
+    } catch (err) {
+      // A receipt write failure must not cancel a generation; a later call or
+      // normal close will try again without losing the in-memory entries.
+      console.warn('[usage] checkpoint failed', err)
+    }
   }
 
   setStage(stage: string): void {
@@ -107,6 +133,7 @@ class UsageMeter {
       open.run.entries.push(entry)
       if (e.saved) open.run.savedUsd += usd
       else open.run.totalUsd += usd
+      this.checkpoint(open)
       for (const l of this.listeners) l(entry, open.run)
     }
     return entry
@@ -118,26 +145,35 @@ class UsageMeter {
 
   /** close a scoped run and append it to <projectDir>/usage.json (no-op without a project) */
   close(open: OpenRun, projectDir: string | null): UsageRun {
-    return this.file(open.run, projectDir)
+    if (open.projectDir && projectDir && open.projectDir !== projectDir) throw new Error('Usage run cannot close against another project')
+    return this.file(open.run, open.projectDir ?? projectDir)
   }
 
   /** close the run and append it to <projectDir>/usage.json (no-op without a project) */
   end(projectDir: string | null): UsageRun | null {
     const open = this.single
     this.single = null
-    return open ? this.file(open.run, projectDir) : null
+    return open ? this.close(open, projectDir) : null
   }
 
   private file(run: UsageRun, projectDir: string | null): UsageRun {
     run.endedAt = new Date().toISOString()
     if (projectDir && run.entries.length > 0) {
-      const u = readProjectUsage(projectDir)
-      u.runs.push(run)
-      u.totalUsd = u.runs.reduce((a, r) => a + r.totalUsd, 0)
-      u.savedUsd = u.runs.reduce((a, r) => a + r.savedUsd, 0)
-      writeFileSync(join(projectDir, 'usage.json'), JSON.stringify(u, null, 2))
+      this.save(run, projectDir)
     }
     return run
+  }
+
+  private save(run: UsageRun, projectDir: string): void {
+    const u = readProjectUsage(projectDir)
+    const index = run.id ? u.runs.findIndex(r => r.id === run.id) : -1
+    if (index < 0) u.runs.push(run)
+    else u.runs[index] = run
+    u.totalUsd = u.runs.reduce((a, r) => a + r.totalUsd, 0)
+    u.savedUsd = u.runs.reduce((a, r) => a + r.savedUsd, 0)
+    const target = join(projectDir, 'usage.json'), temp = join(projectDir, `.usage-${randomUUID()}.tmp`)
+    try { writeFileSync(temp, JSON.stringify(u, null, 2)); renameSync(temp, target) }
+    finally { if (existsSync(temp)) try { unlinkSync(temp) } catch { /* best effort */ } }
   }
 }
 
