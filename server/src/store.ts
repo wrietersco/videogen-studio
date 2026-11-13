@@ -1,3 +1,4 @@
+import type { RequestRecord, RequestStatus } from '../../src/shared/requests'
 import type { Account, Grant, License, MonthUsage, PlanId } from '../../src/shared/plans'
 
 /**
@@ -112,6 +113,13 @@ export interface Store {
   ): Promise<StartVideoOutcome>
   /** add one call's cost to the month (and the video's grant, or today's helper budget) */
   charge(subject: string, month: string, c: { projectKey: string | null; day: string; usd: number; isClip: boolean; model: string; refs: string[] }): Promise<void>
+
+  createRequest(r: RequestRecord): Promise<void>
+  getRequest(id: string): Promise<RequestRecord | null>
+  /** newest first; `status` filters, `uid` limits to one requester */
+  listRequests(opts: { status?: RequestStatus; uid?: string; limit: number }): Promise<RequestRecord[]>
+  /** merge fields into a request; 404 when it does not exist */
+  updateRequest(id: string, patch: Partial<RequestRecord>): Promise<RequestRecord>
 
   audit(entry: AuditEntry): Promise<void>
   listAudit(limit: number): Promise<AuditEntry[]>

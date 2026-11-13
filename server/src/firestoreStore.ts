@@ -10,6 +10,7 @@ import {
   type Store,
   type UserRecord
 } from './store'
+import type { RequestRecord, RequestStatus } from '../../src/shared/requests'
 import type { MonthUsage } from '../../src/shared/plans'
 import { sha256 } from './upstream'
 
@@ -27,6 +28,7 @@ import { sha256 } from './upstream'
  *   vg_licenses/{id}          keyHash, never the key
  *   vg_usage/{subject}_{YYYY-MM}
  *   vg_grants/{sha256(subject|projectKey)}
+ *   vg_requests/{id}         upgrade requests and messages to the superadmins
  *   vg_audit/{auto}
  */
 export class FirestoreStore implements Store {
@@ -182,6 +184,35 @@ export class FirestoreStore implements Store {
           refs: [...new Set([...(grant.refs ?? []), ...c.refs])].slice(-200)
         })
       }
+    })
+  }
+
+  async createRequest(r: RequestRecord) {
+    await this.col('requests').doc(r.id).create(r)
+  }
+  async getRequest(id: string) {
+    const d = await this.col('requests').doc(id).get()
+    return d.exists ? (d.data() as RequestRecord) : null
+  }
+  async listRequests(opts: { status?: RequestStatus; uid?: string; limit: number }) {
+    // single-field filters only (no composite index needed); ordering happens here
+    let q = this.col('requests') as FirebaseFirestore.Query
+    if (opts.uid) q = q.where('uid', '==', opts.uid)
+    else if (opts.status) q = q.where('status', '==', opts.status)
+    const rows = (await q.limit(1000).get()).docs.map((d) => d.data() as RequestRecord)
+    return rows
+      .filter((r) => (!opts.status || r.status === opts.status) && (!opts.uid || r.uid === opts.uid))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, opts.limit)
+  }
+  async updateRequest(id: string, patch: Partial<RequestRecord>) {
+    const ref = this.col('requests').doc(id)
+    return this.db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref)
+      if (!snap.exists) throw new StoreError(404, 'request_not_found', 'No such request.')
+      const next = { ...(snap.data() as RequestRecord), ...patch, id }
+      tx.set(ref, next)
+      return next
     })
   }
 

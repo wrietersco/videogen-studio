@@ -9,6 +9,7 @@ import {
   type Store,
   type UserRecord
 } from './store'
+import type { RequestRecord, RequestStatus } from '../../src/shared/requests'
 import type { MonthUsage } from '../../src/shared/plans'
 import { sha256 } from './upstream'
 
@@ -22,6 +23,7 @@ export class MemoryStore implements Store {
   usage = new Map<string, MonthUsage>()
   grants = new Map<string, GrantRecord>()
   auditLog: AuditEntry[] = []
+  requests = new Map<string, RequestRecord>()
 
   private copy<T>(v: T): T {
     return v === null || v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T)
@@ -143,6 +145,29 @@ export class MemoryStore implements Store {
         g.refs = [...new Set([...g.refs, ...c.refs])].slice(-200)
       }
     }
+  }
+
+  async createRequest(r: RequestRecord) {
+    if (this.requests.has(r.id)) throw new StoreError(409, 'exists', 'Request already exists.')
+    this.requests.set(r.id, this.copy(r))
+  }
+  async getRequest(id: string) {
+    return this.copy(this.requests.get(id) ?? null)
+  }
+  async listRequests(opts: { status?: RequestStatus; uid?: string; limit: number }) {
+    return this.copy(
+      [...this.requests.values()]
+        .filter((r) => (!opts.status || r.status === opts.status) && (!opts.uid || r.uid === opts.uid))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .slice(0, opts.limit)
+    )
+  }
+  async updateRequest(id: string, patch: Partial<RequestRecord>) {
+    const existing = this.requests.get(id)
+    if (!existing) throw new StoreError(404, 'request_not_found', 'No such request.')
+    const next = { ...existing, ...patch, id }
+    this.requests.set(id, next)
+    return this.copy(next)
   }
 
   async audit(entry: AuditEntry) {

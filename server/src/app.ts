@@ -19,6 +19,8 @@ import {
   type PlanId,
   type Policy
 } from '../../src/shared/plans'
+import { REQUEST_LIMITS, UPGRADE_PLANS, requestLabel, type MyRequest, type RequestRecord } from '../../src/shared/requests'
+import type { Mailer } from './mailer'
 import { AuthError, bearer, hashKey, keyHint, LICENSE_KEY_RE, newId, newLicenseKey, type Caller, type TokenVerifier } from './auth'
 import { StoreError, subjectOf, type DeviceRecord, type GrantRecord, type LicenseRecord, type Store, type UserRecord } from './store'
 import { authHeader, estimateCall, matchRoute, meterCall, refsFromResponse, RouteError, UPSTREAM_BASE, type ProviderName, type RouteMatch } from './upstream'
@@ -42,6 +44,12 @@ export interface AppDeps {
   consoleDir?: string
   /** console page config (Firebase web config); public by design */
   consoleConfig?: Record<string, string>
+  /** outgoing mail; absent = no mail, requests are still saved */
+  mailer?: Mailer
+  /** where "someone asked" notes go */
+  notifyTo?: string
+  /** public address of the console, for links in mails */
+  consoleUrl?: string
 }
 
 class HttpError extends Error {
@@ -276,6 +284,112 @@ export function createApp(deps: AppDeps) {
     return { devices: await store.listDevices(c.uid) }
   }
 
+  // ---------------- requests (upgrades and messages) ----------------
+
+  const notifyTo = deps.notifyTo ?? 'hello@snapkodex.com'
+  const consoleUrl = (deps.consoleUrl ?? 'https://videogen-admin.web.app/console/').replace(/#.*$/, '')
+
+  /** a mail that fails or is not configured never costs a request: it is logged and audited instead */
+  async function mail(m: { to: string; subject: string; text: string; replyTo?: string }, target: string | null): Promise<void> {
+    if (!deps.mailer) return
+    try {
+      await deps.mailer.send(m)
+    } catch (e) {
+      console.warn('[server] mail not sent:', (e as Error).message)
+      await audit('server', 'mail_failed', target, { to: m.to, subject: m.subject, error: String((e as Error).message).slice(0, 200) }).catch(() => undefined)
+    }
+  }
+
+  const mine = (r: RequestRecord): MyRequest => ({
+    id: r.id,
+    kind: r.kind,
+    status: r.status,
+    ...(r.plan ? { plan: r.plan } : {}),
+    ...(r.seats ? { seats: r.seats } : {}),
+    ...(r.subject ? { subject: r.subject } : {}),
+    ...(r.reason ? { reason: r.reason } : {}),
+    createdAt: r.createdAt,
+    ...(r.decidedAt ? { decidedAt: r.decidedAt } : {})
+  })
+
+  /** what the requester's app shows: open ones, and decided upgrades until they are dismissed */
+  async function myRequests(uid: string): Promise<{ requests: MyRequest[] }> {
+    const all = await store.listRequests({ uid, limit: 50 })
+    return { requests: all.filter((r) => r.status !== 'cancelled' && !r.dismissed && (r.kind === 'upgrade' || r.status === 'open')).map(mine) }
+  }
+
+  async function createRequest(req: IncomingMessage) {
+    const ctx = await account(req)
+    limit(`request:${ctx.user.uid}`, 10, 60 * 60_000)
+    // the reply goes to the verified address, so an unverified one could be used to write to strangers
+    if (!ctx.caller.emailVerified) throw new HttpError(403, 'email_unverified', 'Verify your email address first, then try again.')
+    if (ctx.user.status === 'blocked') throw new HttpError(403, 'account_blocked', 'This account has been blocked. Contact support.')
+    const body = parseJson(await readBody(req, 16 * 1024))
+    const t = iso(now())
+    const base = { id: newId('req'), uid: ctx.user.uid, email: ctx.caller.email, name: ctx.user.displayName || ctx.caller.email, status: 'open' as const, createdAt: t, updatedAt: t }
+    let record: RequestRecord
+    if (body.kind === 'upgrade') {
+      if (!UPGRADE_PLANS.includes(body.plan as PlanId)) throw new HttpError(400, 'bad_plan', 'Pick Plus, Pro or Ultra.')
+      const seats = body.seats === undefined ? 1 : Number(body.seats)
+      if (!Number.isInteger(seats) || seats < 1 || seats > REQUEST_LIMITS.seatsMax) throw new HttpError(400, 'bad_seats', `Seats must be a whole number from 1 to ${REQUEST_LIMITS.seatsMax}.`)
+      // one open upgrade per account: a new click replaces the old one
+      for (const old of await store.listRequests({ uid: ctx.user.uid, status: 'open', limit: 50 })) {
+        if (old.kind === 'upgrade') await store.updateRequest(old.id, { status: 'cancelled', updatedAt: t })
+      }
+      record = { ...base, kind: 'upgrade', plan: body.plan as PlanId, seats }
+    } else if (body.kind === 'message') {
+      const subject = str(body.subject, REQUEST_LIMITS.subject)
+      const text = str(body.body, REQUEST_LIMITS.body)
+      if (!text) throw new HttpError(400, 'empty_message', 'Write a message first.')
+      const openMessages = (await store.listRequests({ uid: ctx.user.uid, status: 'open', limit: 50 })).filter((r) => r.kind === 'message').length
+      if (openMessages >= 5) throw new HttpError(429, 'too_many_open', 'You already have several messages waiting. We will reply soon.')
+      record = { ...base, kind: 'message', subject, body: text }
+    } else throw new HttpError(400, 'bad_kind', 'Send an upgrade request or a message.')
+    await store.createRequest(record)
+    await audit(ctx.caller.email, 'request_created', record.id, { kind: record.kind, plan: record.plan ?? null, seats: record.seats ?? null })
+    await mail(
+      {
+        to: notifyTo,
+        replyTo: ctx.caller.email,
+        subject: `[VideoGen] ${requestLabel(record)} from ${ctx.caller.email}`,
+        text: [
+          `${ctx.caller.email} sent a request.`,
+          '',
+          requestLabel(record),
+          ...(record.kind === 'message' ? ['', record.body ?? ''] : []),
+          '',
+          `Open it in the console to approve or reject: ${consoleUrl}#requests/${record.id}`
+        ].join('\n')
+      },
+      record.id
+    )
+    return { request: mine(record), ...(await myRequests(ctx.user.uid)) }
+  }
+
+  async function ownRequest(req: IncomingMessage, id: string): Promise<{ ctx: Ctx; r: RequestRecord }> {
+    const ctx = await account(req)
+    limit(`request:${ctx.user.uid}`, 30, 60 * 60_000)
+    const r = await store.getRequest(id)
+    // not found and not yours look the same
+    if (!r || r.uid !== ctx.user.uid) throw new HttpError(404, 'request_not_found', 'No such request.')
+    return { ctx, r }
+  }
+
+  async function cancelRequest(req: IncomingMessage, id: string) {
+    const { ctx, r } = await ownRequest(req, id)
+    if (r.status !== 'open') throw new HttpError(409, 'not_open', 'That request has already been answered.')
+    await store.updateRequest(r.id, { status: 'cancelled', updatedAt: iso(now()) })
+    await audit(ctx.caller.email, 'request_cancelled', r.id, {})
+    return myRequests(ctx.user.uid)
+  }
+
+  async function dismissRequest(req: IncomingMessage, id: string) {
+    const { ctx, r } = await ownRequest(req, id)
+    if (r.status === 'open') throw new HttpError(409, 'still_open', 'That request is still waiting. Cancel it instead.')
+    await store.updateRequest(r.id, { dismissed: true })
+    return myRequests(ctx.user.uid)
+  }
+
   // ---------------- AI videos ----------------
 
   async function startVideo(req: IncomingMessage) {
@@ -482,11 +596,78 @@ export function createApp(deps: AppDeps) {
     return out
   }
 
+  async function decideRequest(me: { email: string }, id: string, action: 'approve' | 'reject' | 'handled', body: Record<string, unknown>) {
+    const r = await store.getRequest(id)
+    if (!r) throw new HttpError(404, 'request_not_found', 'No such request.')
+    if (r.status !== 'open') throw new HttpError(409, 'not_open', `That request was already ${r.status}.`)
+    const t = iso(now())
+    const reason = str(body.reason, REQUEST_LIMITS.reason)
+    if (action === 'handled') {
+      if (r.kind !== 'message') throw new HttpError(400, 'not_a_message', 'Only messages are marked handled. Approve or reject an upgrade.')
+      const after = await store.updateRequest(id, { status: 'handled', decidedBy: me.email, decidedAt: t, updatedAt: t })
+      await audit(me.email, 'request_handled', id, {})
+      return { request: after }
+    }
+    if (action === 'reject') {
+      if (r.kind !== 'upgrade') throw new HttpError(400, 'not_an_upgrade', 'Only upgrade requests are rejected. Mark a message handled.')
+      const after = await store.updateRequest(id, { status: 'rejected', decidedBy: me.email, decidedAt: t, updatedAt: t, reason })
+      await audit(me.email, 'request_rejected', id, { reason })
+      await mail(
+        { to: r.email, replyTo: notifyTo, subject: 'About your VideoGen upgrade request', text: [`Thanks for asking for ${requestLabel(r)}.`, '', reason ? `We cannot do this yet: ${reason}` : 'We cannot do this yet.', '', 'Reply to this email if you have questions.'].join('\n') },
+        id
+      )
+      return { request: after }
+    }
+    // approve
+    if (r.kind !== 'upgrade') throw new HttpError(400, 'not_an_upgrade', 'Only upgrade requests are approved. Mark a message handled.')
+    const user = await store.getUser(r.uid)
+    if (!user) throw new HttpError(404, 'user_not_found', 'That account no longer exists.')
+    let licenseId: string
+    const existing = user.licenseId ? await store.getLicense(user.licenseId) : null
+    if (existing) {
+      // already on a licence: change its plan and seats
+      licenseId = existing.id
+      const after = await store.updateLicense(existing.id, { plan: r.plan!, seats: r.seats ?? 1, updatedAt: t })
+      await audit(me.email, 'license_updated', existing.id, { plan: { before: existing.plan, after: after.plan }, seats: { before: existing.seats, after: after.seats }, via: id })
+    } else {
+      // a licence nobody holds a key for: the requester is linked directly; a key can still be issued later by rotating
+      const key = newLicenseKey()
+      const record: LicenseRecord = {
+        id: newId('lic'),
+        keyHash: hashKey(key),
+        keyHint: keyHint(key),
+        plan: r.plan!,
+        seats: r.seats ?? 1,
+        status: 'active',
+        paidThrough: null,
+        allowOwnKeys: false,
+        overrides: {},
+        customerName: r.name,
+        contactEmail: r.email,
+        notes: `Created from request ${id}`,
+        revenueUsdMonthly: 0,
+        createdAt: t,
+        createdBy: me.email
+      }
+      await store.createLicense(record)
+      licenseId = record.id
+      await store.joinLicense(r.uid, record.id)
+      await audit(me.email, 'license_created', record.id, { plan: record.plan, seats: record.seats, customerName: record.customerName, via: id })
+    }
+    const after = await store.updateRequest(id, { status: 'approved', decidedBy: me.email, decidedAt: t, updatedAt: t, licenseId })
+    await audit(me.email, 'request_approved', id, { plan: r.plan, seats: r.seats, licenseId })
+    await mail({ to: r.email, replyTo: notifyTo, subject: 'Your VideoGen upgrade is approved', text: [`Good news: ${requestLabel(r)} is approved.`, '', 'Open VideoGen Studio and the new plan will show up in Settings.'].join('\n') }, id)
+    return { request: after, licenseId }
+  }
+
   async function adminRoute(req: IncomingMessage, path: string, url: URL): Promise<unknown> {
     const me = await admin(req)
     const body = req.method === 'POST' ? parseJson(await readBody(req, MAX_ADMIN_BODY)) : {}
     const t = now()
     const month = monthKey(t)
+
+    const decide = /^\/admin\/requests\/([A-Za-z0-9_-]{1,40})\/(approve|reject|handled)$/.exec(path)
+    if (decide && req.method === 'POST') return decideRequest(me, decide[1], decide[2] as 'approve' | 'reject' | 'handled', body)
 
     switch (`${req.method} ${path}`) {
       case 'GET /admin/me':
@@ -645,6 +826,14 @@ export function createApp(deps: AppDeps) {
         return { policy: next }
       }
 
+      case 'GET /admin/requests': {
+        const st = url.searchParams.get('status') ?? 'open'
+        if (st !== 'all' && !['open', 'approved', 'rejected', 'handled', 'cancelled'].includes(st)) throw new HttpError(400, 'bad_status', 'Unknown status.')
+        const rows = await store.listRequests({ status: st === 'all' ? undefined : (st as RequestRecord['status']), limit: 300 })
+        const openCount = st === 'open' ? rows.length : (await store.listRequests({ status: 'open', limit: 300 })).length
+        return { requests: rows, openCount }
+      }
+
       case 'GET /admin/audit':
         return { entries: await store.listAudit(Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? 100) || 100))) }
 
@@ -716,6 +905,10 @@ export function createApp(deps: AppDeps) {
         const ctx = await account(req)
         return sendJson(res, 200, await view(ctx))
       }
+      if (req.method === 'POST' && path === '/v1/requests') return sendJson(res, 200, await createRequest(req))
+      if (req.method === 'GET' && path === '/v1/requests/mine') return sendJson(res, 200, await myRequests((await account(req)).user.uid))
+      const own = /^\/v1\/requests\/([A-Za-z0-9_-]{1,40})\/(cancel|dismiss)$/.exec(path)
+      if (req.method === 'POST' && own) return sendJson(res, 200, own[2] === 'cancel' ? await cancelRequest(req, own[1]) : await dismissRequest(req, own[1]))
       if (req.method === 'POST' && path === '/v1/videos/start') return sendJson(res, 200, await startVideo(req))
       const ai = /^\/v1\/ai\/([a-z]+)\/(.+)$/.exec(path)
       if (ai) return await relay(req, res, ai[1], ai[2] + url.search)

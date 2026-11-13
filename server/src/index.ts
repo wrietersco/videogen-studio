@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createApp } from './app'
 import { devVerifier, firebaseVerifier, type TokenVerifier } from './auth'
+import { smtpMailer, type Mailer } from './mailer'
 import { MemoryStore } from './memoryStore'
 import type { Store } from './store'
 import type { ProviderName } from './upstream'
@@ -63,6 +64,31 @@ function secret(provider: ProviderName): Promise<string | null> {
   return keyCache.get(provider)!
 }
 
+/**
+ * Mail: SMTP over TLS to the owner's mailbox. The password lives only in a
+ * Secret Manager secret and is read at send time; no secret (or local memory
+ * mode) means mail is skipped and requests are still saved.
+ */
+let smtpPassword: Promise<string | null> | null = null
+function mailPassword(): Promise<string | null> {
+  if (memory) return Promise.resolve(null)
+  smtpPassword ??= (async () => {
+    try {
+      const { SecretManagerServiceClient } = await import('@google-cloud/secret-manager')
+      const name = process.env.SMTP_PASSWORD_SECRET ?? `projects/${PROJECT}/secrets/snapkodex-smtp-password/versions/latest`
+      const [v] = await new SecretManagerServiceClient().accessSecretVersion({ name })
+      return v.payload?.data?.toString().trim() || null
+    } catch (e) {
+      console.warn('[server] no mail password, mail is off:', (e as Error).message)
+      smtpPassword = null // look again on a later send
+      return null
+    }
+  })()
+  return smtpPassword
+}
+const SMTP_USER = process.env.SMTP_USER ?? 'hello@snapkodex.com'
+const mailer: Mailer = smtpMailer({ host: process.env.SMTP_HOST ?? 'smtp.hostinger.com', port: Number(process.env.SMTP_PORT ?? 465), user: SMTP_USER, from: SMTP_USER, password: mailPassword })
+
 async function main(): Promise<void> {
   let store: Store
   let verifier: TokenVerifier
@@ -88,6 +114,9 @@ async function main(): Promise<void> {
     store,
     verifier,
     secret,
+    mailer,
+    notifyTo: process.env.NOTIFY_TO ?? SMTP_USER,
+    consoleUrl: process.env.CONSOLE_URL,
     consoleDir: process.env.VG_CONSOLE_DIR ?? join(here, '..', 'console'),
     consoleConfig: {
       apiKey: process.env.FIREBASE_WEB_API_KEY ?? '',
