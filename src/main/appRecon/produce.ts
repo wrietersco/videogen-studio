@@ -8,6 +8,7 @@ import { duck } from '../audio/mix'
 import { ffmpegBin, loudnorm, mixIn, SR, stereo, writeWav } from '../audio/pcm'
 import { scoreMusic } from '../audio/score'
 import { filterPath } from '../footage/captions'
+import { displayAddress } from './detect'
 
 /**
  * Turns a recorded take into the finished walkthrough:
@@ -150,8 +151,7 @@ export function addressTimeline(take: Take, offsetSec: number, totalSec: number)
   const navs = take.navigations.filter((n) => /^https?:/.test(n.url))
   const out: Array<{ from: number; to: number; text: string }> = []
   navs.forEach((n, i) => {
-    const u = new URL(n.url)
-    const text = (u.hostname + (u.pathname === '/' ? '' : u.pathname)).slice(0, 64)
+    const text = displayAddress(n.url)
     const from = i === 0 ? 0 : Math.max(0, n.t - offsetSec)
     const to = i + 1 < navs.length ? Math.max(0, navs[i + 1].t - offsetSec) : totalSec
     if (to > from && out.at(-1)?.text !== text) out.push({ from, to, text })

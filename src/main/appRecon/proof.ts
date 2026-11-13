@@ -5,6 +5,7 @@ import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { decodeMono, SR } from '../audio/pcm'
 import { speechBounds } from '../audio/voice'
 import { enforcePolicy, launch } from './browser'
+import { scanNarration } from './detect'
 import { interpretGuardrails, PolicyGate } from './policy'
 import { produce, readSec, type BeatPlan, type CardPlan } from './produce'
 import { FrameRecorder, prepare, runPlaybook } from './recorder'
@@ -148,6 +149,22 @@ export async function runProof(inp: ProofInput): Promise<{ video: string; durati
       } catch (err) {
         say(`  (writer unavailable, using the stock script: ${(err as Error).message.slice(0, 80)})`)
       }
+    }
+    // nothing is voiced until it has been checked: no secret, no private data, no promise the video cannot show
+    const scanOpts = { values: [VAULT.password, VAULT.username] }
+    lines = lines.map((l, i) => {
+      const c = scanNarration(l.text, scanOpts)
+      if (c.ok) return l
+      say(`  (beat ${l.beat} line replaced with the stock line: ${c.problems.join('; ')})`)
+      return { ...L5[i], beat: l.beat }
+    })
+    for (const which of ['intro', 'outro'] as const) {
+      const text = which === 'intro' ? introText : outroText
+      const c = scanNarration(text, scanOpts)
+      if (c.ok) continue
+      say(`  (${which} line replaced with the stock line: ${c.problems.join('; ')})`)
+      if (which === 'intro') introText = LAUNCH_LINES.intro
+      else outroText = LAUNCH_LINES.outro
     }
     const voiceOf = async (name: string, text: string, tone: string): Promise<Float32Array> => {
       if (!inp.speech) return new Float32Array(0)

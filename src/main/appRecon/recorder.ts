@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import type { CDPSession, Page } from 'puppeteer-core'
 import type { Playbook, Rect, Step, Take, TimelineBeat } from '@shared/appRecon'
 import type { PolicyGate } from './policy'
+import { checkSecretFill } from './detect'
+import { classifyField } from './sensitivity'
 import { redactionInitScript, cursorInitScript, verifyScript, type RedactionConfig } from './redact'
 
 /**
@@ -201,6 +203,16 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           await sleep(180 * pace)
           await page.mouse.click(mouse.x, mouse.y)
           await sleep(220 * pace)
+          // a stored secret goes only into the field it is for, on the app's own pages
+          for (const m of (step.text ?? '').matchAll(/\{\{secret:(\w+)\}\}/g)) {
+            const h = await page.$eval(step.selector, (el) => {
+              const i = el as HTMLInputElement
+              const lab = i.labels && i.labels[0] ? i.labels[0].innerText : ''
+              return { type: i.type || '', name: i.getAttribute('name') ?? '', id: i.id, label: lab || i.getAttribute('aria-label') || '', placeholder: i.getAttribute('placeholder') ?? '', autocomplete: i.getAttribute('autocomplete') ?? '' }
+            })
+            const fill = checkSecretFill({ secret: m[1], fieldKind: classifyField(h), pageAllowed: o.gate.hostAllowed(page.url()) })
+            if (!fill.allow) return { ok: false, failure: `${step.id}: blocked — ${fill.reason}`, beats, navigations, log, redactionMisses: misses }
+          }
           const value = resolve(step.text ?? '')
           await page.keyboard.type(value, { delay: pace === 0 ? 0 : 70 })
           say(step.id, `typed into "${step.label ?? step.selector}" (${value.length} characters)`)
