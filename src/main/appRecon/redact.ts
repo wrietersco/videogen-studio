@@ -1,3 +1,4 @@
+import { pageDetectorSource, type PrivateKind } from './detect'
 import { GENERIC_SENSITIVE_SELECTORS } from './sensitivity'
 
 /**
@@ -7,29 +8,72 @@ import { GENERIC_SENSITIVE_SELECTORS } from './sensitivity'
  *  - selectors: sensitive fields (from the scout and from generic rules)
  *  - values:    secrets the run knows (typed credentials, names). Wherever one
  *               of them appears as visible text, it is wrapped and blurred too.
+ *  - kinds:     private-looking text (tokens, card numbers, ssns; and with
+ *               privacy mode emails, phone numbers, long numbers) is blurred
+ *               wherever it appears, found by pattern.
+ *  - privacy:   the person asked to hide personal data: the contents of tables,
+ *               lists, fields, canvases and frames are blurred as whole blocks.
  *
- * Every step ends with a check (verifyScript). A recording with even one
- * unblurred sensitive element is flagged and must not ship.
+ * Shadow DOM is covered too: every shadow root a page creates gets the same
+ * style and is watched. Every step ends with a check (verifyScript) that looks
+ * everywhere the blur does. A recording with even one unblurred sensitive
+ * element is flagged and must not ship.
  */
 
 export interface RedactionConfig {
   selectors: string[]
   values: string[]
+  /** private-looking text to blur by pattern (default: tokens, card numbers, ssns) */
+  kinds?: PrivateKind[]
+  /** blur the contents of tables, lists, fields, canvases and frames as whole blocks */
+  privacy?: boolean
 }
 
-export function withGeneric(cfg: RedactionConfig): RedactionConfig {
-  return { selectors: [...new Set([...GENERIC_SENSITIVE_SELECTORS, ...cfg.selectors])], values: cfg.values.filter((v) => v.length >= 3) }
+/** what privacy mode blurs as whole blocks */
+export const PRIVACY_BLOCKS = [
+  'td',
+  '[role="gridcell"]',
+  '[role="cell"]',
+  'dd',
+  'input:not([type="password"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="hidden"])',
+  'textarea',
+  'select',
+  'canvas',
+  'iframe',
+  'img[src*="avatar" i]',
+  'img[alt*="avatar" i]',
+  'img[class*="avatar" i]'
+]
+
+const DEFAULT_KINDS: PrivateKind[] = ['token', 'card', 'ssn']
+const PRIVACY_KINDS: PrivateKind[] = ['token', 'card', 'ssn', 'email', 'phone', 'digits']
+
+export function withGeneric(cfg: RedactionConfig): Required<RedactionConfig> {
+  const privacy = cfg.privacy ?? false
+  return {
+    selectors: [...new Set([...GENERIC_SENSITIVE_SELECTORS, ...cfg.selectors, ...(privacy ? PRIVACY_BLOCKS : [])])],
+    values: cfg.values.filter((v) => v.length >= 3),
+    kinds: privacy ? PRIVACY_KINDS : (cfg.kinds ?? DEFAULT_KINDS),
+    privacy
+  }
 }
 
 const BLUR = 'blur(9px)'
 
-/** runs before any page script, on every navigation */
+/** runs before any page script, on every navigation, in every frame */
 export function redactionInitScript(config: RedactionConfig): string {
-  const cfg = JSON.stringify(withGeneric(config))
+  const c = withGeneric(config)
+  const cfg = JSON.stringify({ selectors: c.selectors, values: c.values })
   return String.raw`(() => {
+  if (window.__vgRoots) return;
   const cfg = ${cfg};
+  const detect = ${pageDetectorSource(c.kinds)};
   const css = cfg.selectors.map((s) => s + '{filter:${BLUR} !important;}').join('\n') +
     '\n[data-vg-redact]{filter:${BLUR} !important;display:inline-block;}';
+  const roots = [];
+  Object.defineProperty(window, '__vgRoots', { value: roots });
+
+  // the document's own style
   const mount = () => {
     if (!document.documentElement) return false;
     if (!document.getElementById('__vg_redact_css')) {
@@ -41,65 +85,110 @@ export function redactionInitScript(config: RedactionConfig): string {
     return true;
   };
   if (!mount()) new MutationObserver((_, o) => { if (mount()) o.disconnect(); }).observe(document, { childList: true });
-  const vals = cfg.values.map((v) => v.toLowerCase());
-  if (!vals.length) return;
+
+  // text to blur: known secret values, and anything that looks private
   const esc = (v) => v.replace(/[.*+?^$()|{}\[\]\\]/g, '\\$&');
-  const re = new RegExp('(' + cfg.values.map(esc).join('|') + ')', 'gi');
-  const scrub = () => {
-    if (!document.body) return;
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-      acceptNode: (n) => n.parentElement && !n.parentElement.closest('script,style,textarea,[data-vg-redact]') && vals.some((v) => n.nodeValue.toLowerCase().includes(v))
-        ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT
+  const valRe = cfg.values.length ? new RegExp('(' + cfg.values.map(esc).join('|') + ')', 'gi') : null;
+  const rangesIn = (text) => {
+    const out = [];
+    if (valRe) for (const m of text.matchAll(valRe)) out.push([m.index, m.index + m[0].length]);
+    for (const r of detect(text)) out.push([r.start, r.end]);
+    out.sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const r of out) { const last = merged[merged.length - 1]; if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]); else merged.push(r.slice()); }
+    return merged;
+  };
+  const scrubRoot = (root) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => {
+        const p = n.parentNode;
+        if (!p || (p.nodeType === 1 && p.closest('script,style,textarea,[data-vg-redact]'))) return NodeFilter.FILTER_REJECT;
+        return rangesIn(n.nodeValue).length ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      }
     });
     const hits = [];
     for (let n = walker.nextNode(); n; n = walker.nextNode()) hits.push(n);
     for (const n of hits) {
+      const text = n.nodeValue;
       const frag = document.createDocumentFragment();
       let last = 0;
-      const text = n.nodeValue;
-      text.replace(re, (m, g, idx) => {
-        frag.appendChild(document.createTextNode(text.slice(last, idx)));
+      for (const [a, b] of rangesIn(text)) {
+        frag.appendChild(document.createTextNode(text.slice(last, a)));
         const span = document.createElement('span');
         span.setAttribute('data-vg-redact', '');
-        span.textContent = m;
+        span.textContent = text.slice(a, b);
         frag.appendChild(span);
-        last = idx + m.length;
-        return m;
-      });
+        last = b;
+      }
       frag.appendChild(document.createTextNode(text.slice(last)));
       n.parentNode.replaceChild(frag, n);
     }
   };
   let queued = false;
-  const later = () => { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; scrub(); }); };
-  const start = () => { scrub(); new MutationObserver(later).observe(document.body, { childList: true, subtree: true, characterData: true }); };
+  const scrubAll = () => { if (document.body) scrubRoot(document.body); for (const r of roots) { styleRoot(r); scrubRoot(r); } };
+  const later = () => { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; scrubAll(); }); };
+  const watch = (root) => new MutationObserver(later).observe(root, { childList: true, subtree: true, characterData: true });
+
+  // shadow DOM: every root a page creates gets the same style and the same watching
+  // an adopted stylesheet survives a page rewriting the root's contents (innerHTML = ...), which a style element would not
+  let sheet = null;
+  const styleRoot = (root) => {
+    try {
+      if (!sheet) { sheet = new CSSStyleSheet(); sheet.replaceSync(css); }
+      if (!root.adoptedStyleSheets.includes(sheet)) root.adoptedStyleSheets = [...root.adoptedStyleSheets, sheet];
+      return;
+    } catch (e) {}
+    if (!root.querySelector('style[data-vg]')) { const st = document.createElement('style'); st.setAttribute('data-vg', ''); st.textContent = css; root.appendChild(st); }
+  };
+  const attach = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function (init) {
+    const root = attach.call(this, init);
+    roots.push(root);
+    styleRoot(root);
+    watch(root);
+    later();
+    return root;
+  };
+
+  const start = () => { scrubAll(); watch(document.body); };
   if (document.body) start(); else document.addEventListener('DOMContentLoaded', start);
 })();`
 }
 
-/** returns JSON {misses, detail}: sensitive things currently on screen that are NOT blurred */
+/** returns JSON {misses, detail}: sensitive things currently on screen that are NOT blurred (shadow DOM included) */
 export function verifyScript(config: RedactionConfig): string {
-  const cfg = JSON.stringify(withGeneric(config))
+  const c = withGeneric(config)
+  const cfg = JSON.stringify({ selectors: c.selectors, values: c.values })
   return String.raw`(() => {
   const cfg = ${cfg};
-  const blurred = (el) => (getComputedStyle(el).filter || '').includes('blur') || !!el.closest('[data-vg-redact]');
+  const detect = ${pageDetectorSource(c.kinds)};
+  const roots = [document, ...(window.__vgRoots || [])];
+  const blurred = (el) => {
+    for (let n = el; n; n = n.parentNode || n.host) {
+      if (n.nodeType === 1 && ((getComputedStyle(n).filter || '').includes('blur') || n.hasAttribute('data-vg-redact'))) return true;
+    }
+    return false;
+  };
   const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
   const detail = [];
   for (const s of cfg.selectors) {
-    let els = [];
-    try { els = [...document.querySelectorAll(s)]; } catch (e) { continue; }
-    for (const el of els) if (shown(el) && !blurred(el)) detail.push(s);
+    for (const root of roots) {
+      let els = [];
+      try { els = [...root.querySelectorAll(s)]; } catch (e) { continue; }
+      for (const el of els) if (shown(el) && !blurred(el)) detail.push(s);
+    }
   }
   const vals = cfg.values.map((v) => v.toLowerCase());
-  if (vals.length) {
-    const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+  for (const root of roots) {
+    const top = root === document ? (document.body || document.documentElement) : root;
+    const walker = document.createTreeWalker(top, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       const el = n.parentElement;
       if (!el || el.closest('script,style') || !shown(el)) continue;
       const low = n.nodeValue.toLowerCase();
-      if (vals.some((v) => low.includes(v)) && !blurred(el)) detail.push('text:' + n.nodeValue.slice(0, 12));
+      if ((vals.some((v) => low.includes(v)) || detect(n.nodeValue).length) && !blurred(el)) detail.push('text:' + n.nodeValue.slice(0, 12));
     }
-    for (const el of document.querySelectorAll('input,textarea')) {
+    if (vals.length) for (const el of root.querySelectorAll('input,textarea')) {
       if (shown(el) && el.value && vals.some((v) => el.value.toLowerCase().includes(v)) && !blurred(el)) detail.push('value:' + (el.name || el.id || el.type));
     }
   }

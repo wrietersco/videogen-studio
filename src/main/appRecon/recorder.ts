@@ -154,10 +154,21 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
   }
 
   const verify = async (where: string) => {
-    const res = JSON.parse((await page.evaluate(verifyScript(o.redaction))) as string) as { misses: number; detail: string[] }
-    if (res.misses) {
-      misses += res.misses
-      say(where, `REDACTION MISS ×${res.misses}: ${res.detail.join(', ')}`)
+    // every frame is checked, embedded ones included
+    let total = 0
+    const detail: string[] = []
+    for (const frame of page.frames()) {
+      try {
+        const res = JSON.parse((await frame.evaluate(verifyScript(o.redaction))) as string) as { misses: number; detail: string[] }
+        total += res.misses
+        detail.push(...res.detail)
+      } catch {
+        /* a frame that is gone or not scriptable cannot be checked; it is not counted */
+      }
+    }
+    if (total) {
+      misses += total
+      say(where, `REDACTION MISS ×${total}: ${detail.slice(0, 8).join(', ')}`)
     }
   }
 

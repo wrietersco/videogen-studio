@@ -83,6 +83,35 @@ export function findPrivate(text: string, opts: { kinds?: PrivateKind[]; values?
   return out
 }
 
+/**
+ * The same detector as `findPrivate`, as source text for a function that runs
+ * inside the page: `(text) => [{kind, start, end}]`. It uses the very same
+ * patterns, so what the page blurs is what this file would have found.
+ */
+export function pageDetectorSource(kinds: PrivateKind[]): string {
+  const rx: Record<string, string> = {}
+  for (const [k, v] of Object.entries(RX)) rx[k] = v.source
+  return String.raw`(() => {
+  const RX = ${JSON.stringify(rx)};
+  const kinds = ${JSON.stringify(kinds)};
+  const luhn = (d) => { let s = 0, alt = false; for (let i = d.length - 1; i >= 0; i--) { let n = d.charCodeAt(i) - 48; if (alt) { n *= 2; if (n > 9) n -= 9; } s += n; alt = !alt; } return s % 10 === 0; };
+  const isDate = (s) => /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/.test(s.trim()) || /^\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}$/.test(s.trim());
+  return (text) => {
+    const out = [], taken = [];
+    const free = (a, b) => !taken.some((t) => a < t[1] && b > t[0]);
+    const add = (kind, m) => { const a = m.index, b = a + m[0].length; if (!free(a, b)) return; taken.push([a, b]); out.push({ kind, start: a, end: b }); };
+    const each = (k, f) => { if (!kinds.includes(k)) return; for (const m of text.matchAll(new RegExp(RX[k], 'g'))) f(m); };
+    each('token', (m) => add('token', m));
+    each('ssn', (m) => add('ssn', m));
+    each('card', (m) => { const d = m[0].replace(/\D/g, ''); if (d.length >= 13 && d.length <= 19 && luhn(d)) add('card', m); });
+    each('email', (m) => add('email', m));
+    each('phone', (m) => { const d = m[0].replace(/\D/g, ''); if (d.length >= 9 && d.length <= 15 && !isDate(m[0])) add('phone', m); });
+    each('digits', (m) => add('digits', m));
+    return out;
+  };
+})()`
+}
+
 /** the text with every private-looking thing replaced by a plain marker such as [email] */
 export function scrubText(text: string, opts: { kinds?: PrivateKind[]; values?: string[] } = {}): string {
   const found = findPrivate(text, opts)
