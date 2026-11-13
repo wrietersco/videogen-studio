@@ -6,7 +6,7 @@ import { Planner } from '../src/main/pipeline/planner'
 import { compose } from '../src/main/composer'
 import { resolve } from 'node:path'
 import type { LLMProvider } from '../src/main/providers/types'
-import { Orchestrator, extractAudioLayer, isBlankReviewFrame, isIsometricOnlyBrief, canReuseNarrationTiming } from '../src/main/pipeline/orchestrator'
+import { Orchestrator, extractAudioLayer, isBlankReviewFrame, isIsometricOnlyBrief, isometricReviewProblem, canReuseNarrationTiming } from '../src/main/pipeline/orchestrator'
 import { ProjectStore } from '../src/main/store/projectStore'
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -16,6 +16,16 @@ import sharp from 'sharp'
 const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#123456"/><g id="motion1"><circle cx="50" cy="50" r="20" fill="#fff"/></g></svg>'
 
 describe('custom scene authoring', () => {
+  it('preflights a paid coder with no image reviewer while allowing free and capable configurations', () => {
+    const mock = new MockProvider()
+    const coder = { id: 'deepseek' } as LLMProvider
+    const unable = { id: 'deepseek', supportsVision: () => false } as LLMProvider
+    const capable = { id: 'selected-vision', supportsVision: () => true } as LLMProvider
+    expect(isometricReviewProblem(coder, mock)).toContain('visual reviewer is required')
+    expect(isometricReviewProblem(coder, unable)).toContain('cannot inspect images')
+    expect(isometricReviewProblem(coder, capable)).toBeUndefined()
+    expect(isometricReviewProblem(mock, mock)).toBeUndefined()
+  })
   it('does not accept unreviewed code for a full isometric film', async () => {
     const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'isometric factory', platform: 'tiktok' })
     const store = new ProjectStore(mkdtempSync(join(tmpdir(), 'isometric-no-review-')))
