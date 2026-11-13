@@ -132,19 +132,21 @@ async function enter(email) {
   $('app').classList.remove('hidden')
   $('logout').classList.remove('hidden')
   await loadOverview()
+  void refreshBadge()
+  void openFromHash()
 }
 
 // ---------------- tabs ----------------
 
-for (const b of document.querySelectorAll('.tabs button')) {
-  b.addEventListener('click', () => {
-    for (const x of document.querySelectorAll('.tabs button')) x.classList.toggle('on', x === b)
-    for (const p of document.querySelectorAll('[data-panel]')) p.classList.toggle('hidden', p.dataset.panel !== b.dataset.tab)
-    if (b.dataset.tab === 'users') void loadUsers()
-    if (b.dataset.tab === 'plans') void loadPolicy()
-    if (b.dataset.tab === 'audit') void loadAudit()
-  })
+function showTab(name) {
+  for (const x of document.querySelectorAll('.tabs button')) x.classList.toggle('on', x.dataset.tab === name)
+  for (const p of document.querySelectorAll('[data-panel]')) p.classList.toggle('hidden', p.dataset.panel !== name)
+  if (name === 'requests') void loadRequests()
+  if (name === 'users') void loadUsers()
+  if (name === 'plans') void loadPolicy()
+  if (name === 'audit') void loadAudit()
 }
+for (const b of document.querySelectorAll('.tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab))
 $('logout').onclick = () => signOutFn()
 
 // ---------------- licences ----------------
@@ -462,6 +464,75 @@ $('plans-reset').onclick = () => {
   if (defaults) renderPolicy(defaults)
   flash('Recommended values filled in. Press Save plans to apply them.')
 }
+
+// ---------------- requests ----------------
+
+let focusRequest = null
+
+function describeRequest(r) {
+  if (r.kind === 'upgrade') return h('div', {}, h('b', {}, `${r.plan} upgrade`), ` for ${r.seats} seat${r.seats === 1 ? '' : 's'}`)
+  return h('div', {}, h('b', {}, r.subject || '(no subject)'), h('div', { class: 'dim', style: 'white-space:pre-wrap;max-width:520px' }, r.body || ''))
+}
+
+async function decide(r, action) {
+  let reason
+  if (action === 'reject') {
+    reason = prompt('Why not? (optional, the person sees this)', '')
+    if (reason === null) return
+  } else if (action === 'approve' && !confirm(`Approve ${r.plan} for ${r.seats} seat${r.seats === 1 ? '' : 's'} for ${r.email}? They get the plan straight away.`)) return
+  await guarded(async () => {
+    await api(`/requests/${encodeURIComponent(r.id)}/${action}`, action === 'reject' ? { reason } : {})
+    flash(action === 'approve' ? 'Approved. They are on the plan now.' : action === 'reject' ? 'Rejected.' : 'Marked handled.')
+    await loadRequests()
+  })
+}
+
+async function loadRequests() {
+  await guarded(async () => {
+    const status = focusRequest ? 'all' : $('req-status').value
+    const r = await api(`/requests?status=${encodeURIComponent(status)}`)
+    setBadge(r.openCount)
+    $('req-empty').classList.toggle('hidden', r.requests.length > 0)
+    const rows = r.requests.map((q) => {
+      const actions = q.status !== 'open' ? [h('span', { class: 'dim' }, q.decidedBy ? `by ${q.decidedBy}` : '')] : q.kind === 'upgrade'
+        ? [h('button', { class: 'sm', onclick: () => decide(q, 'approve') }, 'Approve'), ' ', h('button', { class: 'ghost sm', onclick: () => decide(q, 'reject') }, 'Reject')]
+        : [h('button', { class: 'sm', onclick: () => decide(q, 'handled') }, 'Mark handled'), ' ', h('a', { class: 'sm', href: `mailto:${q.email}` }, 'Reply')]
+      return h('tr', { id: `req-${q.id}`, class: q.id === focusRequest ? 'focus' : '' }, h('td', {}, when(q.createdAt)), h('td', {}, q.email), h('td', {}, describeRequest(q), q.reason ? h('div', { class: 'dim' }, `Reason: ${q.reason}`) : null), h('td', {}, pill(q.status)), h('td', {}, ...actions))
+    })
+    $('req-body').replaceChildren(...rows)
+    if (focusRequest) {
+      const el = document.getElementById(`req-${focusRequest}`)
+      if (el) el.scrollIntoView({ block: 'center' })
+      else flash('That request was not found.', true)
+      focusRequest = null
+    }
+  })
+}
+
+function setBadge(n) {
+  const b = $('req-badge')
+  b.textContent = String(n)
+  b.classList.toggle('hidden', !n)
+}
+async function refreshBadge() {
+  try {
+    setBadge((await api('/requests?status=open')).openCount)
+  } catch {
+    /* the badge is a convenience */
+  }
+}
+
+/** #requests/<id> opens that request, from the link in the notification email */
+async function openFromHash() {
+  const m = /^#requests(?:\/([A-Za-z0-9_-]{1,40}))?$/.exec(location.hash)
+  if (!m) return
+  focusRequest = m[1] ?? null
+  if (!focusRequest) $('req-status').value = 'open'
+  showTab('requests')
+}
+window.addEventListener('hashchange', () => !$('app').classList.contains('hidden') && void openFromHash())
+$('req-status').onchange = () => loadRequests()
+$('req-refresh').onclick = () => loadRequests()
 
 // ---------------- audit ----------------
 

@@ -63,3 +63,9 @@ td .sub { color: var(--dim); font-size: 12px; }
 .edit-row td { background: #101019; }
 details summary { cursor: pointer; color: var(--dim); }
 pre { margin: 0; white-space: pre-wrap; font-size: 11px; color: var(--dim); max-width: 520px; }
+
+.badge { display: inline-block; min-width: 18px; padding: 0 6px; margin-left: 4px; border-radius: 9px; background: var(--bad); color: #fff; font-size: 11px; line-height: 18px; text-align: center; }
+tr.focus td { background: #2a2540; }
+.pill.open { color: var(--warn); border-color: var(--warn); }
+.pill.approved, .pill.handled { color: var(--good); border-color: var(--good); }
+.pill.rejected { color: var(--bad); border-color: var(--bad); }
