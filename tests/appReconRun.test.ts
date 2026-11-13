@@ -30,11 +30,11 @@ describe.skipIf(!findChrome())('a whole run against the test web app', () => {
   beforeAll(async () => {
     site = await startAppSite()
     root = mkdtempSync(join(tmpdir(), 'vg-run-'))
-  }, 60000)
+  }, 120000)
   afterAll(async () => {
     await site?.close()
-    rmSync(root, { recursive: true, force: true })
-  })
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
+  }, 60000)
 
   const base = (name: string, over: Partial<RunInput> = {}): RunInput => ({
     runDir: join(root, name),

@@ -45,7 +45,7 @@ describe('saved apps', () => {
     dir = mkdtempSync(join(tmpdir(), 'vg-store-'))
     store = new AppReconStore(dir, seal)
   })
-  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+  afterEach(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }))
 
   it('keeps the password sealed and never in the app list', () => {
     const app = store.save(input())

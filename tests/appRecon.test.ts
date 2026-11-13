@@ -278,7 +278,7 @@ describe.skipIf(!findChrome())('redaction in a real page', () => {
       expect(bad.misses).toBeGreaterThan(0)
     } finally {
       await browser.close()
-      rmSync(dir, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
     }
   }, 60000)
 })

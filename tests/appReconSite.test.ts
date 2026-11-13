@@ -30,12 +30,12 @@ describe.skipIf(!findChrome())('the test web app, in a real browser', () => {
     site = await startAppSite()
     dir = mkdtempSync(join(tmpdir(), 'vg-site-'))
     browser = await launch({ userDataDir: dir, scale: 1 })
-  }, 60000)
+  }, 180000)
   afterAll(async () => {
     await browser?.close()
     await site?.close()
-    rmSync(dir, { recursive: true, force: true })
-  })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
+  }, 60000)
 
   const guard = (over: Partial<Guardrails> = {}) => new PolicyGate({ allowedHosts: ['localhost'], readOnly: false, blockedWords: [], advisory: [], ...over })
 

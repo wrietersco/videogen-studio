@@ -23,7 +23,7 @@ describe('the fallback browser', () => {
       expect(shot.length).toBeGreaterThan(500)
     } finally {
       await browser.close()
-      rmSync(dir, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
     }
   }, 60000)
 })
