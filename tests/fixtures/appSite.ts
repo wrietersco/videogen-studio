@@ -12,6 +12,8 @@ import type { AddressInfo } from 'node:net'
 
 export const DEMO_USER = 'demo'
 export const DEMO_PASS = 'demo-pass-123'
+/** signs in with the same password, then asks for a one-time code (the page completes itself after a moment, as if a person typed it) */
+export const OTP_USER = 'otpuser'
 export const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdEFGHijkl'
 
 export interface AppSite {
@@ -101,6 +103,10 @@ export async function startAppSite(): Promise<AppSite> {
     }
     if (url === '/login' && method === 'POST') {
       const p = new URLSearchParams(await body(req))
+      if (p.get('password') === DEMO_PASS && p.get('username') === OTP_USER) {
+        state.logins++
+        return go('/otp')
+      }
       if (p.get('username') === DEMO_USER && p.get('password') === DEMO_PASS) {
         state.logins++
         return go('/app', 'sid=1; Path=/')
@@ -115,7 +121,8 @@ export async function startAppSite(): Promise<AppSite> {
       await new Promise((r) => setTimeout(r, 1500))
       return html(page('Slow', '<h1>Slow page</h1>'))
     }
-    if (url === '/otp') return html(page('Verify', '<h1>Verification</h1><label>Verification code <input name="code" autocomplete="one-time-code"></label>'))
+    if (url === '/otp') return html(page('Verify', '<h1>Verification</h1><label>Verification code <input name="code" autocomplete="one-time-code"></label><script>setTimeout(function(){location.href="/otp-ok"},2500)</script>'))
+    if (url === '/otp-ok') return go('/app', 'sid=1; Path=/')
     if (url === '/customers' || url === '/reports' || url === '/settings') {
       if (!logged(req)) return go('/login')
       return html(page(url.slice(1), `<nav><a href="/app">Home</a></nav><h1>${url.slice(1)}</h1><p>Page body for ${url.slice(1)}.</p>`))

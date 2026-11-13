@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { findChrome } from '../src/main/appRecon/browser'
 import { planBeats } from '../src/main/appRecon/planner'
 import { runAppRecording, type RunHooks, type RunInput } from '../src/main/appRecon/run'
-import { DEMO_PASS, DEMO_USER, startAppSite, type AppSite } from './fixtures/appSite'
+import { DEMO_PASS, OTP_USER, startAppSite, type AppSite, DEMO_USER } from './fixtures/appSite'
 
 const hooks = (): RunHooks => ({
   progress: () => undefined,
@@ -106,6 +106,20 @@ describe.skipIf(!findChrome())('a whole run against the test web app', () => {
     await runAppRecording(base('thorough', { depth: 'thorough' }), hooks())
     expect(site.state.settingsSaved).toBeGreaterThan(before)
   }, 180000)
+
+  it('pauses for the person when the app asks for a one-time code, then carries on', async () => {
+    const calls: Array<{ reason: string }> = []
+    const h: RunHooks = {
+      progress: () => undefined,
+      handoff: async (info) => {
+        calls.push({ reason: info.reason })
+        await new Promise((r) => setTimeout(r, 4500)) // the person types the code; the test page completes itself
+      }
+    }
+    const out = await runAppRecording(base('otp', { vault: { username: OTP_USER, password: DEMO_PASS }, depth: 'quick' }), h)
+    expect(calls).toEqual([{ reason: 'code' }])
+    expect(out.pages).toBeGreaterThanOrEqual(3) // it explored the app after the code was accepted
+  }, 120000)
 
   it('stops at the page limit and says so', async () => {
     const out = await runAppRecording(base('quick', { depth: 'quick' }), hooks())
