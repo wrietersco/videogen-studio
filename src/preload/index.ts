@@ -144,6 +144,24 @@ const api = {
       return () => ipcRenderer.removeListener('footage:event', listener)
     }
   },
+  appRec: {
+    state: () => ipcRenderer.invoke('apprec:state'),
+    save: (app: unknown) => ipcRenderer.invoke('apprec:save', app),
+    remove: (id: string) => ipcRenderer.invoke('apprec:remove', id),
+    attach: () => ipcRenderer.invoke('apprec:attach'),
+    start: (id: string) => ipcRenderer.invoke('apprec:start', id),
+    cancel: () => ipcRenderer.invoke('apprec:cancel'),
+    handoffDone: () => ipcRenderer.invoke('apprec:handoffDone'),
+    review: (edits: unknown) => ipcRenderer.invoke('apprec:review', edits),
+    play: (runId: string) => ipcRenderer.invoke('apprec:play', runId),
+    reveal: (runId: string) => ipcRenderer.invoke('apprec:reveal', runId),
+    revealRun: (runId: string) => ipcRenderer.invoke('apprec:revealRun', runId),
+    onEvent: (cb: (event: unknown) => void) => {
+      const listener = (_e: unknown, payload: unknown) => cb(payload)
+      ipcRenderer.on('apprec:event', listener)
+      return () => ipcRenderer.removeListener('apprec:event', listener)
+    }
+  },
   references: {
     inspect: (paths?: string[]) => ipcRenderer.invoke('refs:inspect', paths),
     readVideo: (req: unknown) => ipcRenderer.invoke('refs:readVideo', req)

@@ -17,6 +17,8 @@ import type { AccountStatus } from '../../main/license/session'
 import type { AccessMode } from '../../main/license/access'
 import type { EntitlementView, PlanId, Policy } from '@shared/plans'
 import type { BrandKitPatch, BrandKitView } from '@shared/brand'
+import type { AppInput, ReviewBeat, ReviewEdits, RunEvent, RunRecord, SavedApp } from '@shared/appRecording'
+export type { AppInput, ReviewBeat, ReviewEdits, RunEvent, RunRecord, SavedApp }
 import type { RefRole, VideoBrief } from '@shared/spec'
 
 export type { RefRole, VideoBrief }
@@ -134,7 +136,7 @@ export interface JobInfo {
   id: string
   projectId: string | null
   title: string
-  kind: 'generate' | 'revise' | 'rerender' | 'resume' | 'library' | 'footage'
+  kind: 'generate' | 'revise' | 'rerender' | 'resume' | 'library' | 'footage' | 'app-recording'
   startedAt: string
 }
 
@@ -261,6 +263,20 @@ declare global {
         play: (file: string) => Promise<boolean>
         reveal: (file: string) => Promise<boolean>
         onEvent: (cb: (event: FootageEvent) => void) => () => void
+      }
+      appRec: {
+        state: () => Promise<{ apps: SavedApp[]; runs: RunRecord[]; ai: { available: boolean; reason?: string }; current: { runId: string; appId: string } | null }>
+        save: (app: AppInput) => Promise<{ ok: true; app: SavedApp } | { ok: false; error: string }>
+        remove: (id: string) => Promise<{ ok: boolean; error?: string }>
+        attach: () => Promise<{ ok: true; document: { name: string; text: string } } | { ok: false; error: string; cancelled?: boolean }>
+        start: (id: string) => Promise<{ ok: true; runId: string } | { ok: false; error: string }>
+        cancel: () => Promise<boolean>
+        handoffDone: () => Promise<boolean>
+        review: (edits: ReviewEdits | null) => Promise<boolean>
+        play: (runId: string) => Promise<boolean>
+        reveal: (runId: string) => Promise<boolean>
+        revealRun: (runId: string) => Promise<boolean>
+        onEvent: (cb: (event: RunEvent) => void) => () => void
       }
       references: {
         /** no paths opens a picker; dropped files pass their paths */

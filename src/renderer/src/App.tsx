@@ -6,16 +6,18 @@ import Settings from './views/Settings'
 import Editor from './views/Editor'
 import Assets from './views/Assets'
 import Footage from './views/Footage'
+import RecordApp from './views/RecordApp'
 import Updater from './components/Updater'
 import { PlanBadge, useAccount } from './components/Account'
 import { AccountGate } from './components/Welcome'
 
-type Tab = 'studio' | 'footage' | 'library' | 'assets' | 'editor' | 'settings'
+type Tab = 'studio' | 'footage' | 'apps' | 'library' | 'assets' | 'editor' | 'settings'
 
 /** Editor isn't a top-level tab any more — it opens from a video ("Change a scene") and lights up My videos. */
 const TABS: Array<{ id: Tab; label: string; icon: string; tip: string; on: string }> = [
   { id: 'studio', label: 'Create', icon: '✨', tip: 'Describe a video and watch it get made', on: 'bg-grape text-white shadow-[0_3px_0_#5b21b6]' },
   { id: 'footage', label: 'Edit footage', icon: '🎬', tip: 'Cut, join and add music to videos you already have', on: 'bg-mint text-white shadow-[0_3px_0_#0b8a64]' },
+  { id: 'apps', label: 'Record an app', icon: '🖥️', tip: 'Give us a web app and we record a polished video of it, with private details hidden', on: 'bg-coral text-white shadow-[0_3px_0_#c23f3f]' },
   { id: 'library', label: 'My videos', icon: '🎞️', tip: 'Everything you have made', on: 'bg-berry text-white shadow-[0_3px_0_#c2185b]' },
   { id: 'assets', label: 'Library', icon: '🧺', tip: 'Pictures, clips, voices and music your videos reuse', on: 'bg-sky text-white shadow-[0_3px_0_#0b7cc0]' },
   { id: 'settings', label: 'Settings', icon: '⚙️', tip: 'Your AI keys, models and costs', on: 'bg-sunny text-ink shadow-[0_3px_0_#d49a00]' }
@@ -119,6 +121,7 @@ export default function App() {
         {gate && <AccountGate status={account} onDone={(s) => (setAccount(s), setTab('studio'))} onSkip={skip} />}
         {!gate && tab === 'studio' && <Studio onOpenEditor={() => openEditor()} onOpenSettings={() => setTab('settings')} />}
         {!gate && tab === 'footage' && <Footage onOpenSettings={() => setTab('settings')} />}
+        {!gate && tab === 'apps' && <RecordApp onOpenSettings={() => setTab('settings')} />}
         {!gate && tab === 'library' && <Library onOpenEditor={openEditor} />}
         {!gate && tab === 'editor' && (
           <Editor

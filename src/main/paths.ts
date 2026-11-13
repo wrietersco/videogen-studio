@@ -45,3 +45,5 @@ export const brandDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Stud
 export const builtinPackDir = resolve(appRoot, 'resources', 'asset-pack')
 /** footage projects: indexes, keyframes and rendered edits (the user's own video folders stay where they are) */
 export const footageDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'footage') : resolve(appRoot, 'footage')
+/** recorded apps: saved apps, their sealed logins, and every run (scout notes, playbook, finished video) */
+export const appReconDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'app-recordings') : resolve(appRoot, 'app-recordings')

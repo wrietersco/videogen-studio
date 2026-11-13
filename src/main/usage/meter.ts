@@ -30,7 +30,7 @@ export interface UsageEntry {
 export interface UsageRun {
   /** Stable run identity makes checkpoints idempotent. */
   id?: string
-  kind: 'generate' | 'revise' | 'rerender' | 'resume' | 'library' | 'footage'
+  kind: 'generate' | 'revise' | 'rerender' | 'resume' | 'library' | 'footage' | 'app-recording'
   startedAt: string
   endedAt?: string
   entries: UsageEntry[]

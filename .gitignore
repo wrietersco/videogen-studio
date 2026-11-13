@@ -16,3 +16,4 @@ library/
 .firebase/
 .env
 /brand/
+/app-recordings/

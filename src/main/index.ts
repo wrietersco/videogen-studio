@@ -22,7 +22,9 @@ import { applyAutopilot, decide, decideCreative, honorShape } from './autopilot'
 import { enhancePrompt, type EnhanceRequest } from './promptEnhancer'
 import { PromptTemplateStore, type TemplateInput } from './store/promptTemplates'
 import { ensureBrowser } from './rendererService/hyperframes'
-import { projectsDir, appRoot, libraryDir, builtinPackDir, footageDir, brandDir } from './paths'
+import { projectsDir, appRoot, libraryDir, builtinPackDir, footageDir, brandDir, appReconDir } from './paths'
+import { AppReconStore } from './appRecon/store'
+import { registerAppReconIpc } from './appRecon/ipc'
 import { FootageStore } from './footage/store'
 import { FootageService } from './footage/service'
 import { registerFootageIpc } from './footage/ipc'
@@ -73,6 +75,7 @@ const media = new MediaRouter({
   onDecision: (projectId, message) => { if (store.readMeta(projectId)) store.appendEvent(projectId, `media · ${message}`) }
 })
 const footageStore = new FootageStore(footageDir)
+const appReconStore = new AppReconStore(appReconDir, { enc: (s) => encryptKey(s), dec: (s) => decryptKey(s) })
 const footage = new FootageService({
   store: footageStore,
   provider: () => providerRegistry.forRole('text') ?? providerRegistry.active(),
@@ -952,6 +955,33 @@ if (reconOut) {
       window: () => win,
       aiJob: (projectKey, title, fn) => {
         if (mode === 'programmatic') return Promise.reject(new Error(account.signedIn ? (planEnt()?.aiBlockedReason || 'AI is not available on this account.') : 'Sign in to use AI on your footage.'))
+        return withAccess({ projectKey, programmatic: false, title }, fn)
+      }
+    })
+    appReconStore.markInterrupted()
+    registerAppReconIpc({
+      store: appReconStore,
+      emit,
+      window: () => win,
+      isBusy: busyNow,
+      setBusy: (b) => { footageBusy = b },
+      // the free engine always works; the AI writer and voice follow the plan, like every other AI feature
+      ai: () =>
+        mode === 'programmatic'
+          ? { available: false, reason: account.signedIn ? (planEnt()?.aiBlockedReason || 'AI is not available on this account.') : 'Sign in, or add your own keys, to use the AI writer and voice.' }
+          : { available: true },
+      providers: () => {
+        const chat = providerRegistry.forRole('text')
+        let speech: ReturnType<typeof media.speech> | null = null
+        try {
+          speech = mode === 'programmatic' ? null : media.speech()
+        } catch {
+          speech = null
+        }
+        return { chat: chat && chat.id !== 'mock' ? chat : null, speech }
+      },
+      aiJob: (projectKey, title, fn) => {
+        if (mode === 'programmatic') return Promise.reject(new Error('AI is not available on this account.'))
         return withAccess({ projectKey, programmatic: false, title }, fn)
       }
     })

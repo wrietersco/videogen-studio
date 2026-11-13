@@ -215,6 +215,28 @@ export function planBeats(inp: PlanInput): Plan {
   return { playbook, beats, loginFocus, notes }
 }
 
+/** what the review screen shows for a plan: the beats and the words that will be said */
+export function reviewBeats(plan: Plan, launch: boolean): Array<{ beat: number; kind: string; chapter: string; text: string; removable: boolean }> {
+  return plan.beats.map((b) => ({ beat: b.beat, kind: b.kind, chapter: b.chapter, text: launch && b.launchFallback ? b.launchFallback : b.fallback, removable: b.kind === 'page' }))
+}
+
+/**
+ * Apply what a person changed in the review: drop some pages and reword
+ * lines. A sign-in or sign-out beat cannot be dropped (the recording would
+ * break), and edited words still go through the narration check later.
+ */
+export function applyReviewEdits(plan: Plan, edits: { removeBeats: number[]; lines: Record<number, string> }): Plan {
+  const drop = new Set(plan.beats.filter((b) => b.kind === 'page' && edits.removeBeats.includes(b.beat)).map((b) => b.beat))
+  const beats = plan.beats
+    .filter((b) => !drop.has(b.beat))
+    .map((b) => {
+      const text = edits.lines[b.beat]?.trim()
+      return text ? { ...b, fallback: text, launchFallback: text } : b
+    })
+  const steps = plan.playbook.steps.filter((s) => !drop.has(s.beat))
+  return { ...plan, beats, playbook: { ...plan.playbook, steps } }
+}
+
 function toStep(e: ExploredStep, id: string, beat: number): Step {
   if (e.kind === 'type') return { id, beat, kind: 'type', selector: e.selector, label: e.label, text: e.text, focus: 'target' }
   if (e.kind === 'press') return { id, beat, kind: 'press', text: e.text, focus: 'page' }
