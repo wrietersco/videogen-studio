@@ -251,6 +251,12 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           say(step.id, `clicked "${label || step.label}" (${verdict.reason})`)
           focusRect = r
           focusKind = step.focus
+        } else if (step.kind === 'press' && step.text) {
+          await sleep(200 * pace)
+          const nav = page.waitForNavigation({ waitUntil: 'load', timeout: 6000 }).catch(() => null)
+          await page.keyboard.press(step.text as 'Enter')
+          await Promise.race([nav, sleep(1500)])
+          say(step.id, `pressed ${step.text}`)
         } else if (step.kind === 'wait') {
           await sleep((step.expect ? 0 : 800) * pace)
         } else if (step.kind === 'handoff') {

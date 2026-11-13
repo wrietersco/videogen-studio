@@ -230,6 +230,11 @@ export class PolicyGate {
     return v
   }
 
+  /** the same verdict without writing to the audit trail (for choosing what to try, not for doing it) */
+  peekClick(c: ClickInfo): Verdict {
+    return this.decideClick(c)
+  }
+
   private decideClick(c: ClickInfo): Verdict {
     const label = c.label.trim().toLowerCase()
     if (c.intent === 'login-submit') {

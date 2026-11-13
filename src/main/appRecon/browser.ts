@@ -39,6 +39,8 @@ export interface LaunchOptions {
   /** pixel density of the pictures taken (2 = crisp when zoomed in) */
   scale?: number
   userDataDir: string
+  /** false opens a normal window (a person has to sign in, or type a code) */
+  headless?: boolean
 }
 
 export async function launch(opts: LaunchOptions): Promise<Browser> {
@@ -46,7 +48,7 @@ export async function launch(opts: LaunchOptions): Promise<Browser> {
   if (!executablePath) throw new Error('No Chrome or Edge was found on this computer')
   return puppeteer.launch({
     executablePath,
-    headless: true,
+    headless: opts.headless ?? true,
     userDataDir: opts.userDataDir,
     defaultViewport: { width: opts.width ?? 1280, height: opts.height ?? 720, deviceScaleFactor: opts.scale ?? 2 },
     args: ['--hide-scrollbars', '--force-color-profile=srgb', '--font-render-hinting=none', '--no-first-run', '--disable-extensions', '--lang=en-US', '--disable-features=Translate,MediaRouter']

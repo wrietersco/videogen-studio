@@ -184,6 +184,16 @@ export function sanitizeAddress(url: string, full = false): string {
   return keys.length ? `${base}?${keys.map((k) => `${k}=…`).join('&')}` : base
 }
 
+/** the shape of an address: host and path with ids collapsed, so /customers/12 and /customers/13 are one kind of page */
+export function pathTemplate(url: string): string {
+  try {
+    const u = new URL(url)
+    return u.host + cleanPath(u.pathname)
+  } catch {
+    return url
+  }
+}
+
 /** what the video shows in its address bar: no scheme, ids removed */
 export function displayAddress(url: string): string {
   let u: URL

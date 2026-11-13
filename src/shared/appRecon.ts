@@ -87,7 +87,7 @@ export const Guardrails = z.object({
 })
 export type Guardrails = z.infer<typeof Guardrails>
 
-export const StepKind = z.enum(['goto', 'type', 'click', 'wait', 'expect', 'handoff'])
+export const StepKind = z.enum(['goto', 'type', 'click', 'press', 'wait', 'expect', 'handoff'])
 export const Step = z.object({
   id: z.string(),
   /** which narrated beat of the video this step belongs to */
