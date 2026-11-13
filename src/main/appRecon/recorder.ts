@@ -209,8 +209,14 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
         } else if (step.kind === 'click' && step.selector) {
           const r = await rectOf(step.selector)
           if (!r) return { ok: false, failure: `${step.id}: could not find "${step.label ?? step.selector}"`, beats, navigations, log, redactionMisses: misses }
-          const label = await page.$eval(step.selector, (el) => ((el as HTMLElement).innerText || (el as HTMLInputElement).value || el.getAttribute('aria-label') || '').trim())
-          const verdict = o.gate.checkClick({ label: label || step.label || '', intent: step.intent })
+          const info = await page.$eval(step.selector, (el) => {
+            const h = el as HTMLElement
+            const label = (h.innerText || (el as HTMLInputElement).value || el.getAttribute('aria-label') || el.getAttribute('title') || el.querySelector('img[alt]')?.getAttribute('alt') || el.querySelector('svg title')?.textContent || '').trim()
+            const hint = [el.id, h.className && typeof h.className === 'string' ? h.className : '', el.getAttribute('name'), el.getAttribute('data-testid'), el.getAttribute('data-action')].filter(Boolean).join(' ')
+            return { label, hint, kind: el.tagName === 'A' ? 'link' : 'button', href: el.tagName === 'A' ? (el as HTMLAnchorElement).href : undefined }
+          })
+          const label = info.label
+          const verdict = o.gate.checkClick({ label: label || step.label || '', intent: step.intent, kind: info.kind as 'button' | 'link', href: info.href, hint: info.hint })
           if (!verdict.allow) return { ok: false, failure: `${step.id}: blocked by guardrails — ${verdict.reason}`, beats, navigations, log, redactionMisses: misses }
           await glide(r.x + r.w / 2, r.y + r.h / 2, 700)
           await sleep(350 * pace)

@@ -68,8 +68,18 @@ export type AppMap = z.infer<typeof AppMap>
 
 export const Guardrails = z.object({
   allowedHosts: z.array(z.string()).min(1),
-  /** no request that changes data may leave the browser (the sign-in itself is the one allowed exception) */
+  /** stay on the app's own sites (default true; sign-in and API hosts learned while exploring are added) */
+  stayOnSites: z.boolean().optional(),
+  /** no request that changes data may leave the browser (the sign-in itself is the one allowed exception). Opt-in. */
   readOnly: z.boolean(),
+  /** never press delete/remove-type controls. Opt-in. */
+  noDelete: z.boolean().optional(),
+  /** never pay, buy, order, send or publish. Opt-in. */
+  noSpend: z.boolean().optional(),
+  /** never change settings, passwords or accounts. Opt-in. */
+  noSettings: z.boolean().optional(),
+  /** blur the contents of tables, lists and cards. Opt-in. */
+  privacyMode: z.boolean().optional(),
   /** a control whose label matches any of these is never clicked */
   blockedWords: z.array(z.string()),
   /** the user's own words that cannot be enforced mechanically — shown back to them, passed to the planner */

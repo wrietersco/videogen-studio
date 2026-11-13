@@ -58,7 +58,7 @@ export async function enforcePolicy(page: Page, gate: PolicyGate): Promise<void>
   await page.setRequestInterception(true)
   page.on('request', (req) => {
     if (req.isInterceptResolutionHandled()) return
-    const v = gate.checkRequest({ method: req.method(), url: req.url(), resourceType: req.resourceType() })
+    const v = gate.checkRequest({ method: req.method(), url: req.url(), resourceType: req.resourceType(), postData: req.postData() })
     if (v.allow) void req.continue()
     else void req.abort('blockedbyclient')
   })
