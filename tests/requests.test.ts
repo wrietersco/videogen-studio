@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createServer as httpServer, type Server } from 'node:http'
 import { createServer as netServer, connect as netConnect, type AddressInfo } from 'node:net'
-import { requestLabel } from '@shared/requests'
+import { clampSeats, openUpgrade, requestLabel, upgradeOutcome } from '@shared/requests'
 import { createApp } from '../server/src/app'
 import { devVerifier } from '../server/src/auth'
 import { MemoryStore } from '../server/src/memoryStore'
@@ -293,5 +293,18 @@ describe('SMTP mailer', () => {
     const m = buildMessage('me@x.co', { to: 'you@x.co', subject: 'Plain', text: 'hi' }, NOW)
     expect(m).toContain('Subject: Plain')
     expect(m).toContain('Content-Transfer-Encoding: base64')
+  })
+})
+
+describe('app request helpers', () => {
+  const r = (over: object) => ({ id: 'req_1', kind: 'upgrade', status: 'open', plan: 'pro', seats: 1, createdAt: '2026-11-15T00:00:00Z', ...over }) as any
+  it('finds the one open upgrade and the outcome to show', () => {
+    expect(openUpgrade([r({ kind: 'message' }), r({ id: 'req_2' })])?.id).toBe('req_2')
+    expect(openUpgrade([r({ status: 'approved' })])).toBeUndefined()
+    expect(upgradeOutcome([r({ status: 'rejected', reason: 'no' })])?.reason).toBe('no')
+    expect(upgradeOutcome([r({})])).toBeUndefined()
+  })
+  it('keeps the seat stepper between 1 and the cap', () => {
+    expect([clampSeats(0), clampSeats(-3), clampSeats(2.7), clampSeats(99999), clampSeats(NaN)]).toEqual([1, 1, 2, 1000, 1])
   })
 })

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { DEFAULT_POLICY, type PlanId, type PlanPolicy } from '@shared/plans'
 import { directorLabel, modelName, PricingCards } from './Welcome'
-import { api, type AccountResult, type AccountState } from '../api'
+import { clampSeats, openUpgrade, upgradeOutcome } from '@shared/requests'
+import { api, type AccountResult, type AccountState, type MyRequest, type RequestsResult } from '../api'
 
 /**
  * Sign-in, onboarding and the plan. The server decides what an account may
@@ -52,6 +53,35 @@ export function PlanPanel({ status, onChange }: { status: AccountState; onChange
   useEffect(() => {
     void api.account.plans().then((live) => live?.plans && setPlans(live.plans))
   }, [])
+
+  const [requests, setRequests] = useState<MyRequest[]>([])
+  const [seats, setSeats] = useState(1)
+  const pending = openUpgrade(requests)
+  const outcome = upgradeOutcome(requests)
+  useEffect(() => {
+    if (!status.signedIn) return
+    void api.account.myRequests().then((r) => {
+      if (r.ok) setRequests(r.requests)
+    })
+  }, [status.signedIn])
+  /** an approved request changes the plan itself: pull the new view when the outcome shows up */
+  useEffect(() => {
+    if (outcome?.status === 'approved') void api.account.refresh().then((r) => r.ok && onChange(r.status))
+  }, [outcome?.id, outcome?.status]) // eslint-disable-line react-hooks/exhaustive-deps
+  const runRequests = async (fn: () => Promise<RequestsResult>, ok?: string) => {
+    setBusy(true)
+    setError('')
+    setNote('')
+    try {
+      const r = await fn()
+      if (r.ok) {
+        setRequests(r.requests)
+        if (ok) setNote(ok)
+      } else setError(r.error)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const run = async (fn: () => Promise<AccountResult>, ok?: string) => {
     setBusy(true)
@@ -171,7 +201,60 @@ export function PlanPanel({ status, onChange }: { status: AccountState; onChange
       {error && <div className="rounded-xl bg-coral-soft px-3 py-2 text-xs font-semibold text-coral">⚠️ {error}</div>}
       {note && <div className="rounded-xl bg-mint-soft px-3 py-2 text-xs font-semibold text-mint">{note}</div>}
 
-      {ent && <PricingCards plans={plans} current={ent.superadmin ? undefined : ent.soldPlan} onPick={(id) => void api.account.contactSales(plans[id].label)} pickLabel={(id) => (id === 'free' ? 'Switch to Free' : `Get ${plans[id].label}`)} />}
+      {outcome && (
+        <div className={`flex flex-wrap items-center gap-3 rounded-2xl px-4 py-3 text-sm font-semibold ${outcome.status === 'approved' ? 'bg-mint-soft text-mint' : 'bg-sunny-soft text-ink'}`}>
+          <span>
+            {outcome.status === 'approved'
+              ? `🎉 Your ${plans[outcome.plan ?? 'plus'].label} upgrade was approved.`
+              : `Your ${plans[outcome.plan ?? 'plus'].label} request was not approved${outcome.reason ? `: ${outcome.reason}` : '.'}`}
+          </span>
+          <button className="btn-ghost" onClick={() => void runRequests(() => api.account.dismissRequest(outcome.id))}>
+            OK
+          </button>
+        </div>
+      )}
+
+      {ent && (
+        <PricingCards
+          plans={plans}
+          current={ent.superadmin ? undefined : ent.soldPlan}
+          footer={(id) => {
+            if (id === 'free') return null
+            const waiting = pending?.plan === id ? pending : undefined
+            if (waiting) {
+              return (
+                <div className="mt-5 space-y-1.5 text-center">
+                  <div className="rounded-2xl bg-mint-soft py-2.5 text-sm font-black text-mint">Requested · waiting for approval</div>
+                  <button className="text-xs font-bold text-ink/55 hover:underline" disabled={busy} onClick={() => void runRequests(() => api.account.cancelRequest(waiting.id))}>
+                    Cancel request
+                  </button>
+                </div>
+              )
+            }
+            return (
+              <div className="mt-5 space-y-2">
+                <div className="flex items-center justify-between rounded-xl bg-ink/5 px-3 py-1 text-xs font-bold">
+                  <span>Seats</span>
+                  <span className="flex items-center gap-2">
+                    <button aria-label="Fewer seats" className="h-6 w-6 rounded-full bg-white font-black shadow-sm disabled:opacity-40" disabled={seats <= 1} onClick={() => setSeats(clampSeats(seats - 1))}>
+                      -
+                    </button>
+                    <span className="w-5 text-center text-sm font-black">{seats}</span>
+                    <button aria-label="More seats" className="h-6 w-6 rounded-full bg-white font-black shadow-sm" onClick={() => setSeats(clampSeats(seats + 1))}>
+                      +
+                    </button>
+                  </span>
+                </div>
+                <button className="btn-primary w-full" disabled={busy} onClick={() => void runRequests(() => api.account.requestUpgrade(id, seats), `Request sent: ${plans[id].label}, ${seats} seat${seats === 1 ? '' : 's'}. We will email you.`)}>
+                  Get {plans[id].label}
+                </button>
+              </div>
+            )
+          }}
+        />
+      )}
+
+      <ContactUs />
 
       {view?.devices && view.devices.length > 0 && (
         <details>
@@ -203,5 +286,60 @@ export function PlanBadge({ status, onClick }: { status: AccountState | null; on
     <button onClick={onClick} title="Your plan" className={`mr-2 rounded-full px-3 py-1 text-xs font-black ${ent ? PLAN_STYLE[ent.plan].chip : 'bg-grape text-white'}`}>
       {ent ? PLAN_STYLE[ent.plan].icon : '👤'} {text}
     </button>
+  )
+}
+
+// ---------------- contact us ----------------
+
+/** a short message to the VideoGen team; it lands in their console and inbox */
+export function ContactUs() {
+  const [open, setOpen] = useState(false)
+  const [subject, setSubject] = useState('')
+  const [body, setBody] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  const send = async () => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const r = await api.account.sendMessage(subject.trim(), body.trim())
+      if (r.ok) {
+        setMsg({ ok: true, text: '✓ Sent. We will reply by email.' })
+        setSubject('')
+        setBody('')
+        setOpen(false)
+      } else setMsg({ ok: false, text: r.error })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="rounded-2xl border-2 border-ink/10 bg-white p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-black">✉️ Contact us</div>
+        {!open && (
+          <button className="btn-ghost" onClick={() => setOpen(true)}>
+            Write to us
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <input className="field w-full px-3 py-2 text-sm" placeholder="Subject (optional)" maxLength={120} value={subject} onChange={(e) => setSubject(e.target.value)} />
+          <textarea className="field min-h-28 w-full px-3 py-2 text-sm" placeholder="How can we help?" maxLength={4000} value={body} onChange={(e) => setBody(e.target.value)} />
+          <div className="flex gap-2">
+            <button className="btn-primary" disabled={busy || !body.trim()} onClick={() => void send()}>
+              Send
+            </button>
+            <button className="btn-ghost" disabled={busy} onClick={() => setOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {msg && <div className={`mt-2 text-xs font-semibold ${msg.ok ? 'text-mint' : 'text-coral'}`}>{msg.ok ? msg.text : `⚠️ ${msg.text}`}</div>}
+    </div>
   )
 }

@@ -79,7 +79,11 @@ const api = {
     removeDevice: (id: string) => ipcRenderer.invoke('account:removeDevice', id),
     resendVerification: () => ipcRenderer.invoke('account:resendVerification'),
     resetPassword: (email: string) => ipcRenderer.invoke('account:resetPassword', email),
-    contactSales: (plan: string) => ipcRenderer.invoke('account:contactSales', plan),
+    myRequests: () => ipcRenderer.invoke('account:myRequests'),
+    requestUpgrade: (plan: string, seats: number) => ipcRenderer.invoke('account:requestUpgrade', plan, seats),
+    sendMessage: (subject: string, body: string) => ipcRenderer.invoke('account:sendMessage', subject, body),
+    cancelRequest: (id: string) => ipcRenderer.invoke('account:cancelRequest', id),
+    dismissRequest: (id: string) => ipcRenderer.invoke('account:dismissRequest', id),
     onChange: (cb: (status: unknown) => void) => {
       const listener = (_e: unknown, payload: unknown) => cb(payload)
       ipcRenderer.on('account:changed', listener)

@@ -3,7 +3,8 @@ import { join } from 'node:path'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
 import { hostname, release } from 'node:os'
-import type { EntitlementView } from '@shared/plans'
+import type { EntitlementView, PlanId } from '@shared/plans'
+import type { MyRequest } from '@shared/requests'
 import type { ManagedProvider, Route } from './route'
 
 /**
@@ -418,6 +419,29 @@ export class AccountSession {
 
   async leaveLicense(): Promise<AccountStatus> {
     return this.keepView(await this.api<AccountView>('/v1/account/leave', {}))
+  }
+
+  // ---------------- requests to the VideoGen team ----------------
+
+  async myRequests(): Promise<MyRequest[]> {
+    return (await this.api<{ requests: MyRequest[] }>('/v1/requests/mine')).requests
+  }
+
+  /** one click: ask for a plan (the server keeps one open upgrade per account) */
+  async requestUpgrade(plan: PlanId, seats: number): Promise<MyRequest[]> {
+    return (await this.api<{ requests: MyRequest[] }>('/v1/requests', { kind: 'upgrade', plan, seats })).requests
+  }
+
+  async sendMessage(subject: string, body: string): Promise<MyRequest[]> {
+    return (await this.api<{ requests: MyRequest[] }>('/v1/requests', { kind: 'message', subject, body })).requests
+  }
+
+  async cancelRequest(id: string): Promise<MyRequest[]> {
+    return (await this.api<{ requests: MyRequest[] }>(`/v1/requests/${encodeURIComponent(id)}/cancel`, {})).requests
+  }
+
+  async dismissRequest(id: string): Promise<MyRequest[]> {
+    return (await this.api<{ requests: MyRequest[] }>(`/v1/requests/${encodeURIComponent(id)}/dismiss`, {})).requests
   }
 
   async removeDevice(deviceId: string): Promise<AccountStatus> {

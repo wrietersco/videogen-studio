@@ -42,6 +42,10 @@ export type AccountResult =
   | { ok: true; status: AccountState }
   | { ok: false; code: string; error: string; devices?: Array<{ id: string; name: string; platform: string; appVersion: string; lastSeenAt: string }> }
 
+import type { MyRequest } from '@shared/requests'
+export type { MyRequest }
+export type RequestsResult = { ok: true; requests: MyRequest[] } | { ok: false; code: string; error: string }
+
 export type { EditPlan, EditRecord, FootageEvent, FootageProject, FootageSummary, PlanRequest, PlanResult, UnderstandEstimate }
 export type { UpdateInfo, EnhancedPrompt, PromptSection, PromptTemplate }
 export type { UsageEntry, UsageRun, ProjectUsage, AssetKind, AssetMeta, AssetSource, StockResult, KeyId, MediaSettings }
@@ -204,7 +208,13 @@ declare global {
         removeDevice: (id: string) => Promise<AccountResult>
         resendVerification: () => Promise<{ ok: true } | { ok: false; code: string; error: string }>
         resetPassword: (email: string) => Promise<{ ok: true } | { ok: false; code: string; error: string }>
-        contactSales: (plan: string) => Promise<void>
+        /** this account's open requests and unseen outcomes */
+        myRequests: () => Promise<RequestsResult>
+        /** one click: ask for a plan; replaces any earlier open upgrade request */
+        requestUpgrade: (plan: PlanId, seats: number) => Promise<RequestsResult>
+        sendMessage: (subject: string, body: string) => Promise<RequestsResult>
+        cancelRequest: (id: string) => Promise<RequestsResult>
+        dismissRequest: (id: string) => Promise<RequestsResult>
         onChange: (cb: (status: AccountState) => void) => () => void
       }
       update: {

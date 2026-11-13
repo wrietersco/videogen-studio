@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { DEFAULT_POLICY, PLAN_IDS, type PlanId, type PlanPolicy } from '@shared/plans'
 import { api, type AccountResult, type AccountState } from '../api'
 import Updater from './Updater'
@@ -44,7 +44,7 @@ function planPoints(id: PlanId, p: PlanPolicy): Array<{ on: boolean; text: strin
 }
 
 /** the four plan cards; `current` marks the account's plan, `onPick` adds a button per card */
-export function PricingCards({ plans, current, onPick, pickLabel }: { plans: Plans; current?: PlanId; onPick?: (id: PlanId) => void; pickLabel?: (id: PlanId) => string }) {
+export function PricingCards({ plans, current, onPick, pickLabel, footer }: { plans: Plans; current?: PlanId; onPick?: (id: PlanId) => void; pickLabel?: (id: PlanId) => string; footer?: (id: PlanId) => ReactNode }) {
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
       {PLAN_IDS.map((id) => {
@@ -86,7 +86,8 @@ export function PricingCards({ plans, current, onPick, pickLabel }: { plans: Pla
                 </li>
               ))}
             </ul>
-            {onPick && !mine && (
+            {footer && !mine && footer(id)}
+            {!footer && onPick && !mine && (
               <button onClick={() => onPick(id)} className={`mt-5 rounded-2xl py-2.5 text-sm font-black transition-transform active:translate-y-0.5 ${look.button}`}>
                 {pickLabel ? pickLabel(id) : id === 'free' ? 'Start free' : `Get ${p.label}`}
               </button>
@@ -367,7 +368,7 @@ export function AccountGate({ status, onDone, onSkip }: { status: AccountState; 
           <div className="mt-10">
             <PricingCards
               plans={plans}
-              onPick={(id) => (id === 'free' ? toTop() : void api.account.contactSales(plans[id].label))}
+              onPick={(id) => (id === 'free' ? toTop() : window.dispatchEvent(new Event('videogen:sign-in')))}
               pickLabel={(id) => (id === 'free' ? 'Start free' : `Get ${plans[id].label}`)}
             />
           </div>

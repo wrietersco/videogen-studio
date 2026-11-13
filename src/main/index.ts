@@ -28,6 +28,8 @@ import { FootageService } from './footage/service'
 import { registerFootageIpc } from './footage/ipc'
 import { meter, readProjectUsage, type UsageRun } from './usage/meter'
 import { checkForUpdate, downloadUpdate, installUpdate } from './updater'
+import type { PlanId } from '@shared/plans'
+import { clampSeats, REQUEST_LIMITS, UPGRADE_PLANS, type MyRequest } from '@shared/requests'
 import { AccountError, AccountSession, newProjectKey, type AccountStatus } from './license/session'
 import { accessMode, effectiveSettings, programmaticSettings, type AccessMode } from './license/access'
 import { setManagedRouter, withProject } from './license/route'
@@ -567,10 +569,21 @@ function registerIpc(): void {
       return accountError(err)
     }
   })
-  ipcMain.handle('account:contactSales', (_e, plan: string) => {
-    const subject = encodeURIComponent(`VideoGen Studio — ${String(plan ?? '').replace(/[^A-Za-z ]/g, '').slice(0, 20) || 'plan'} licence`)
-    void shell.openExternal(`mailto:visitwritersco@gmail.com?subject=${subject}`)
+  const requestCall = async (fn: () => Promise<MyRequest[]>) => {
+    try {
+      return { ok: true as const, requests: await fn() }
+    } catch (err) {
+      return accountError(err)
+    }
+  }
+  ipcMain.handle('account:myRequests', () => requestCall(() => account.myRequests()))
+  ipcMain.handle('account:requestUpgrade', (_e, plan: string, seats: number) => {
+    if (!UPGRADE_PLANS.includes(plan as PlanId)) return { ok: false as const, code: 'bad_plan', error: 'Pick Plus, Pro or Ultra.' }
+    return requestCall(() => account.requestUpgrade(plan as PlanId, clampSeats(Number(seats))))
   })
+  ipcMain.handle('account:sendMessage', (_e, subject: string, body: string) => requestCall(() => account.sendMessage(String(subject ?? '').slice(0, REQUEST_LIMITS.subject), String(body ?? '').slice(0, REQUEST_LIMITS.body))))
+  ipcMain.handle('account:cancelRequest', (_e, id: string) => requestCall(() => account.cancelRequest(String(id ?? ''))))
+  ipcMain.handle('account:dismissRequest', (_e, id: string) => requestCall(() => account.dismissRequest(String(id ?? ''))))
   ipcMain.handle('settings:hasKey', (_e, provider: KeyId) => Boolean(settings.keys[provider]))
   ipcMain.handle('settings:keyStatus', () =>
     Object.fromEntries((['openai', 'anthropic', 'gemini', 'deepseek', 'elevenlabs', 'pexels', 'pixabay'] as KeyId[]).map((k) => [k, Boolean(settings.keys[k])]))

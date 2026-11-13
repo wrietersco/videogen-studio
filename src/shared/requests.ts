@@ -51,3 +51,12 @@ export interface MyRequest {
 
 export const requestLabel = (r: Pick<RequestRecord, 'kind' | 'plan' | 'seats' | 'subject'>): string =>
   r.kind === 'upgrade' ? `${r.plan ? r.plan[0].toUpperCase() + r.plan.slice(1) : 'Plan'} upgrade, ${r.seats ?? 1} seat${(r.seats ?? 1) === 1 ? '' : 's'}` : `Message: ${r.subject || '(no subject)'}`
+
+/** the account's one open upgrade request, if any */
+export const openUpgrade = (list: MyRequest[]): MyRequest | undefined => list.find((r) => r.kind === 'upgrade' && r.status === 'open')
+
+/** decided upgrades the person has not dismissed yet (approved or rejected) */
+export const upgradeOutcome = (list: MyRequest[]): MyRequest | undefined => list.find((r) => r.kind === 'upgrade' && (r.status === 'approved' || r.status === 'rejected'))
+
+/** seat stepper: whole numbers from 1 up to the server's cap */
+export const clampSeats = (n: number): number => (Number.isFinite(n) ? Math.min(REQUEST_LIMITS.seatsMax, Math.max(1, Math.floor(n))) : 1)
