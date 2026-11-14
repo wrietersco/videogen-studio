@@ -464,7 +464,10 @@ export class MediaRouter {
   /** compose a track with ElevenLabs Music and file it */
   async composeToLibrary(prompt: string, seconds: number, tags: string[] = [], title?: string): Promise<AssetMeta> {
     if (!this.eleven.configured()) throw new Error('Add an ElevenLabs key in Settings to compose music')
-    const buf = await this.eleven.music(prompt, seconds)
+    // the model picked in Settings → Media (elevenlabs:music_v2_5 …); music_v1 when none or another engine is set
+    const [mp, mm] = split(this.d.settings().media.music || '')
+    const musicModel = mp === 'elevenlabs' && mm && /^music_v\d/.test(mm) ? mm : 'music_v1'
+    const buf = await this.eleven.music(prompt, seconds, musicModel)
     const mood = ['upbeat', 'cinematic', 'minimal', 'playful', 'dark', 'corporate'].find((m) => prompt.toLowerCase().includes(m))
     return this.d.library.add(buf, '.mp3', {
       kind: 'music',
@@ -473,9 +476,9 @@ export class MediaRouter {
       tags: [...tags, ...(mood ? [mood] : []), 'score', ...tokenize(prompt).slice(0, 6)],
       prompt,
       provider: 'elevenlabs',
-      model: 'music_v1',
+      model: musicModel,
       durationSec: seconds,
-      costUsd: priceUsage('music_v1', { seconds }).usd,
+      costUsd: priceUsage(musicModel, { seconds }).usd,
       license: { name: 'Generated with your API key', requiresAttribution: false }
     })
   }

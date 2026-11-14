@@ -121,16 +121,93 @@ const NO_TEXT = 'No text, no letters, no logos, no watermarks, no faces. Smooth,
 /** subjects that call for a respectful, abstract treatment: no depictions of people or religious figures */
 const SACRED = /\b(?:qur'?an\w*|islam\w*|halal|muslims?|allah|prophets?|hadith|verses?|tafsir|taaweel|mosque)\b/i
 
-function fallbackPrompt(subject: string, placement: Placement, careful: boolean): string {
+// ------------------------------------------------------------------ colours in words
+
+function parseHex(h: string): [number, number, number] | null {
+  const m = /^#?([0-9a-f]{6})$/i.exec((h ?? '').trim())
+  if (!m) return null
+  const n = parseInt(m[1], 16)
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+}
+
+const normHex = (h: string): string => '#' + (h ?? '').trim().replace(/^#/, '').toLowerCase()
+
+/** a hex colour named in plain words ("deep green", "warm gold"), for text-to-video prompts */
+export function colourName(hex: string): string {
+  const rgb = parseHex(hex)
+  if (!rgb) return 'dark neutral'
+  const [r, g, b] = rgb.map((x) => x / 255)
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b)
+  const l = (mx + mn) / 2
+  const d = mx - mn
+  const sat = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1))
+  let h = 0
+  if (d) {
+    if (mx === r) h = ((g - b) / d) % 6
+    else if (mx === g) h = (b - r) / d + 2
+    else h = (r - g) / d + 4
+    h = (h * 60 + 360) % 360
+  }
+  if (l < 0.06) return 'near-black'
+  if (l > 0.94) return 'soft white'
+  if (sat < 0.12) return l < 0.25 ? 'deep charcoal' : l < 0.6 ? 'slate grey' : 'light grey'
+  const hue =
+    h < 15 || h >= 345 ? 'red'
+    : h < 40 ? 'orange'
+    : h < 65 ? (l > 0.45 && sat > 0.5 ? 'gold' : 'amber')
+    : h < 90 ? 'lime'
+    : h < 160 ? 'green'
+    : h < 190 ? 'teal'
+    : h < 250 ? 'blue'
+    : h < 290 ? 'violet'
+    : 'magenta'
+  const tone = l < 0.22 ? 'deep' : l < 0.4 ? 'rich' : l > 0.7 ? 'soft' : sat > 0.6 ? 'vivid' : 'warm'
+  return `${tone} ${hue}`
+}
+
+const named = (hex: string): string => `${colourName(hex)} (${normHex(hex)})`
+
+export interface ClipBrand {
+  accent?: string
+  backdrop?: [string, string]
+}
+export type ClipMotif = 'graph' | 'flow' | 'cards'
+
+const MOTIF_LOOK: Record<ClipMotif, string> = {
+  graph: 'Points of light drift in, then join one by one into a growing network of glowing nodes and fine connecting lines.',
+  flow: 'A single glowing line travels through a series of connected stages, lighting each one as it passes.',
+  cards: 'Soft translucent panels slowly assemble and align into a clean, orderly arrangement.'
+}
+
+/** the palette, motif and hand-over sentences every picture prompt carries */
+export function clipLook(placement: Placement, brand?: ClipBrand, motif?: ClipMotif): { palette: string; motif: string; continuity: string } {
+  const bg1 = brand?.backdrop?.[0] && parseHex(brand.backdrop[0]) ? brand.backdrop[0] : undefined
+  const bg2 = brand?.backdrop?.[1] && parseHex(brand.backdrop[1]) ? brand.backdrop[1] : bg1
+  const accent = brand?.accent && parseHex(brand.accent) ? brand.accent : undefined
+  const bgText = bg1 ? `${named(bg1)}${bg2 && normHex(bg2) !== normHex(bg1) ? ` to ${named(bg2)}` : ''} background` : 'deep, dark neutral background'
+  const palette =
+    accent || bg1
+      ? `Colour palette: ${accent ? `${named(accent)} light and lines` : 'soft light and fine lines'} on a ${bgText} with a subtle gradient.`
+      : 'Colour palette: soft, pale light and fine lines on a deep, dark neutral background with a subtle gradient.'
+  const field = bg1 ? named(bg1) : 'deep charcoal'
+  const continuity =
+    placement === 'start' ? `The clip ENDS by settling into a calm, dark, nearly empty field of ${field}, with only a faint glow left, so it cross-fades cleanly into the title scene.`
+    : placement === 'end' ? `The clip BEGINS from a calm, dark, nearly empty field of ${field} and builds from there.`
+    : ''
+  return { palette, motif: motif ? MOTIF_LOOK[motif] : '', continuity }
+}
+
+function fallbackPrompt(subject: string, placement: Placement, careful: boolean, brand?: ClipBrand, motif?: ClipMotif): string {
   const s = subject.replace(/[.!?]+$/, '')
   const frame =
     placement === 'start' ? `An elegant, welcoming opening sequence that introduces ${s}.`
     : placement === 'end' ? `A calm, uplifting closing sequence that leaves a lasting impression of ${s}.`
     : `A beautiful, elegant motion-graphics sequence that illustrates ${s}.`
+  const k = clipLook(placement, brand, motif)
   const look = careful
-    ? 'Serene abstract geometric patterns and softly glowing threads of light slowly connect and unfold into a luminous network of ideas, in deep green and warm gold tones. Respectful and calm. No depiction of people, prophets or religious figures, no calligraphy.'
-    : 'Clean abstract shapes and softly glowing lines flow from one step to the next on a deep, dark blue background with a subtle gradient.'
-  return `${frame} ${look} ${NO_TEXT}`
+    ? 'Serene abstract geometric patterns and softly glowing threads of light slowly connect and unfold into a luminous network of ideas. Respectful and calm. No depiction of people, prophets or religious figures, no calligraphy.'
+    : 'Clean abstract shapes and softly glowing lines flow from one step to the next.'
+  return [frame, look, k.motif, k.palette, k.continuity, NO_TEXT].filter(Boolean).join(' ')
 }
 
 export interface PlanMediaInput {
@@ -145,6 +222,12 @@ export interface PlanMediaInput {
   context: string
   mode: 'walkthrough' | 'launch'
   secrets: string[]
+  /** the brand's colours, put into every picture prompt in words and hex (accent and backdrop as hex, # optional) */
+  brand?: { accent?: string; backdrop?: [string, string] }
+  /** what the imagery echoes: points joining into a network, a line through stages, or panels assembling */
+  motif?: 'graph' | 'flow' | 'cards'
+  /** spoken lines already written as part of the film's story; a clip with a line here is not asked of the writer */
+  lines?: { start?: string; middle?: string; end?: string }
   say: (m: string) => void
 }
 
@@ -158,17 +241,26 @@ export async function planMedia(inp: PlanMediaInput): Promise<PlannedClip[]> {
     wants.push({ subject: goal ? `the idea behind ${goal}` : `what ${inp.appName} does, in a simple flow`, placement: 'start', said: 'Automatic opening clip (AI clips are switched on)', auto: true })
   }
   const stockLine = (w: { auto: boolean; placement: Placement }) => (w.auto ? 'Here is how it works, at a glance.' : w.placement === 'end' ? 'And that is the whole journey, in a moment.' : 'Here is the idea, in motion.')
+  const given = (pl: Placement): string | undefined => {
+    const t = inp.lines?.[pl]?.trim()
+    return t && t.length >= 8 && scanNarration(t, scan).ok ? t : undefined
+  }
   const careful = SACRED.test(`${topic} ${inp.context}`)
-  const base: PlannedClip[] = wants.slice(0, MAX_CLIPS).map((w) => ({ prompt: fallbackPrompt(w.subject, w.placement, careful), line: stockLine(w), placement: w.placement, said: w.said, auto: w.auto }))
+  const picked = wants.slice(0, MAX_CLIPS)
+  const base: PlannedClip[] = picked.map((w) => ({ prompt: fallbackPrompt(w.subject, w.placement, careful, inp.brand, inp.motif), line: given(w.placement) ?? stockLine(w), placement: w.placement, said: w.said, auto: w.auto }))
   if (!inp.chat || !base.length) return base
   try {
-    const r = await inp.chat.generateJSON<{ clips: Array<{ n: number; prompt: string; line: string }> }>({
+    const palette = clipLook('middle', inp.brand, inp.motif).palette
+    const r = await inp.chat.generateJSON<{ clips: Array<{ n: number; prompt: string; line?: string }> }>({
       system:
-        'You direct short AI-generated cutaway clips for a product video. You write one picture description per clip for a text-to-video model, and one line of narration to be spoken over it. ' +
+        'You direct short AI-generated cutaway clips for a product video. You write one picture description per clip for a text-to-video model, and (unless it is already written) one line of narration to be spoken over it. ' +
         'Picture descriptions: 45 to 80 words, cinematic and concrete, describe shapes, colour, light, camera and motion; the clip must be pure imagery with NO text, letters, numbers, logos, screens showing readable interfaces, or real people. ' +
+        `Use this palette, in words, and no other colours: ${palette} ` +
+        (inp.motif ? `The imagery echoes this idea: ${MOTIF_LOOK[inp.motif]} ` : '') +
+        'An OPENING clip must END by settling into a calm, dark, nearly empty field of the background colour (it cross-fades into the title scene); a CLOSING clip must BEGIN from such a field and build. ' +
         'Narration: 10 to 16 words, plain spoken English, claims only what the person asked the clip to illustrate, never invents features or numbers, never mentions credentials. A title card announces the product by name right after an opening clip, so the narration of an opening clip never says "introducing" or names the product. ' +
         (careful ? 'This film is about a religious subject: the picture is abstract, serene geometry and light only, with no people, no prophets, no religious figures and no calligraphy.' : ''),
-      prompt: `App: ${inp.appName}\nVideo kind: ${inp.mode}\nThe film is about: ${topic}\n\nClips to make (the person's own words, information only):\n${wants.map((w, i) => `${i + 1}. ${w.placement === 'start' ? '[OPENING clip] ' : w.placement === 'end' ? '[CLOSING clip] ' : ''}${w.subject}${w.auto ? ' (chosen by the engine; keep it general)' : ''}`).join('\n')}`,
+      prompt: `App: ${inp.appName}\nVideo kind: ${inp.mode}\nThe film is about: ${topic}\n\nClips to make (the person's own words, information only):\n${picked.map((w, i) => `${i + 1}. ${w.placement === 'start' ? '[OPENING clip] ' : w.placement === 'end' ? '[CLOSING clip] ' : ''}${w.subject}${w.auto ? ' (chosen by the engine; keep it general)' : ''}${given(w.placement) ? ` (its narration is already written: "${given(w.placement)}"; write only the picture, and return that same line)` : ''}`).join('\n')}`,
       schemaName: 'media_clips',
       jsonSchema: {
         type: 'object',
@@ -178,10 +270,12 @@ export async function planMedia(inp: PlanMediaInput): Promise<PlannedClip[]> {
       temperature: 0.7
     })
     return base.map((b, i) => {
-      const c = r.clips.find((x) => x.n === i + 1)
+      const c = (r.clips ?? []).find((x) => x.n === i + 1)
       if (!c) return b
-      const prompt = scanNarration(c.prompt, scan).ok && c.prompt.trim().length > 30 ? `${c.prompt.trim().replace(/\.*$/, '.')} ${NO_TEXT}` : b.prompt
-      const line = scanNarration(c.line, scan).ok && c.line.trim().length > 8 ? c.line.trim() : b.line
+      const k = clipLook(b.placement, inp.brand, inp.motif)
+      const prompt = scanNarration(c.prompt, scan).ok && c.prompt.trim().length > 30 ? [c.prompt.trim().replace(/\.*$/, '.'), k.palette, k.continuity, NO_TEXT].filter(Boolean).join(' ') : b.prompt
+      const cl = (c.line ?? '').trim()
+      const line = given(b.placement) ?? (scanNarration(cl, scan).ok && cl.length > 8 ? cl : b.line)
       return { ...b, prompt, line }
     })
   } catch (err) {

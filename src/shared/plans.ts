@@ -74,14 +74,14 @@ const FREE_MEDIA = {
 const PLUS_MEDIA = {
   chat: ['gpt-6-luna'],
   image: [...FREE_MEDIA.image, 'gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image'],
-  voice: [...FREE_MEDIA.voice, 'eleven_flash_v2_5', 'eleven_turbo_v2_5'],
+  voice: [...FREE_MEDIA.voice, 'gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts', 'eleven_flash_v2_5', 'eleven_turbo_v2_5', 'eleven_v4_turbo'],
   music: ['lyria-3.5'],
-  video: ['gemini-omni-1.1-flash']
+  video: ['gemini-omni-1.1-flash', 'gemini-omni-1.2-flash']
 }
 const BEST_MEDIA = {
   image: [...PLUS_MEDIA.image, 'gemini-3-pro-image', 'gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'],
-  voice: [...PLUS_MEDIA.voice, 'eleven_multilingual_v2', 'eleven_v3', 'gemini-2.5-pro-preview-tts'],
-  music: [...PLUS_MEDIA.music, 'music_v1'],
+  voice: [...PLUS_MEDIA.voice, 'eleven_multilingual_v2', 'eleven_v3', 'eleven_v4', 'gemini-2.5-pro-preview-tts'],
+  music: [...PLUS_MEDIA.music, 'music_v1', 'music_v2_5'],
   video: [...PLUS_MEDIA.video]
 }
 
@@ -381,7 +381,7 @@ export function entitlements(policy: Policy, account: Account, license: License 
 export function providerOfModel(model: string): 'openai' | 'gemini' | 'deepseek' | 'elevenlabs' {
   if (/^gpt-|^whisper|^tts-/.test(model)) return 'openai'
   if (/^deepseek-/.test(model)) return 'deepseek'
-  if (/^eleven_|^music_v1$/.test(model)) return 'elevenlabs'
+  if (/^eleven_|^music_v\d/.test(model)) return 'elevenlabs'
   return 'gemini'
 }
 

@@ -566,7 +566,7 @@ function RunPanel({ live, onClose, onReviewAnswered, onHandoffDone }: { live: Li
       {done && done.status === 'done' && (
         <div className="mt-3">
           <div className="text-sm">
-            {fmtDur(done.durationSec)} · explored {done.pages} page(s) with {done.actions} action(s)
+            {fmtDur(done.durationSec)} · {done.pages} page{done.pages === 1 ? '' : 's'} visited{done.actions ? `, ${done.actions} action${done.actions === 1 ? '' : 's'} tried while exploring` : ''}
             {done.stoppedBy && done.stoppedBy !== 'done' ? ` · stopped by the ${done.stoppedBy} limit` : ''}
           </div>
           <div className="mt-3 flex gap-2">

@@ -8,7 +8,7 @@
  *   elevenlabs.io/pricing/api
  */
 
-export const PRICES_AS_OF = '2026-10-28'
+export const PRICES_AS_OF = '2026-11-14'
 
 export type MediaKind = 'text' | 'image' | 'voice' | 'music' | 'sfx' | 'video' | 'transcribe'
 
@@ -80,21 +80,28 @@ export const RATES: Record<string, Rate> = {
   'gemini-3.1-flash-lite-image': { perImage: 0.0336 },
   'gemini-3-pro-image': { perImage: 0.134 },
   // ---- Gemini TTS ----
+  // 3.8 TTS rates double on 2027-01-01 ($1 / $18 and $1 / $12) — update then
   'gemini-3.8-flash-tts': { inTok: 0.5, outTok: 9 },
+  'gemini-3.8-flash-lite-tts': { inTok: 0.5, outTok: 6 },
   'gemini-2.5-flash-preview-tts': { inTok: 0.5, outTok: 10 },
   'gemini-2.5-pro-preview-tts': { inTok: 1, outTok: 20 },
   // ---- ElevenLabs ----
+  eleven_v4: { perKChars: 0.08 },
+  eleven_v4_turbo: { perKChars: 0.04 },
   eleven_v3: { perKChars: 0.08 },
   eleven_multilingual_v2: { perKChars: 0.08 },
   eleven_flash_v2_5: { perKChars: 0.04 },
   eleven_turbo_v2_5: { perKChars: 0.04 },
   music_v1: { perMinute: 0.15 },
+  music_v2_5: { perMinute: 0.15 },
   // ---- Google Lyria (paid tier only, per finished track) ----
   'lyria-3.5': { perItem: 0.08 },
   'lyria-3-clip-preview': { perItem: 0.04 },
   eleven_text_to_sound_v2: { perMinute: 0.12 },
   // ---- Gemini video (Veo previews shut down 2026-10-22; output billed at 5,792 tok/s of 720p ≈ $0.10/s) ----
-  'gemini-omni-1.1-flash': { inTok: 1.5, outTok: 17.5 }
+  'gemini-omni-1.1-flash': { inTok: 1.5, outTok: 17.5 },
+  // 1.2 is GA since 2026-11-05: video output $12 / 1M tokens (≈ $0.07/s of 720p); 1.1 shuts down 2026-12-03 and then bills at these rates
+  'gemini-omni-1.2-flash': { inTok: 1.5, outTok: 12 }
 }
 
 export interface UsageNumbers {
@@ -150,20 +157,26 @@ export const MEDIA_MODELS: MediaModel[] = [
   { kind: 'image', provider: 'openai', id: 'gpt-image-2.5-flare', label: 'GPT Image 2.5 Flare', typical: '≈ $0.05–0.19 / image', cost: 3, speed: 3, quality: 3 },
   { kind: 'image', provider: 'openai', id: 'gpt-image-2.5-sunburst', label: 'GPT Image 2.5 Sunburst', typical: '≈ $0.05–0.19 / image', cost: 3, speed: 2, quality: 3, note: 'highest fidelity' },
   // voice
-  { kind: 'voice', provider: 'openai', id: 'gpt-4o-mini-tts', label: 'OpenAI mini TTS', typical: '≈ $0.015 / min', cost: 1, speed: 3, quality: 2, note: 'steerable tone, word timings via Whisper' },
-  { kind: 'voice', provider: 'gemini', id: 'gemini-2.5-flash-preview-tts', label: 'Gemini Flash TTS', typical: '≈ $0.02 / min', cost: 1, speed: 3, quality: 2 },
+  { kind: 'voice', provider: 'openai', id: 'gpt-4o-mini-tts', label: 'OpenAI mini TTS', typical: '≈ $0.015 / min', cost: 1, speed: 3, quality: 2, note: 'steerable tone, word timings via Whisper · OpenAI retires it 6 Jan 2027' },
+  { kind: 'voice', provider: 'gemini', id: 'gemini-3.8-flash-lite-tts', label: 'Gemini 3.8 Flash-Lite TTS', typical: '≈ $0.01 / min', cost: 1, speed: 3, quality: 2, note: 'newest, cheapest · price doubles 1 Jan 2027' },
+  { kind: 'voice', provider: 'gemini', id: 'gemini-3.8-flash-tts', label: 'Gemini 3.8 Flash TTS', typical: '≈ $0.014 / min', cost: 1, speed: 3, quality: 2, note: 'newest Gemini voice · price doubles 1 Jan 2027' },
+  { kind: 'voice', provider: 'gemini', id: 'gemini-2.5-flash-preview-tts', label: 'Gemini Flash TTS', typical: '≈ $0.02 / min', cost: 1, speed: 3, quality: 2, note: 'older preview · Google retires it from 18 Dec 2026' },
   { kind: 'voice', provider: 'elevenlabs', id: 'eleven_flash_v2_5', label: 'ElevenLabs Flash', typical: '≈ $0.04 / 1K chars', cost: 2, speed: 3, quality: 2 },
+  { kind: 'voice', provider: 'elevenlabs', id: 'eleven_v4_turbo', label: 'ElevenLabs v4 Turbo', typical: '≈ $0.04 / 1K chars', cost: 2, speed: 3, quality: 2, note: 'newest, low latency' },
   { kind: 'voice', provider: 'elevenlabs', id: 'eleven_multilingual_v2', label: 'ElevenLabs Multilingual v2', typical: '≈ $0.08 / 1K chars', cost: 3, speed: 2, quality: 3 },
-  { kind: 'voice', provider: 'elevenlabs', id: 'eleven_v3', label: 'ElevenLabs v3', typical: '≈ $0.08 / 1K chars', cost: 3, speed: 2, quality: 3, note: 'most expressive' },
+  { kind: 'voice', provider: 'elevenlabs', id: 'eleven_v3', label: 'ElevenLabs v3', typical: '≈ $0.08 / 1K chars', cost: 3, speed: 2, quality: 3, note: 'expressive · previous generation' },
+  { kind: 'voice', provider: 'elevenlabs', id: 'eleven_v4', label: 'ElevenLabs v4', typical: '≈ $0.08 / 1K chars', cost: 3, speed: 2, quality: 3, note: 'newest, best quality' },
   // music
   { kind: 'music', provider: 'builtin', id: 'procedural', label: 'Built-in composer', typical: 'free', cost: 1, speed: 3, quality: 2, note: 'beat-synced score made on your PC' },
-  { kind: 'music', provider: 'elevenlabs', id: 'music_v1', label: 'ElevenLabs Music', typical: '≈ $0.15 / min', cost: 2, speed: 2, quality: 3 },
+  { kind: 'music', provider: 'elevenlabs', id: 'music_v2_5', label: 'ElevenLabs Music 2.5', typical: '≈ $0.15 / min', cost: 2, speed: 2, quality: 3, note: 'newest, up to 5 min' },
+  { kind: 'music', provider: 'elevenlabs', id: 'music_v1', label: 'ElevenLabs Music', typical: '≈ $0.15 / min', cost: 2, speed: 2, quality: 3, note: 'older · ElevenLabs retires it 31 Jan 2027' },
   { kind: 'music', provider: 'gemini', id: 'lyria-3.5', label: 'Google Lyria 3.5', typical: '≈ $0.08 / track', cost: 1, speed: 2, quality: 3, note: 'scored to your cuts · Gemini paid tier' },
   // sfx
   { kind: 'sfx', provider: 'builtin', id: 'procedural', label: 'Built-in sound design', typical: 'free', cost: 1, speed: 3, quality: 2 },
   // video
   { kind: 'video', provider: 'stock', id: 'stock', label: 'Free stock clips', typical: 'free', cost: 1, speed: 3, quality: 2, note: 'Pexels / Pixabay clips for key scenes (free key)' },
-  { kind: 'video', provider: 'gemini', id: 'gemini-omni-1.1-flash', label: 'Gemini Omni Flash', typical: '≈ $0.80 / clip · max 3 per video', cost: 3, speed: 1, quality: 3, note: 'animates the painted picture of key scenes · Gemini paid tier' }
+  { kind: 'video', provider: 'gemini', id: 'gemini-omni-1.1-flash', label: 'Gemini Omni Flash', typical: '≈ $0.80 / clip · max 3 per video', cost: 3, speed: 1, quality: 3, note: 'animates the painted picture of key scenes · Gemini paid tier · Google retires it 3 Dec 2026 (it then runs as Omni 1.2)' },
+  { kind: 'video', provider: 'gemini', id: 'gemini-omni-1.2-flash', label: 'Gemini Omni 1.2 Flash', typical: '≈ $0.56 / clip · max 3 per video', cost: 3, speed: 1, quality: 3, note: 'newest, cheaper per second · Gemini paid tier' }
 ]
 
 /** human tags for a model card: 💰 cheap · ⚡ fast · 🏆 best */

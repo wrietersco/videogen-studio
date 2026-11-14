@@ -15,6 +15,8 @@ import { performScript, scriptPlan, type ScriptOutcome } from './script'
 import { parseStepScript } from './stepScript'
 import { ambientBrief, chooseMusic, clipSeconds, parseMediaAsk, parseMusicAsk, parseStructure, planMedia, withStyle, withoutProductionSentences, type Placement } from './aiMedia'
 import { musicBrief } from '../audio/cue'
+import { soundsFromWords } from '../audio/ambience'
+import { pickMotif } from './scenes'
 import { decodeStereo } from '../audio/pcm'
 import { probe } from '../assets/probe'
 import type { VideoSpec } from '@shared/spec'
@@ -368,7 +370,10 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
 
     // ------------------------------------------------------------ script
     hooks.progress('script', 'Writing and voicing the script')
-    const narration = await narrate({ chat: inp.chat, speech: inp.speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: ctxClean, secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, problem: structure.problem, dir: inp.runDir, say })
+    // which AI clips the film will have (so the story is written around them): only when they can really be made
+    const clipsPossible = !!inp.media?.tools && !ask.declined
+    const clipPlaces: Placement[] = !clipsPossible ? [] : ask.requests.length ? [...new Set(ask.requests.map((r) => r.placement))] : inp.media?.clips ? ['start'] : []
+    const narration = await narrate({ chat: inp.chat, speech: inp.speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: ctxClean, secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, problem: structure.problem, clips: clipPlaces, product: inp.launch?.feature.split(/\s+/)[0]?.replace(/['\u2019]s$/i, ''), dir: inp.runDir, say })
     // a result the person asked to see stays on screen long enough to be taken in, whatever the narration length
     for (const b of plan.beats) if ((b.kind === 'result' || b.kind === 'detail') && (narration.minSec.get(b.beat) ?? 0) < RESULT_HOLD_SEC) narration.minSec.set(b.beat, RESULT_HOLD_SEC)
     check()
@@ -400,6 +405,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
 
     // ------------------------------------------------------------ AI media (only now: the recording is verified, so nothing is paid for in vain)
     const mediaNotes: string[] = []
+    const motif = pickMotif(`${inp.launch ? `${inp.launch.feature} ${inp.launch.tagline}` : ''} ${ctxClean}`)
     const inserts: InsertPlan[] = []
     const tools = inp.media?.tools ?? null
     const askedClips = ask.requests.length > 0
@@ -411,7 +417,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       hooks.progress('produce', 'Making AI video clips')
       const sec = clipSeconds(lengthSec)
       const topic = inp.launch ? `${inp.launch.feature}${inp.launch.tagline ? ` - ${inp.launch.tagline}` : ''}` : (ctxClean.split('\n').map((l) => l.trim()).find((l) => l.length > 12 && !/^(?:(?:step\s*)?\d{1,2}\s*[.):-]|[-*])\s/i.test(l) && !/:$/.test(l)) ?? '').slice(0, 200)
-      const planned = await planMedia({ chat: inp.chat, requests: ask.requests, auto: !!inp.media?.clips, appName: displayHost(inp.startUrl), topic, context: ctxClean, mode: inp.mode, secrets, say })
+      const planned = await planMedia({ chat: inp.chat, requests: ask.requests, auto: !!inp.media?.clips, appName: displayHost(inp.startUrl), topic, brand: look ? { accent: look.accent.replace('#', ''), backdrop: look.backdrop } : brand?.accent ? { accent: brand.accent } : undefined, motif, lines: narration.clipLines, context: ctxClean, mode: inp.mode, secrets, say })
       const tone = inp.mode === 'launch' ? 'Confident, upbeat product-launch announcer. Warm, energetic, with a clear sense of occasion, at a brisk but natural pace.' : 'Calm, clear, friendly product-demo narrator at an unhurried pace.'
       const middle = (): number => plan.beats[Math.max(0, Math.ceil(plan.beats.length / 2) - 1)]?.beat ?? 0
       const where = (p: Placement): InsertPlan['at'] => (p === 'start' ? { kind: 'start' } : p === 'end' ? { kind: 'end' } : { kind: 'afterBeat', beat: middle() })
@@ -435,13 +441,14 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     let musicChoice: Awaited<ReturnType<typeof chooseMusic>> | undefined
     // a written music wish (nature sounds, no instruments) is an instruction, like a written AI video request
     const musicWish = !!musicAsk && !musicAsk.none && (musicAsk.sounds.length > 0 || musicAsk.noInstruments)
-    const wantAiMusic = (inp.media?.music || musicWish) && !(musicAsk?.none)
+    // natural sounds are made on this PC: free, instrument-free, and they cannot fail the way a music model does
+    const ambience = musicWish ? soundsFromWords(musicAsk!.sounds) : undefined
+    const wantAiMusic = inp.media?.music && !musicWish && !(musicAsk?.none)
     if (musicAsk?.none) mediaNotes.push('You wrote that you do not want music, so the film has voice only.')
-    else if (musicWish && !tools) mediaNotes.push(`You asked for ${musicAsk!.noInstruments ? 'music without instruments' : 'natural sounds'} as the music, but AI music is not available for this video (the AI option is off, the plan does not include it, or no Gemini key is set), so ${musicAsk!.noInstruments ? 'no music was added' : 'the built-in score plays'}.`)
     if (tools && wantAiMusic) {
       musicChoice = await chooseMusic({ ask: musicAsk, chat: inp.chat, context: inp.context, mode: inp.mode, targetSec: lengthSec, styleMood: inp.musicMood, styleDirection: inp.styleDirection, secrets, say })
       say(`AI music: ${musicChoice.mood}${musicChoice.style ? ` — ${musicChoice.style}` : ''} (${musicChoice.why})`)
-    } else if (inp.media?.music && !musicAsk?.none) mediaNotes.push('AI music was ticked, but it is not available for this video (the AI option is off, the plan does not include it, or no Gemini key is set), so the built-in score plays.')
+    } else if (inp.media?.music && !musicAsk?.none && !musicWish) mediaNotes.push('AI music was ticked, but it is not available for this video (the AI option is off, the plan does not include it, or no Gemini key is set), so the built-in score plays.')
     check()
 
     // ------------------------------------------------------------ produce
@@ -472,12 +479,16 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       intro: narration.intro,
       problem: narration.problem,
       outro: narration.outro,
-      noBuiltinMusic: !!musicAsk && (musicAsk.none || (musicAsk.noInstruments && !!musicChoice?.noBuiltin) || (musicAsk.noInstruments && !musicChoice)),
+      noBuiltinMusic: !!musicAsk?.none,
+      ambience,
+      motif,
       targetSec: inp.mode === 'launch' ? inp.launch?.targetSec : undefined,
       keep: false,
       look
     })
-    if (musicChoice) mediaNotes.push(res.musicSource === 'ai' ? `AI music: ${musicChoice.ambient ? 'natural sounds' : musicChoice.mood} — ${musicChoice.why}` : musicChoice.noBuiltin ? 'The AI music could not be made, so the film has voice only (no instruments, as you asked).' : 'The AI music could not be used, so the built-in score plays.')
+    if (musicChoice) mediaNotes.push(res.musicSource === 'ai' ? `AI music: ${musicChoice.ambient ? 'natural sounds' : musicChoice.mood} — ${musicChoice.why}` : `The AI music could not be used${res.musicError ? ` (${res.musicError})` : ''}, so the built-in score plays.`)
+    if (res.musicSource === 'ambience') mediaNotes.push(`Background sound: ${musicAsk!.sounds.length ? musicAsk!.sounds.join(', ') : 'natural ambience'}, made on this computer with no instruments, as you asked.`)
+    if (res.scenes) mediaNotes.push(`The title${narration.problem ? ', problem' : ''} and closing scenes are animated around a "${motif}" motif chosen from what your video is about.`)
     if (narration.problem) mediaNotes.push('Problem statement added after the opening, as you asked (written by the engine from your words).')
     return { ...base, plan, video: res.file, durationSec: res.durationSec, redactionMisses: take.redactionMisses, mediaNotes, aiClips: inserts.length, aiMusic: res.musicSource === 'ai' }
   } finally {

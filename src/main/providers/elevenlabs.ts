@@ -39,10 +39,10 @@ export class ElevenLabsClient {
     return { audio: Buffer.from(json.audio_base64, 'base64'), mimeType: 'audio/mpeg', words: wordsFromChars(json.alignment) }
   }
 
-  async music(prompt: string, seconds: number): Promise<Buffer> {
+  async music(prompt: string, seconds: number, model = 'music_v1'): Promise<Buffer> {
     const ms = Math.round(Math.min(300, Math.max(10, seconds)) * 1000)
-    const res = await this.post('/music?output_format=mp3_44100_128', { prompt, music_length_ms: ms, model_id: 'music_v1' })
-    meter.record({ kind: 'music', provider: 'elevenlabs', model: 'music_v1', usage: { seconds: ms / 1000 } })
+    const res = await this.post('/music?output_format=mp3_44100_128', { prompt, music_length_ms: ms, model_id: model })
+    meter.record({ kind: 'music', provider: 'elevenlabs', model, usage: { seconds: ms / 1000 } })
     return Buffer.from(await res.arrayBuffer())
   }
 

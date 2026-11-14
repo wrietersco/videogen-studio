@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
-import { priceUsage, fmtUsd } from '../src/shared/pricing'
+import { priceUsage, fmtUsd, MEDIA_MODELS } from '../src/shared/pricing'
 import { meter, readProjectUsage } from '../src/main/usage/meter'
 
 describe('price book', () => {
@@ -12,6 +12,14 @@ describe('price book', () => {
     expect(priceUsage('gemini-3.1-flash-image', { images: 2 }).usd).toBeCloseTo(0.134)
     expect(priceUsage('eleven_v3', { chars: 2000 }).usd).toBeCloseTo(0.16)
     expect(priceUsage('mystery-model', { inputTokens: 5 })).toEqual({ usd: 0, priced: false })
+  })
+  it('prices the Nov 2026 model additions', () => {
+    expect(priceUsage('eleven_v4', { chars: 2000 }).usd).toBeCloseTo(0.16)
+    expect(priceUsage('eleven_v4_turbo', { chars: 2000 }).usd).toBeCloseTo(0.08)
+    expect(priceUsage('music_v2_5', { seconds: 120 }).usd).toBeCloseTo(0.3)
+    expect(priceUsage('gemini-3.8-flash-lite-tts', { inputTokens: 1e6, outputTokens: 1e6 }).usd).toBeCloseTo(6.5)
+    expect(priceUsage('gemini-omni-1.2-flash', { outputTokens: 5792 * 10 }).usd).toBeCloseTo(0.695, 2)
+    expect(MEDIA_MODELS.filter((m) => m.kind !== 'image' && m.provider !== 'stock' && m.provider !== 'builtin').every((m) => priceUsage(m.id, { items: 1, seconds: 1, chars: 1, inputTokens: 1, outputTokens: 1 }).priced)).toBe(true)
   })
   it('formats tiny amounts readably', () => {
     expect(fmtUsd(0.00123)).toBe('$0.0012')

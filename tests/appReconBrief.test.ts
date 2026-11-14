@@ -101,7 +101,7 @@ describe.skipIf(!findChrome() || !canShowWindow())('the film follows the brief (
     return { r: s.channels[0].mean, g: s.channels[1].mean, b: s.channels[2].mean }
   }
 
-  it('AI clip first, then the title card and the problem, the demo, and an AI clip last', async () => {
+  it('AI clip first, then the title and the problem, the demo, an AI clip, and the closing card last', async () => {
     const input: RunInput = {
       runDir: join(root, 'film'),
       startUrl: `${site.url}/login`,
@@ -121,18 +121,21 @@ describe.skipIf(!findChrome() || !canShowWindow())('the film follows the brief (
     const out = await runAppRecording(input, hooks())
     expect(out.video).toBeTruthy()
     expect(out.aiClips).toBe(2)
-    expect(out.aiMusic).toBe(true)
-    expect(briefs.find((b) => /soundscape/i.test(b))).toMatch(/birdsong/)
+    // natural sounds are made on this PC: the music model is never called
+    expect(out.aiMusic).toBe(false)
+    expect(briefs.filter((b) => b !== 'clip')).toHaveLength(0)
     const notes = (out.mediaNotes ?? []).join(' | ')
     expect(notes).toMatch(/at the start/)
     expect(notes).toMatch(/at the end/)
     expect(notes).toMatch(/Problem statement/)
+    expect(notes).toMatch(/Background sound: .*birdsong.*no instruments/)
+    expect(notes).toMatch(/animated around a/)
     const first = await frameAt(out.video!, 1)
     expect(first.r).toBeGreaterThan(180)
     expect(first.g).toBeLessThan(80)
-    const last = await frameAt(out.video!, out.durationSec! - 1)
-    expect(last.r).toBeGreaterThan(180)
-    expect(last.g).toBeLessThan(80)
+    // the closing card has the last word; the AI closing clip leads into it
+    const last = await frameAt(out.video!, out.durationSec! - 1.5)
+    expect(last.r < 150 || last.g > 80).toBe(true)
     // the title card is not the first thing on screen
     const second = await frameAt(out.video!, 5.2)
     expect(second.r < 150 || second.g > 80).toBe(true)

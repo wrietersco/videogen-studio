@@ -1,6 +1,6 @@
 {
   "name": "videogen-studio",
-  "version": "0.3.34",
+  "version": "0.3.35",
   "description": "Dynamic, editable AI video generator — prompt in, platform-ready video out",
   "main": "out/main/index.js",
   "type": "module",
@@ -11,7 +11,7 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test": "vitest run tests/renderService.test.ts tests/unit.test.ts tests/compose.test.ts tests/director.test.ts tests/usage.test.ts tests/library.test.ts tests/editing.test.ts tests/stock.test.ts tests/moneyguard.test.ts tests/autopilot.test.ts tests/geminiVideo.test.ts tests/clips.test.ts tests/customScene.test.ts tests/promptTools.test.ts tests/footage.test.ts tests/footageText.test.ts tests/footageSmart.test.ts tests/licensing.test.ts tests/deepseek.test.ts tests/providerRoles.test.ts tests/meterParallel.test.ts tests/parallelJobs.test.ts tests/programmaticArt.test.ts tests/brand.test.ts tests/references.test.ts tests/story.test.ts tests/videoRef.test.ts tests/directives.test.ts tests/requests.test.ts tests/appRecon.test.ts tests/appReconDetect.test.ts tests/appReconStore.test.ts tests/appReconBrowser.test.ts tests/appReconSite.test.ts tests/appReconRun.test.ts tests/appReconStyle.test.ts tests/appReconMedia.test.ts tests/eraseVideo.test.ts tests/appReconBrief.test.ts tests/appReconScript.test.ts",
+    "test": "vitest run tests/renderService.test.ts tests/unit.test.ts tests/compose.test.ts tests/director.test.ts tests/usage.test.ts tests/library.test.ts tests/editing.test.ts tests/stock.test.ts tests/moneyguard.test.ts tests/autopilot.test.ts tests/geminiVideo.test.ts tests/clips.test.ts tests/customScene.test.ts tests/promptTools.test.ts tests/footage.test.ts tests/footageText.test.ts tests/footageSmart.test.ts tests/licensing.test.ts tests/deepseek.test.ts tests/providerRoles.test.ts tests/meterParallel.test.ts tests/parallelJobs.test.ts tests/programmaticArt.test.ts tests/brand.test.ts tests/references.test.ts tests/story.test.ts tests/videoRef.test.ts tests/directives.test.ts tests/requests.test.ts tests/appRecon.test.ts tests/appReconDetect.test.ts tests/appReconStore.test.ts tests/appReconBrowser.test.ts tests/appReconSite.test.ts tests/appReconRun.test.ts tests/appReconStyle.test.ts tests/appReconMedia.test.ts tests/eraseVideo.test.ts tests/appReconBrief.test.ts tests/appReconStory.test.ts tests/appReconScenes.test.ts tests/ambience.test.ts tests/appReconScript.test.ts",
     "test:e2e": "vitest run tests/pipeline.test.ts",
     "gen": "tsx --env-file-if-exists=.env scripts/gen.ts",
     "verify": "npm run typecheck && npm run test",

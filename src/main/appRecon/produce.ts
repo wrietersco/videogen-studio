@@ -1,4 +1,6 @@
 import { spawnSync } from 'node:child_process'
+import { natureAmbience, type AmbienceSound } from '../audio/ambience'
+import { renderScene, type Motif } from './scenes'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import sharp from 'sharp'
@@ -247,6 +249,10 @@ export interface ProduceInput {
   problem?: CardPlan
   /** no composed score plays when the AI music is not used (the person ruled out instruments or music) */
   noBuiltinMusic?: boolean
+  /** natural sounds made on this PC (no instruments) as the background, in place of any score */
+  ambience?: AmbienceSound[]
+  /** the title, problem and closing cards are animated scenes built around this motif (still cards when a scene cannot be rendered) */
+  motif?: Motif
   outro?: CardPlan
   /** the film is stretched (by holding the closing card) to this length when the parts are shorter */
   targetSec?: number
@@ -265,7 +271,11 @@ export interface ProduceResult {
   file: string
   durationSec: number
   captionsFile: string
-  musicSource: 'ai' | 'builtin'
+  musicSource: 'ai' | 'builtin' | 'ambience' | 'none'
+  /** why the AI track was not used, when it failed */
+  musicError?: string
+  /** how many cards were rendered as animated scenes */
+  scenes?: number
 }
 
 export async function produce(inp: ProduceInput): Promise<ProduceResult> {
@@ -304,7 +314,7 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   const wanted = (inp.inserts ?? []).map((p, k) => ({ p, k, t: cutAt(p) })).sort((a, b) => a.t - b.t || a.k - b.k)
   type Item = { kind: 'intro' } | { kind: 'problem' } | { kind: 'demo'; a: number; b: number; afterInsert: boolean } | { kind: 'ins'; p: InsertPlan } | { kind: 'outro' }
   const items: Item[] = []
-  // an AI opening comes before the title card, an AI closing after the closing card: the order the person asked for
+  // an AI opening comes before the title card; an AI closing follows the demo and leads into the closing card, which stays the last word
   const opening = wanted.filter((w) => w.p.at.kind === 'start')
   const closing = wanted.filter((w) => w.p.at.kind === 'end')
   for (const w of opening) items.push({ kind: 'ins', p: w.p })
@@ -325,8 +335,8 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   }
   items.push({ kind: 'demo', a: cur, b: demo, afterInsert })
   for (const p of tail) items.push({ kind: 'ins', p })
-  if (inp.outro) items.push({ kind: 'outro' })
   for (const w of closing) items.push({ kind: 'ins', p: w.p })
+  if (inp.outro) items.push({ kind: 'outro' })
 
   const lengthOf = (it: Item): number => {
     if (it.kind === 'intro') return introSec
@@ -369,8 +379,12 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   const spec = { title: inp.title, musicMood: inp.musicMood ?? 'corporate', design: { look: 'social' } } as unknown as VideoSpec
   const cuts = [...new Set([0, ...starts, ...filmBeats.map((t) => t.fStart)].map((c) => Math.round(c * 100) / 100))].sort((a, b) => a - b)
   let music: Stereo | null = null
-  let musicSource: 'ai' | 'builtin' = 'builtin'
-  if (inp.aiMusic) {
+  let musicSource: 'ai' | 'builtin' | 'ambience' | 'none' = 'builtin'
+  let musicError: string | undefined
+  if (inp.ambience?.length) {
+    music = natureAmbience({ sounds: inp.ambience, totalSec: total })
+    musicSource = 'ambience'
+  } else if (inp.aiMusic) {
     try {
       const m = await inp.aiMusic({ cuts, total })
       if (m && m.l.length > SR) {
@@ -386,14 +400,17 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
         musicSource = 'ai'
       }
     } catch (err) {
-      inp.log?.(`The AI music could not be used (${(err as Error).message.slice(0, 100)}), so the built-in score plays instead.`)
+      musicError = String((err as Error)?.message ?? err).slice(0, 160)
+      inp.log?.(`The AI music could not be used (${musicError}).`)
     }
   }
   if (!music && !inp.noBuiltinMusic) music = scoreMusic(spec, cuts, total)
+  if (!music) musicSource = 'none'
   if (music) duck(music, voice)
   const bus = stereo(total)
   mixIn(bus, voice, 0, 0.9)
-  if (music) for (let i = 0; i < bus.l.length; i++) { bus.l[i] += music.l[i] * 0.55; bus.r[i] += music.r[i] * 0.55 }
+  const musicGain = musicSource === 'ambience' ? 1.3 : 0.55
+  if (music) for (let i = 0; i < bus.l.length && i < music.l.length; i++) { bus.l[i] += music.l[i] * musicGain; bus.r[i] += music.r[i] * musicGain }
   const wav = join(inp.dir, 'mix-raw.wav')
   const mix = join(inp.dir, 'mix.m4a')
   writeWav(wav, bus)
@@ -427,9 +444,32 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   }
   const labels: string[] = []
   let partNo = 0
+  let sceneCount = 0
+  /** the card as an animated scene (at most 8 s is rendered; the last frame is held), or null to use the still card */
+  const scene = async (kind: 'title' | 'problem' | 'outro', card: CardPlan, sec: number): Promise<{ file: string; sec: number } | null> => {
+    if (!inp.motif) return null
+    try {
+      const want = Math.min(8, sec)
+      const r = await renderScene({ kind, motif: inp.motif, pill: card.pill, headline: card.headline, sub: card.sub, accent: card.accent, backdrop: inp.look?.backdrop, logo: card.logo && existsSync(card.logo) ? card.logo : undefined, durationSec: want }, join(inp.dir, `scene-${kind}.mp4`))
+      sceneCount++
+      return { file: r.file, sec: r.durationSec }
+    } catch (err) {
+      inp.log?.(`The animated ${kind} scene could not be made (${String((err as Error)?.message ?? err).slice(0, 100)}), so a still card is used.`)
+      return null
+    }
+  }
+  const sceneChain = (n: number, sc: { sec: number }, dur: number, label: string, fadeOut: boolean): string =>
+    `[${n}:v]scale=1920:1080,${norm},tpad=stop_mode=clone:stop_duration=${num(Math.max(0, dur - sc.sec) + 0.3)},trim=duration=${num(dur)},setpts=PTS-STARTPTS${fadeOut ? `,fade=t=out:st=${num(dur - 0.8)}:d=0.8` : ''}[${label}]`
   for (let i = 0; i < items.length; i++) {
     const it = items[i]
-    if (it.kind === 'intro') {
+    const sc = it.kind === 'intro' ? await scene('title', inp.intro!, durs[i]) : it.kind === 'problem' ? await scene('problem', inp.problem!, durs[i]) : it.kind === 'outro' ? await scene('outro', inp.outro!, durs[i]) : null
+    if (sc) {
+      inputs.push('-i', sc.file)
+      const label = it.kind === 'intro' ? 'intro' : it.kind === 'problem' ? 'problem' : 'outro'
+      graph.push(sceneChain(n, sc, durs[i], label, it.kind === 'outro'))
+      labels.push(label)
+      n++
+    } else if (it.kind === 'intro') {
       inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-intro', inp.intro!, 0.3, inp.look?.backdrop))
       const t = cardText(inp.intro!)
       graph.push(`[${n}:v]${norm}${t ? ',' + t : ''},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[intro]`)
@@ -472,5 +512,5 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
     'final video'
   )
   if (!inp.keep) rmSync(wav, { force: true })
-  return { file, durationSec: total, captionsFile, musicSource }
+  return { file, durationSec: total, captionsFile, musicSource, musicError, scenes: sceneCount }
 }
