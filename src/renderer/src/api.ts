@@ -265,7 +265,7 @@ declare global {
         onEvent: (cb: (event: FootageEvent) => void) => () => void
       }
       appRec: {
-        state: () => Promise<{ apps: SavedApp[]; runs: RunRecord[]; ai: { available: boolean; reason?: string }; current: { runId: string; appId: string } | null }>
+        state: () => Promise<{ apps: SavedApp[]; runs: RunRecord[]; ai: { available: boolean; reason?: string }; youtube: { ready: boolean; action?: string }; current: { runId: string; appId: string } | null }>
         save: (app: AppInput) => Promise<{ ok: true; app: SavedApp } | { ok: false; error: string }>
         remove: (id: string) => Promise<{ ok: boolean; error?: string }>
         attach: () => Promise<{ ok: true; document: { name: string; text: string } } | { ok: false; error: string; cancelled?: boolean }>

@@ -24,6 +24,7 @@ import { PromptTemplateStore, type TemplateInput } from './store/promptTemplates
 import { ensureBrowser } from './rendererService/hyperframes'
 import { projectsDir, appRoot, libraryDir, builtinPackDir, footageDir, brandDir, appReconDir } from './paths'
 import { AppReconStore } from './appRecon/store'
+import type { GeminiProvider } from './providers/gemini'
 import { luminanceOf } from '@shared/brand'
 import { registerAppReconIpc } from './appRecon/ipc'
 import { FootageStore } from './footage/store'
@@ -915,6 +916,7 @@ if (headlessFile) {
     appReconStore.markInterrupted()
     registerAppReconIpc({
       store: appReconStore,
+      gemini: () => (providerRegistry.hasKey('gemini') ? (providerRegistry.get('gemini') as unknown as GeminiProvider) : null),
       emit,
       window: () => win,
       isBusy: busyNow,

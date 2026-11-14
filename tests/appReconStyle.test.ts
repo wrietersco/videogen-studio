@@ -55,3 +55,43 @@ describe('reading reference files', () => {
     expect(r.notes.join(' ')).toContain('reference video could not be read')
   })
 })
+
+describe('YouTube references', () => {
+  const reply = { pacing: 'energetic', musicEnergy: 'high', palette: ['#FF3366', '#112233'], lookAndFeel: 'Bold and glossy.', motionGraphics: 'Snappy kinetic text.', music: 'Driving electronic.', narration: 'Confident and brisk.', other: '' }
+  const gemini = (seen: string[]) => ({ readVideoUrl: async (req: { url: string; prompt: string }) => (seen.push(req.url + '|' + req.prompt), reply as never) })
+
+  it('reads up to three links and builds a direction for the writer, with the person\'s note', async () => {
+    const seen: string[] = []
+    const links = ['https://youtu.be/abcdefghijk', 'https://www.youtube.com/watch?v=bbbbbbbbbbb', 'https://www.youtube.com/shorts/ccccccccccc', 'https://youtu.be/ddddddddddd']
+    const r = await readStyle([], undefined, { links, guidance: 'I love the snappy text', gemini: gemini(seen) })
+    expect(seen).toHaveLength(3)
+    expect(seen[0]).toContain('https://www.youtube.com/watch?v=abcdefghijk')
+    expect(seen[0]).toContain('I love the snappy text')
+    expect(r.musicMood).toBe('upbeat')
+    expect(r.look).toBeTruthy()
+    expect(r.direction).toContain('narration: Confident and brisk.')
+    expect(r.direction).toContain('I love the snappy text')
+  })
+
+  it('skips links, and says so, when the AI is not available; bad links are ignored', async () => {
+    const r = await readStyle([], undefined, { links: ['https://youtu.be/abcdefghijk'], gemini: null })
+    expect(r.direction).toBeUndefined()
+    expect(r.notes.join(' ')).toContain('YouTube references were skipped')
+    const none = await readStyle([], undefined, { links: ['https://example.com/x'], gemini: gemini([]) })
+    expect(none.direction).toBeUndefined()
+  })
+
+  it('a link that fails to read never stops the run', async () => {
+    const r = await readStyle([], undefined, { links: ['https://youtu.be/abcdefghijk'], gemini: { readVideoUrl: async () => { throw new Error('403 private') } } })
+    expect(r.notes.join(' ')).toContain('could not be read')
+  })
+})
+
+describe('what the person must set up for YouTube links', () => {
+  it('is ready only with the AI available and Gemini connected, and otherwise names the action', async () => {
+    const { youtubeReadiness } = await import('../src/main/appRecon/style')
+    expect(youtubeReadiness({ available: true }, true)).toEqual({ ready: true })
+    expect(youtubeReadiness({ available: true }, false).action).toContain('Google Gemini')
+    expect(youtubeReadiness({ available: false, reason: 'Sign in first.' }, true).action).toContain('Sign in first.')
+  })
+})

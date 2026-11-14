@@ -46,7 +46,7 @@ export class AppReconStore {
 
   list(): SavedApp[] {
     return this.readJson<SavedApp[]>(this.appsFile, [])
-      .map((a) => ({ ...a, styleImages: a.styleImages ?? [], hasPlan: existsSync(this.planFile(a.id)) }))
+      .map((a) => ({ ...a, styleImages: a.styleImages ?? [], styleLinks: a.styleLinks ?? [], hasPlan: existsSync(this.planFile(a.id)) }))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
 

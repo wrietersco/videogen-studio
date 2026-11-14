@@ -2,7 +2,9 @@ import { existsSync, statSync } from 'node:fs'
 import { extname } from 'node:path'
 import sharp from 'sharp'
 import { logoPalette } from '../brand/logo'
-import { readVideoFile } from '../references/video'
+import { readVideoFile, readYouTubeStyle } from '../references/video'
+import { MAX_STYLE_LINKS, parseYouTubeUrl } from '../../shared/youtube'
+import type { GeminiProvider } from '../providers/gemini'
 
 /**
  * The look reference pictures and a reference video give a recording: the
@@ -22,6 +24,17 @@ export interface StyleReading {
   look?: Look
   musicMood?: 'corporate' | 'upbeat'
   notes: string[]
+  /** what to copy from YouTube references: look and feel, motion graphics, music and narration, for the script writer (information only) */
+  direction?: string
+}
+
+export interface StyleOptions {
+  /** public YouTube links, read by the AI (never downloaded) */
+  links?: string[]
+  /** what the person likes most, or wants the engine to focus on */
+  guidance?: string
+  /** the AI that reads links; absent when it cannot be used */
+  gemini?: Pick<GeminiProvider, 'readVideoUrl'> | null
 }
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp'])
@@ -87,9 +100,35 @@ async function paletteOfImage(path: string): Promise<string[]> {
   return logoPalette({ data, width: info.width, height: info.height }, 3)
 }
 
-export async function readStyle(images: string[], video?: string): Promise<StyleReading> {
+/** whether YouTube links can be read right now, and if not, the one thing the person has to do about it */
+export function youtubeReadiness(ai: { available: boolean; reason?: string }, hasGemini: boolean): { ready: boolean; action?: string } {
+  if (!ai.available) return { ready: false, action: `${ai.reason ?? 'The AI is not available on this account.'} YouTube links are read by the AI, so they are skipped until it is.` }
+  if (!hasGemini) return { ready: false, action: 'Connect a Google Gemini account in Settings → Keys (or sign in to a plan that includes AI). Gemini is what watches YouTube links; until then they are skipped and only pictures and video files are used.' }
+  return { ready: true }
+}
+
+export async function readStyle(images: string[], video?: string, opts: StyleOptions = {}): Promise<StyleReading> {
   const notes: string[] = []
   const palette: string[] = []
+  const energies: Array<'low' | 'medium' | 'high'> = []
+  const direction: string[] = []
+  const links = (opts.links ?? []).map((l) => parseYouTubeUrl(l)).filter((r): r is NonNullable<typeof r> => !!r).slice(0, MAX_STYLE_LINKS)
+  if (links.length && !opts.gemini) notes.push('The YouTube references were skipped: reading a link needs the AI (a Google Gemini account connected, and the AI writer turned on).')
+  else {
+    for (const [i, ref] of links.entries()) {
+      try {
+        const s = await readYouTubeStyle(opts.gemini!, ref, opts.guidance ?? '')
+        for (const c of s.palette) if (!palette.includes(c)) palette.push(c)
+        energies.push(s.musicEnergy)
+        const label = links.length > 1 ? `Reference ${i + 1}` : 'Reference'
+        const parts = [s.lookAndFeel && `look and feel: ${s.lookAndFeel}`, s.motionGraphics && `motion graphics: ${s.motionGraphics}`, s.music && `music: ${s.music}`, s.narration && `narration: ${s.narration}`, s.other && `also: ${s.other}`].filter(Boolean)
+        if (parts.length) direction.push(`${label} (${s.pacing} pace) — ${parts.join('; ')}`)
+        notes.push(`${label} read (${s.pacing} pace${s.motionGraphics ? `, ${s.motionGraphics.slice(0, 80)}` : ''}).`)
+      } catch (err) {
+        notes.push(`A YouTube reference could not be read (it must be public, not private, age-restricted or live): ${String((err as Error)?.message ?? err).slice(0, 80)}`)
+      }
+    }
+  }
   for (const file of images.slice(0, MAX_STYLE_IMAGES)) {
     try {
       if (!IMAGE_EXT.has(extname(file).toLowerCase()) || !existsSync(file) || !statSync(file).isFile()) throw new Error('not a picture')
@@ -103,13 +142,20 @@ export async function readStyle(images: string[], video?: string): Promise<Style
     try {
       const brief = await readVideoFile(video)
       for (const c of brief.palette) if (!palette.includes(c)) palette.push(c)
-      musicMood = brief.musicEnergy === 'high' ? 'upbeat' : 'corporate'
-      notes.push(`The reference video cuts at a ${brief.pacing} pace, so the music is ${musicMood === 'upbeat' ? 'upbeat' : 'calm'}.`)
+      energies.push(brief.musicEnergy)
+      notes.push(`The reference video cuts at a ${brief.pacing} pace.`)
     } catch (err) {
       notes.push(`The reference video could not be read: ${(err as Error).message}`)
     }
   }
+  // the music follows the references: upbeat when most of them are driving, calm otherwise
+  if (energies.length) {
+    musicMood = energies.filter((e) => e === 'high').length * 2 >= energies.length ? 'upbeat' : 'corporate'
+    notes.push(`The music is ${musicMood === 'upbeat' ? 'upbeat' : 'calm'}, to match the references.`)
+  }
   const look = lookFromPalette(palette) ?? undefined
   if (look) notes.push('Backdrop and card colours follow the reference.')
-  return { look, musicMood, notes }
+  const guidance = (opts.guidance ?? '').replace(/\s+/g, ' ').trim().slice(0, 600)
+  const text = direction.length ? `${direction.join('\n')}${guidance ? `\nThe person likes most / wants the focus on: ${guidance}` : ''}` : undefined
+  return { look, musicMood, notes, direction: text }
 }

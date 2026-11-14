@@ -4,10 +4,11 @@ import { join, resolve, sep } from 'node:path'
 import { brandSourceOf, isAppId, isRunId, validateApp, type ReviewEdits, type RunEvent, type RunRecord } from '../../shared/appRecording'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { applyReviewEdits, reviewBeats } from './planner'
-import { readStyle } from './style'
+import { readStyle, youtubeReadiness } from './style'
 import { RunCancelled, runAppRecording, type RunHooks, type RunInput, type RunOutput } from './run'
 import { meter } from '../usage/meter'
 import type { AppReconStore } from './store'
+import type { GeminiProvider } from '../providers/gemini'
 
 export interface AppReconIpcDeps {
   store: AppReconStore
@@ -23,11 +24,13 @@ export interface AppReconIpcDeps {
   aiJob: <T>(projectKey: string, title: string, fn: () => Promise<T>) => Promise<T>
   /** a brand kit's accent colour (hex without #) and logo file, when it has them */
   brand?: (id: string) => { accent?: string; logo?: string } | null
+  /** the AI that reads YouTube references by link; null when no Gemini account is connected */
+  gemini?: () => Pick<GeminiProvider, 'readVideoUrl'> | null
   /** replaceable for tests */
   runner?: (input: RunInput, hooks: RunHooks) => Promise<RunOutput>
 }
 
-const DOC_EXT = new Set(['.txt', '.md', '.markdown', '.csv', '.json'])
+const DOC_EXT =new Set(['.txt', '.md', '.markdown', '.csv', '.json'])
 const MAX_DOC = 200 * 1024
 
 export function registerAppReconIpc(d: AppReconIpcDeps): void {
@@ -47,6 +50,7 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
     apps: d.store.list(),
     runs: d.store.runs(),
     ai: d.ai(),
+    youtube: youtubeReadiness(d.ai(), !!d.gemini?.()),
     current: current ? { runId: current.runId, appId: current.appId } : null
   }))
 
@@ -179,17 +183,20 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
       // reference pictures and a reference video steer the colours and the music; a reading that fails never stops the run
       let look: RunInput['look']
       let musicMood: RunInput['musicMood']
-      if (app.styleImages.length || app.styleVideo) {
+      let styleDirection: RunInput['styleDirection']
+      if (app.styleImages.length || app.styleVideo || app.styleLinks?.length) {
         try {
-          const st = await readStyle(app.styleImages, app.styleVideo)
+          // a YouTube link is read by the AI, so it only runs when the AI is on for this video
+          const st = await readStyle(app.styleImages, app.styleVideo, { links: app.styleLinks, guidance: app.styleNotes, gemini: useAi ? (d.gemini?.() ?? null) : null })
           look = st.look
           musicMood = st.musicMood
+          styleDirection = st.direction
           styleNotes = st.notes
         } catch (err) {
           styleNotes = [`The reference could not be used: ${String((err as Error)?.message ?? err)}`]
         }
       }
-      return runner({ ...base, chat: p.chat, speech: p.speech, look, musicMood }, hooks)
+      return runner({ ...base, chat: p.chat, speech: p.speech, look, musicMood, styleDirection }, hooks)
     }
 
     void (async () => {

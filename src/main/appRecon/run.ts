@@ -62,6 +62,8 @@ export interface RunInput {
   siteBrand?: boolean
   /** colours from the person's reference pictures: backdrop and card accent */
   look?: { backdrop: [string, string]; accent: string }
+  /** style read from YouTube references (look, motion graphics, music, narration): information for the script writer, never instructions */
+  styleDirection?: string
   /** the steps of an earlier run: they are checked against the app as it is now, and only the broken ones are changed */
   reuse?: Plan
   /** the person can press Take over while the app is being explored */
@@ -320,7 +322,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
 
     // ------------------------------------------------------------ script
     hooks.progress('script', 'Writing and voicing the script')
-    const narration = await narrate({ chat: inp.chat, speech: inp.speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: inp.context, secrets, targetSec: inp.targetSec, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, dir: inp.runDir, say })
+    const narration = await narrate({ chat: inp.chat, speech: inp.speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: inp.context, secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, dir: inp.runDir, say })
     // a result the person asked to see stays on screen long enough to be taken in, whatever the narration length
     for (const b of plan.beats) if ((b.kind === 'result' || b.kind === 'detail') && (narration.minSec.get(b.beat) ?? 0) < RESULT_HOLD_SEC) narration.minSec.set(b.beat, RESULT_HOLD_SEC)
     check()

@@ -3,6 +3,8 @@
  * Plain data only, so it can cross the bridge and be saved as JSON.
  */
 
+import { MAX_STYLE_LINKS, parseYouTubeUrl } from './youtube'
+
 export type SignInMode = 'saved' | 'self' | 'none'
 export type Depth = 'quick' | 'standard' | 'thorough'
 export type VideoMode = 'walkthrough' | 'launch'
@@ -57,6 +59,10 @@ export interface AppInput {
   /** reference pictures (up to 3) whose colours steer the backdrop and cards, and one reference video whose pace steers the music */
   styleImages: string[]
   styleVideo?: string
+  /** up to 3 public YouTube links the AI reads for look, motion graphics, music and narration style (nothing is downloaded) */
+  styleLinks?: string[]
+  /** what the person likes most about the references, or what to focus on */
+  styleNotes?: string
 }
 
 export interface SavedApp extends Omit<AppInput, 'password'> {
@@ -190,7 +196,9 @@ export function validateApp(raw: unknown): { ok: true; value: AppInput } | { ok:
       brandId: typeof r.brandId === 'string' && /^[\w-]{1,60}$/.test(r.brandId) ? r.brandId : undefined,
       brandSource: brandSourceOf(r.brandSource, typeof r.brandId === 'string' && /^[\w-]{1,60}$/.test(r.brandId)),
       styleImages: (Array.isArray(r.styleImages) ? r.styleImages : []).filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length < 600).slice(0, 3),
-      styleVideo: typeof r.styleVideo === 'string' && r.styleVideo.length > 0 && r.styleVideo.length < 600 ? r.styleVideo : undefined
+      styleVideo: typeof r.styleVideo === 'string' && r.styleVideo.length > 0 && r.styleVideo.length < 600 ? r.styleVideo : undefined,
+      styleLinks: [...new Set((Array.isArray(r.styleLinks) ? r.styleLinks : []).map((x) => (typeof x === 'string' ? parseYouTubeUrl(x)?.url : undefined)).filter((x): x is string => !!x))].slice(0, MAX_STYLE_LINKS),
+      styleNotes: str(r.styleNotes, 1000)
     }
   }
 }

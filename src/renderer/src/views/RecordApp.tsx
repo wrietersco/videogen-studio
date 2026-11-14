@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type AppInput, type ReviewBeat, type RunEvent, type RunRecord, type SavedApp } from '../api'
 import { Section, fmtDur } from '../components/ui'
+import { MAX_STYLE_LINKS, parseYouTubeUrl } from '@shared/youtube'
 import { brandSourceOf, DEFAULT_CHECKS, DEPTH_LABELS, type AppChecks, type BrandSource, type Depth } from '@shared/appRecording'
 
 /**
@@ -36,23 +37,25 @@ interface Form {
   brandSource: BrandSource
   styleImages: string[]
   styleVideo: string
+  styleLinks: string[]
+  styleNotes: string
 }
 
 const blank = (): Form => ({
   name: '', url: '', context: '', document: null, signIn: 'saved', username: '', password: '', hasPassword: false, guardrailText: '', checks: { ...DEFAULT_CHECKS }, depth: 'standard',
-  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, useAi: true, reviewFirst: false, brandId: '', brandSource: 'none', styleImages: [], styleVideo: ''
+  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, useAi: true, reviewFirst: false, brandId: '', brandSource: 'none', styleImages: [], styleVideo: '', styleLinks: [], styleNotes: ''
 })
 
 const fromApp = (a: SavedApp): Form => ({
   id: a.id, name: a.name, url: a.url, context: a.context, document: a.document ?? null, signIn: a.signIn, username: a.username ?? '', password: '', hasPassword: a.hasPassword, guardrailText: a.guardrailText,
   checks: a.checks, depth: a.depth, revealUsername: a.revealUsername, mode: a.mode, feature: a.launch?.feature ?? '', tagline: a.launch?.tagline ?? 'Simple. Fast. Safe.', closing: a.launch?.closing ?? 'Try it today',
-  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, useAi: a.useAi, reviewFirst: a.reviewFirst, brandId: a.brandId ?? '', brandSource: brandSourceOf(a.brandSource, !!a.brandId), styleImages: a.styleImages ?? [], styleVideo: a.styleVideo ?? ''
+  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, useAi: a.useAi, reviewFirst: a.reviewFirst, brandId: a.brandId ?? '', brandSource: brandSourceOf(a.brandSource, !!a.brandId), styleImages: a.styleImages ?? [], styleVideo: a.styleVideo ?? '', styleLinks: a.styleLinks ?? [], styleNotes: a.styleNotes ?? ''
 })
 
 const toInput = (f: Form): AppInput => ({
   id: f.id, name: f.name, url: f.url, context: f.context, document: f.document, signIn: f.signIn, username: f.username || undefined, password: f.password || undefined, guardrailText: f.guardrailText,
   checks: f.checks, depth: f.depth, revealUsername: f.revealUsername, mode: f.mode,
-  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, useAi: f.useAi, reviewFirst: f.reviewFirst, brandId: f.brandSource === 'kit' ? f.brandId || undefined : undefined, brandSource: f.brandSource === 'kit' && !f.brandId ? 'none' : f.brandSource, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined
+  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, useAi: f.useAi, reviewFirst: f.reviewFirst, brandId: f.brandSource === 'kit' ? f.brandId || undefined : undefined, brandSource: f.brandSource === 'kit' && !f.brandId ? 'none' : f.brandSource, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined, styleLinks: f.styleLinks, styleNotes: f.styleNotes
 })
 
 const STAGES: Array<{ id: string; label: string }> = [
@@ -77,6 +80,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
   const [apps, setApps] = useState<SavedApp[]>([])
   const [runs, setRuns] = useState<RunRecord[]>([])
   const [ai, setAi] = useState<{ available: boolean; reason?: string }>({ available: false })
+  const [youtube, setYoutube] = useState<{ ready: boolean; action?: string }>({ ready: true })
   const [form, setForm] = useState<Form>(blank)
   const [live, setLive] = useState<Live | null>(null)
   const [kits, setKits] = useState<Array<{ id: string; name: string }>>([])
@@ -90,6 +94,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
     setApps(s.apps)
     setRuns(s.runs)
     setAi(s.ai)
+    setYoutube(s.youtube ?? { ready: true })
     if (s.current) setLive((l) => l ?? { runId: s.current!.runId, stage: 'explore', message: 'Running…', logs: [], handoff: null, review: null, result: null })
     return s
   }, [])
@@ -130,6 +135,19 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
     } finally {
       setSaving(false)
     }
+  }
+
+  const [linkText, setLinkText] = useState('')
+  const [linkError, setLinkError] = useState<string | null>(null)
+  const addLink = () => {
+    const ref = parseYouTubeUrl(linkText)
+    if (!linkText.trim()) return
+    if (!ref) return setLinkError("That does not look like a YouTube link. Paste the video's address, for example https://www.youtube.com/watch?v=…")
+    if (form.styleLinks.includes(ref.url)) return setLinkError('That link is already added.')
+    if (form.styleLinks.length >= MAX_STYLE_LINKS) return setLinkError(`Up to ${MAX_STYLE_LINKS} links can be added.`)
+    set('styleLinks', [...form.styleLinks, ref.url])
+    setLinkText('')
+    setLinkError(null)
   }
 
   const [reuse, setReuse] = useState(false)
@@ -288,7 +306,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
             )}
           </Section>
 
-          <Section icon="🎨" title="Look (optional)" hint="Reference pictures steer the colours of the backdrop and cards; a reference video steers the pace of the music. They are read on this computer and never uploaded.">
+          <Section icon="🎨" title="Look (optional)" hint="Reference pictures steer the colours of the backdrop and cards; a reference video steers the pace of the music. Pictures and video files are read on this computer and never uploaded. YouTube links are read by the AI.">
             <div className="flex flex-wrap items-center gap-2">
               <button onClick={() => pickStyle('images')} disabled={form.styleImages.length >= 3} className="btn-ghost !px-3 !py-1 !text-xs">🖼️ Add pictures</button>
               <button onClick={() => pickStyle('video')} className="btn-ghost !px-3 !py-1 !text-xs">🎞️ Pick a video</button>
@@ -303,6 +321,56 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
                 </span>
               )}
             </div>
+
+            <div className="mt-4 border-t-2 border-ink/5 pt-3">
+              <div className="text-sm font-bold">▶️ YouTube references <span className="text-xs font-semibold text-ink/50">(up to {MAX_STYLE_LINKS})</span></div>
+              <p className="mt-0.5 text-xs text-ink/55">The AI watches the opening minutes of each public video and learns its look and feel, motion graphics, music and narration style. Nothing is downloaded or copied: only the style is borrowed, never the footage, music or words.</p>
+              <div className="mt-2 flex gap-2">
+                <input
+                  aria-label="YouTube link"
+                  value={linkText}
+                  onChange={(e) => { setLinkText(e.target.value); setLinkError(null) }}
+                  onKeyDown={(e) => e.key === 'Enter' && addLink()}
+                  disabled={form.styleLinks.length >= MAX_STYLE_LINKS}
+                  placeholder={form.styleLinks.length >= MAX_STYLE_LINKS ? `${MAX_STYLE_LINKS} links added` : 'Paste a YouTube link'}
+                  className="field min-w-0 flex-1 px-4 py-2 text-sm"
+                />
+                <button onClick={addLink} disabled={!linkText.trim() || form.styleLinks.length >= MAX_STYLE_LINKS} className="btn-ghost !px-3 !py-1 !text-xs">Add link</button>
+              </div>
+              {linkError && <div className="mt-1.5 text-xs font-bold text-berry">{linkError}</div>}
+              {form.styleLinks.length > 0 && (
+                <ul className="mt-2 space-y-1.5">
+                  {form.styleLinks.map((u, i) => (
+                    <li key={u} className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-1.5 text-xs font-semibold text-ink/70">
+                      <span className="truncate" title={u}>{i + 1}. {u.replace('https://www.', '')}</span>
+                      <button aria-label={`Remove link ${i + 1}`} onClick={() => set('styleLinks', form.styleLinks.filter((x) => x !== u))} className="shrink-0 text-ink/40 hover:text-berry">✕</button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {!youtube.ready && (
+                <div className="mt-2 rounded-xl bg-sunny-soft px-3 py-2 text-xs font-semibold text-ink/80">
+                  ⚙️ Action needed: {youtube.action}
+                  <button onClick={onOpenSettings} className="ml-2 font-bold text-grape underline">Open settings</button>
+                </div>
+              )}
+              {youtube.ready && form.styleLinks.length > 0 && !form.useAi && <div className="mt-2 rounded-xl bg-sunny-soft px-3 py-2 text-xs font-semibold text-ink/80">⚙️ Action needed: tick “Use the AI writer and voice” under Options, otherwise these links are skipped.</div>}
+            </div>
+
+            {(form.styleLinks.length > 0 || form.styleImages.length > 0 || !!form.styleVideo) && (
+              <label className="mt-4 block text-xs font-bold uppercase tracking-wide text-ink/50">
+                What do you like most about these references? (optional)
+                <textarea
+                  aria-label="What you like about the references"
+                  value={form.styleNotes}
+                  onChange={(e) => set('styleNotes', e.target.value)}
+                  rows={3}
+                  maxLength={1000}
+                  placeholder="e.g. I love the snappy text animations and the calm, confident voice. Focus on the pacing and the music, not the colours."
+                  className="field mt-1 w-full px-4 py-2.5 text-sm font-normal normal-case tracking-normal text-ink"
+                />
+              </label>
+            )}
           </Section>
 
           <Section icon="🛡️" title="Restrictions (optional)" hint="Nothing is restricted unless you tick it or type a rule. Rules we cannot check automatically are shown back to you.">
