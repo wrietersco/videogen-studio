@@ -39,10 +39,48 @@ import { lookFromPalette } from './style'
 
 /** what the AI media models can do for this run (supplied by the app; absent = the free engine only) */
 export interface MediaTools {
-  /** one clip of this many whole seconds (3 to 10); resolves to the file */
-  clip(prompt: string, seconds: number): Promise<{ file: string; durationSec?: number }>
+  /** one clip of this many whole seconds (3 to 10); resolves to the file. `imageFile` is a still used as the clip's first frame (image-to-video) */
+  clip(prompt: string, seconds: number, opts?: { imageFile?: string }): Promise<{ file: string; durationSec?: number }>
+  /** a cheap landscape 16:9 still (the user's image model) saved to a file; absent = clips start from text only */
+  still?(prompt: string): Promise<{ file: string; costUsd?: number }>
+  /** checks a still is a coherent, concrete picture with no readable text; null/absent = no review available (the still is used unchecked) */
+  reviewStill?(file: string): Promise<{ ok: boolean; reason?: string } | null>
   /** one finished track (an audio file's bytes) for this brief */
   music(brief: string): Promise<Buffer>
+}
+
+/** the still's prompt: the clip prompt, asking for the shot's first frame */
+export const keyframePrompt = (clipPrompt: string): string => `First frame of this shot, a still photograph: ${clipPrompt}`
+
+/** one clip in a long film gets up to 5 seconds, otherwise the planner's length stands */
+export const clipLength = (planned: number, clipCount: number, targetSec: number): number => (clipCount === 1 && targetSec > 25 ? Math.max(planned, 5) : planned)
+
+/**
+ * the opening picture for one AI clip: a still made and checked before any video is paid for.
+ * `skip` = the picture failed the check twice, so no clip is to be made; no `imageFile` and no `skip` = the clip starts from text only.
+ */
+export async function openingPicture(tools: MediaTools, clipPrompt: string, index: number, notes: string[], signal?: AbortSignal): Promise<{ imageFile?: string; skip?: boolean }> {
+  if (!tools.still) return {}
+  let imageFile: string | undefined
+  try {
+    for (let attempt = 0; attempt < 2 && !imageFile; attempt++) {
+      const still = await tools.still(keyframePrompt(clipPrompt))
+      const verdict = tools.reviewStill ? await tools.reviewStill(still.file).catch(() => null) : null
+      if (!verdict || verdict.ok) {
+        imageFile = still.file
+        if (attempt > 0) notes.push(`The opening picture for AI clip ${index + 1} was made again after the first one failed the check.`)
+      } else if (attempt === 1) {
+        notes.push('The opening picture for an AI clip did not pass the check, so no clip was paid for.')
+        return { skip: true }
+      }
+    }
+  } catch (err) {
+    if (err instanceof RunCancelled || signal?.aborted) throw err
+    notes.push(`The opening picture for AI clip ${index + 1} could not be made (${String((err as Error)?.message ?? err).slice(0, 120)}), so the clip starts from text only.`)
+    return {}
+  }
+  notes.push(`AI clip ${index + 1} started from a keyframe picture.`)
+  return { imageFile }
 }
 
 export type Stage = 'explore' | 'plan' | 'script' | 'record' | 'produce'
@@ -417,16 +455,22 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       hooks.progress('produce', 'Making AI video clips')
       const sec = clipSeconds(lengthSec)
       const topic = inp.launch ? `${inp.launch.feature}${inp.launch.tagline ? ` - ${inp.launch.tagline}` : ''}` : (ctxClean.split('\n').map((l) => l.trim()).find((l) => l.length > 12 && !/^(?:(?:step\s*)?\d{1,2}\s*[.):-]|[-*])\s/i.test(l) && !/:$/.test(l)) ?? '').slice(0, 200)
-      const planned = await planMedia({ chat: inp.chat, requests: ask.requests, auto: !!inp.media?.clips, appName: displayHost(inp.startUrl), topic, brand: look ? { accent: look.accent.replace('#', ''), backdrop: look.backdrop } : brand?.accent ? { accent: brand.accent } : undefined, motif, lines: narration.clipLines, context: ctxClean, mode: inp.mode, secrets, say })
+      // what the app does, from the beats of the film itself: the writer builds its visual metaphor from these
+      const clipFacts = [...new Set(plan.beats.flatMap((b) => b.facts))].filter((f) => f.length > 8).slice(0, 14)
+      const planned = await planMedia({ chat: inp.chat, requests: ask.requests, auto: !!inp.media?.clips, appName: displayHost(inp.startUrl), topic, brand: look ? { accent: look.accent.replace('#', ''), backdrop: look.backdrop } : brand?.accent ? { accent: brand.accent } : undefined, motif, lines: narration.clipLines, facts: clipFacts, subjectHint: inp.launch ? `${inp.launch.feature}: ${inp.launch.tagline}` : undefined, context: ctxClean, mode: inp.mode, secrets, say })
       const tone = inp.mode === 'launch' ? 'Confident, upbeat product-launch announcer. Warm, energetic, with a clear sense of occasion, at a brisk but natural pace.' : 'Calm, clear, friendly product-demo narrator at an unhurried pace.'
       const middle = (): number => plan.beats[Math.max(0, Math.ceil(plan.beats.length / 2) - 1)]?.beat ?? 0
       const where = (p: Placement): InsertPlan['at'] => (p === 'start' ? { kind: 'start' } : p === 'end' ? { kind: 'end' } : { kind: 'afterBeat', beat: middle() })
+      const clipSec1 = clipLength(sec, planned.length, lengthSec)
       let n = 0
       for (const c of planned) {
         check()
-        say(`AI clip ${n + 1} of ${planned.length} (${sec}s): ${c.said.slice(0, 100)}`)
+        say(`AI clip ${n + 1} of ${planned.length} (${clipLength(sec, planned.length, lengthSec)}s): ${c.said.slice(0, 100)}`)
         try {
-          const made = await tools.clip(c.prompt, sec)
+          const start = await openingPicture(tools, c.prompt, n, mediaNotes, inp.signal)
+          if (start.skip) continue
+          const imageFile = start.imageFile
+          const made = await tools.clip(c.prompt, clipSec1, imageFile ? { imageFile } : undefined)
           const clipSec = made.durationSec ?? probe(made.file).durationSec ?? sec
           mkdirSync(join(inp.runDir, 'final'), { recursive: true })
           const pcm = await voiceLine(narration.plans.some((p) => p.pcm.length) ? inp.speech : null, join(inp.runDir, 'final'), `voice-clip-${n}`, c.line, tone).catch((err) => {

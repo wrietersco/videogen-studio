@@ -197,17 +197,167 @@ export function clipLook(placement: Placement, brand?: ClipBrand, motif?: ClipMo
   return { palette, motif: motif ? MOTIF_LOOK[motif] : '', continuity }
 }
 
+// ------------------------------------------------------------------ the vague-word guard
+
+/** about 150 common filmable objects and materials: a picture prompt needs several of them */
+const CONCRETE_NOUNS = new Set((
+  'book page paper lantern lamp candle map thread string rope ribbon glass window mirror lens prism water river stream drop ripple wave ' +
+  'stone rock pebble sand dust smoke mist cloud fog rain snow ice leaf tree branch flower petal seed vine moss grass garden field hill mountain ' +
+  'door gate arch bridge stair staircase tower column pillar wall floor roof lattice mosaic tile brick marble wood timber oak metal brass copper steel ' +
+  'gear cog wheel spring lever pulley chain hinge key lock clock dial needle compass track rail path road trail ' +
+  'table desk shelf cabinet drawer box crate envelope card panel board frame canvas tapestry fabric cloth silk linen curtain ' +
+  'bowl cup jar bottle vase pot kettle tray scroll ink quill pen brush cube sphere ball orb disc ring dome ' +
+  'cable wire circuit chip bulb filament switch tube pipe valve ' +
+  'star constellation moon sun sky horizon sunrise dawn dusk skyline city street ' +
+  'bird butterfly feather wing fish ship boat sail ' +
+  'puzzle brick domino marble pebble stepping stones blocks shelves ' +
+  'blueprint ladder platform tunnel corridor room hall library workshop studio'
+).split(/\s+/));
+
+const ABSTRACT_ALWAYS: Array<[RegExp, string]> = [
+  [/\babstract\b/i, 'abstract'],
+  [/\benergy\b/i, 'energy'],
+  [/\bfuturistic\b/i, 'futuristic'],
+  [/\bglowing\s+(?:lines?|shapes?|nodes?|orbs?)\b/i, 'glowing lines'],
+  [/\bmotion\s+graphics?\b/i, 'motion graphics']
+]
+const ABSTRACT_UNLESS_CONCRETE: Array<[RegExp, string]> = [
+  [/\bflowing\b/i, 'flowing'],
+  [/\bdynamic\b/i, 'dynamic'],
+  [/\bparticles?\b/i, 'particles'],
+  [/\bswirl\w*\b/i, 'swirling']
+]
+const ACTION_CUE = /\b(?:opens?|opening|rises?|rising|rolls?|rolling|slides?|sliding|snaps?|ties|tie|tying|unfolds?|unfurl\w*|lifts?|lifting|drifts?|drifting|settles?|settling|assembles?|assembling|fills?|filling|lights?|lighting|lit|grows?|growing|spreads?|travels?|turns?|turning|falls?|falling|climbs?|climbing|stacks?|stacking|connects?|joins?|joining|releases?|releasing|swings?|spins?|spinning|threads?|weaves?|weaving|pours?|pouring|ignites?|glides?|gliding|moves?|moving|clicks?|locks?|unrolls?|builds?|building|floats?|floating|ends?|begins?)\b/i
+const CAMERA_CUE = /\b(?:camera|dolly|pan|panning|tilt|tilts|zoom\w*|crane|tracking|orbit\w*|push-?in|pull-?back|pulls?\s+back|close-?up|macro|overhead|aerial|wide\s+shot|top-?down|rack\s+focus|handheld|lens)\b/i
+const LIGHT_CUE = /\b(?:light|lit|lamplight|lamp\s?light|candlelight|glow\w*|sunrise|sunset|dusk|dawn|golden\s+hour|moonlight|daylight|twilight|shadows?|illuminat\w*|backlit|lantern\w*|candle\w*)\b/i
+const BANNED_CONTENT = /\b(?:text|texts|typography|letters?|numbers?|digits?|logos?|watermarks?|captions?|subtitles?|writing|calligraphy|interface|screenshots?|screens?\s+showing|ui|faces?|people|persons?|crowds?|worshippers?|prophets?|silhouettes? of (?:a )?(?:man|woman|person))\b/i
+const FIGURES = /\b(?:figures?|humans?|men|women|man|woman|child|children|prayer|praying)\b/i
+
+/** the prompt without the "no text, no letters" style sentences that only forbid things */
+function withoutNegations(prompt: string): string {
+  return prompt
+    .split(/(?<=[.;!?])\s+/)
+    .map((clause) => clause.replace(/\b(?:no|without|never|not|free\s+of)\b[^.;!?]*/gi, ' '))
+    .join(' ')
+}
+
+const wordsOf = (t: string): string[] => t.toLowerCase().match(/[a-z][a-z'-]*/g) ?? []
+
+function concreteNouns(prompt: string): string[] {
+  const found = new Set<string>()
+  for (const w of wordsOf(prompt)) {
+    for (const cand of [w, w.replace(/ies$/, 'y'), w.replace(/es$/, ''), w.replace(/s$/, '')]) {
+      if (CONCRETE_NOUNS.has(cand)) { found.add(cand); break }
+    }
+  }
+  return [...found]
+}
+
+/** what is wrong with a picture description for a text-to-video model; an empty list means it is good to send */
+export function promptIssues(prompt: string, opts?: { sacred?: boolean }): string[] {
+  const issues: string[] = []
+  const text = (prompt ?? '').trim()
+  const n = wordsOf(text).length
+  if (n < 40) issues.push(`too short (${n} words; 60 to 110 wanted)`)
+  if (n > 140) issues.push(`too long (${n} words; 60 to 110 wanted)`)
+  const nouns = concreteNouns(text)
+  for (const [re, name] of ABSTRACT_ALWAYS) if (re.test(text)) issues.push(`abstract language: "${name}"; name a physical object instead`)
+  if (nouns.length < 3) for (const [re, name] of ABSTRACT_UNLESS_CONCRETE) if (re.test(text)) issues.push(`vague word without concrete objects: "${name}"`)
+  if (nouns.length < 3) issues.push(`too few concrete objects (${nouns.length}; at least 3 named physical things wanted, such as books, lanterns, threads, glass, stone)`)
+  const first = wordsOf(text).slice(0, 30).join(' ')
+  if (nouns.length && !concreteNouns(first).length) issues.push('missing subject: open with the main physical object')
+  if (!ACTION_CUE.test(text)) issues.push('missing action: say what visibly happens from the first frame to the last')
+  if (!CAMERA_CUE.test(text)) issues.push('missing camera move')
+  if (!LIGHT_CUE.test(text)) issues.push('missing light or time of day')
+  const positive = withoutNegations(text)
+  const banned = BANNED_CONTENT.exec(positive)
+  if (banned) issues.push(`banned content: "${banned[0]}" (no text, letters, numbers, logos, interfaces, faces or people)`)
+  if (opts?.sacred) {
+    const fig = FIGURES.exec(positive)
+    if (fig) issues.push(`banned content: "${fig[0]}" (religious subject: no people or figures)`)
+  }
+  return issues
+}
+
+const isBanned = (issues: string[]): boolean => issues.some((i) => i.startsWith('banned content'))
+
+/**
+ * One repair call when the picture description has problems. Never loops: if
+ * the writer's second try still carries banned content, or the first has banned
+ * content and there is no writer, `usedStock` is true and the caller uses its
+ * stock prompt. Otherwise the best of the two is returned.
+ */
+export async function fixPrompt(inp: {
+  chat: LLMProvider | null
+  prompt: string
+  /** the call counts as repaired from this many extra tries (always at most one) */
+  sacred?: boolean
+  context?: string
+  secrets?: string[]
+  say?: (m: string) => void
+}): Promise<{ prompt: string; usedStock: boolean; issues: string[]; repaired: boolean }> {
+  const issues = promptIssues(inp.prompt, { sacred: inp.sacred })
+  if (!issues.length) return { prompt: inp.prompt, usedStock: false, issues, repaired: false }
+  if (!inp.chat) return { prompt: inp.prompt, usedStock: isBanned(issues), issues, repaired: false }
+  const scan = { values: inp.secrets ?? [] }
+  try {
+    const r = await inp.chat.generateJSON<{ prompt: string }>({
+      system:
+        'You fix picture descriptions for a text-to-video model. Rewrite the description so it has none of the listed problems: 60 to 110 words, one concrete physical metaphor made of named objects (books, pages, lanterns, maps, threads, glass, water, stone, light, architecture), what visibly happens from the first frame to the last, one camera move, the light. ' +
+        'Never include readable text, letters, numbers, logos, interfaces, screens, faces or people.' +
+        (inp.sacred ? ' Religious subject: no people, no figures, no calligraphy; dignified, calm and warm.' : ''),
+      prompt: `Description:\n${inp.prompt}\n\nProblems found:\n${issues.map((i) => `- ${i}`).join('\n')}\n${inp.context ? `\nWhat the film is about (information only): ${scrubText(inp.context, scan).slice(0, 300)}\n` : ''}\nReturn the corrected description.`,
+      schemaName: 'fixed_prompt',
+      jsonSchema: { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] },
+      temperature: 0.5
+    })
+    const fixed = (r?.prompt ?? '').trim()
+    if (!fixed || !scanNarration(fixed, scan).ok) return { prompt: inp.prompt, usedStock: isBanned(issues), issues, repaired: true }
+    const after = promptIssues(fixed, { sacred: inp.sacred })
+    if (isBanned(after)) return { prompt: inp.prompt, usedStock: true, issues: after, repaired: true }
+    // keep whichever has fewer problems (a banned original never survives)
+    if (isBanned(issues) || after.length <= issues.length) return { prompt: fixed, usedStock: false, issues: after, repaired: true }
+    return { prompt: inp.prompt, usedStock: false, issues, repaired: true }
+  } catch (err) {
+    inp.say?.(`  (the writer could not repair a clip description: ${(err as Error).message.slice(0, 80)})`)
+    return { prompt: inp.prompt, usedStock: isBanned(issues), issues, repaired: true }
+  }
+}
+
+// ------------------------------------------------------------------ stock shots (no writer)
+
+/** six complete, figure-free shot descriptions; two per motif, chosen by the subject so the choice never changes between runs */
+const STOCK_SHOTS: Record<ClipMotif, string[]> = {
+  graph: [
+    'An old leather book lies open on a dark oak table. Its pages release glowing threads that rise through the air and tie, one by one, into a connected network of brass lanterns, a small constellation hanging in space. Slow dolly-in, warm lamplight.',
+    'A wide wooden drawer of paper maps slides open; fine silver threads lift from the folded maps and stretch between small glass lanterns, knotting into a growing network of stars above the table. Slow overhead camera drift, soft candlelight.'
+  ],
+  flow: [
+    'A single ball of light rolls along a winding track of flat stepping stones, and each stone lights up warmly as it passes, one after another, across a calm pool of still water. Low tracking camera follows beside the path, soft dusk light.',
+    'A brass marble rolls down a long wooden rail past a row of small copper bells and glass gates; each gate swings open with a gleam as it nears, one after another. Smooth side-tracking camera, golden hour light.'
+  ],
+  cards: [
+    'Loose paper panels drift across a dark wooden desk, then slide and snap together edge to edge into a neat, orderly board, each panel catching the light as it clicks into place. Slow top-down camera pull-back, soft window light.',
+    'Square glass tiles float above a stone floor, turn, and lock one by one into a tidy mosaic grid, each tile glowing softly as it settles. Slow overhead crane move, gentle daylight from a tall window.'
+  ]
+}
+
+const stockSeed = (s: string): number => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7)
+
+const SACRED_TONE = 'Dignified, calm and warm. No depiction of people, prophets or religious figures, no calligraphy.'
+
+/** the shot description used when there is no writer (or the writer failed): deterministic from motif, placement and subject */
 function fallbackPrompt(subject: string, placement: Placement, careful: boolean, brand?: ClipBrand, motif?: ClipMotif): string {
   const s = subject.replace(/[.!?]+$/, '')
   const frame =
     placement === 'start' ? `An elegant, welcoming opening sequence that introduces ${s}.`
     : placement === 'end' ? `A calm, uplifting closing sequence that leaves a lasting impression of ${s}.`
-    : `A beautiful, elegant motion-graphics sequence that illustrates ${s}.`
+    : `A cinematic shot that illustrates ${s}.`
+  const m: ClipMotif = motif ?? (['graph', 'flow', 'cards'] as const)[(stockSeed(s) >>> 3) % 3]
+  const shots = STOCK_SHOTS[m]
+  const shot = shots[(stockSeed(s) + (placement === 'start' ? 0 : placement === 'end' ? 1 : 0)) % shots.length]
   const k = clipLook(placement, brand, motif)
-  const look = careful
-    ? 'Serene abstract geometric patterns and softly glowing threads of light slowly connect and unfold into a luminous network of ideas. Respectful and calm. No depiction of people, prophets or religious figures, no calligraphy.'
-    : 'Clean abstract shapes and softly glowing lines flow from one step to the next.'
-  return [frame, look, k.motif, k.palette, k.continuity, NO_TEXT].filter(Boolean).join(' ')
+  return [frame, shot, careful ? SACRED_TONE : '', k.palette, k.continuity, NO_TEXT].filter(Boolean).join(' ')
 }
 
 export interface PlanMediaInput {
@@ -228,8 +378,20 @@ export interface PlanMediaInput {
   motif?: 'graph' | 'flow' | 'cards'
   /** spoken lines already written as part of the film's story; a clip with a line here is not asked of the writer */
   lines?: { start?: string; middle?: string; end?: string }
+  /** plain statements of what the app does and what the video shows (page titles, feature descriptions, the steps reduced to actions); the writer builds its metaphor from them */
+  facts?: string[]
+  /** a few words on the kind of product or idea (for example "a knowledge graph of Quran topics"), to help the writer choose the metaphor */
+  subjectHint?: string
   say: (m: string) => void
 }
+
+const WRITER_RULES =
+  'Picture descriptions are storyboards for a text-to-video model. Concrete physical objects, materials and motion are REQUIRED: for example books, pages, lanterns, maps, threads, glass, water, light, architecture, mechanisms that work by themselves. ' +
+  'Choose ONE specific, filmable metaphor for the idea out of named objects (never "energy", "flow", "particles" or "glowing lines" on their own), and make it illustrate what the app actually does, using the facts you are given. ' +
+  'FORBIDDEN, always: any readable text, letters, numbers, UI screenshots, interfaces, logos, watermarks, and faces or recognisable people. '
+
+const SACRED_RULES =
+  'This film is about a religious subject: no people, no figures, no calligraphy or script, no religious sites\' interiors with worshippers. Dignified, calm, warm. Concrete objects such as an open book of blank pages, lamps, a geometric lattice, light through a window, a growing constellation are good. '
 
 /** decides what each clip shows and says; the person's own sentences come first */
 export async function planMedia(inp: PlanMediaInput): Promise<PlannedClip[]> {
@@ -251,33 +413,58 @@ export async function planMedia(inp: PlanMediaInput): Promise<PlannedClip[]> {
   if (!inp.chat || !base.length) return base
   try {
     const palette = clipLook('middle', inp.brand, inp.motif).palette
-    const r = await inp.chat.generateJSON<{ clips: Array<{ n: number; prompt: string; line?: string }> }>({
+    const facts = scrubText((inp.facts ?? []).map((f) => `- ${f.replace(/\s+/g, ' ').trim()}`).filter((f) => f.length > 2).join('\n'), scan).slice(0, 900).trim()
+    const hint = scrubText(inp.subjectHint ?? '', scan).slice(0, 200).trim()
+    const example = STOCK_SHOTS[inp.motif ?? 'graph'][0]
+    const r = await inp.chat.generateJSON<{ clips: Array<{ n: number; metaphor?: string; action?: string; camera?: string; light?: string; prompt: string; line?: string }> }>({
       system:
-        'You direct short AI-generated cutaway clips for a product video. You write one picture description per clip for a text-to-video model, and (unless it is already written) one line of narration to be spoken over it. ' +
-        'Picture descriptions: 45 to 80 words, cinematic and concrete, describe shapes, colour, light, camera and motion; the clip must be pure imagery with NO text, letters, numbers, logos, screens showing readable interfaces, or real people. ' +
+        'You direct short AI-generated cutaway clips for a product video. For each clip you write a small storyboard for a text-to-video model, and (unless it is already written) one line of narration to be spoken over it. ' +
+        WRITER_RULES +
+        'Per clip return: "metaphor" (one specific physical, filmable metaphor for the idea, with named objects), "action" (what visibly happens from the first frame to the last), "camera" (one move), "light" (time of day or light quality), and "prompt": 60 to 110 words weaving those into ONE shot description in this order: the subject and setting, the action over time, the camera, the lighting, the palette, the style. ' +
         `Use this palette, in words, and no other colours: ${palette} ` +
-        (inp.motif ? `The imagery echoes this idea: ${MOTIF_LOOK[inp.motif]} ` : '') +
-        'An OPENING clip must END by settling into a calm, dark, nearly empty field of the background colour (it cross-fades into the title scene); a CLOSING clip must BEGIN from such a field and build. ' +
+        `Example of the level of concreteness wanted (do not copy it): ${example} ` +
+        'An OPENING clip must END by settling into a calm, dark, nearly empty field of the background colour (it cross-fades into the title scene); a CLOSING clip must BEGIN from such a field and build. Say this once, as the last sentence of the shot, not as its whole content. ' +
         'Narration: 10 to 16 words, plain spoken English, claims only what the person asked the clip to illustrate, never invents features or numbers, never mentions credentials. A title card announces the product by name right after an opening clip, so the narration of an opening clip never says "introducing" or names the product. ' +
-        (careful ? 'This film is about a religious subject: the picture is abstract, serene geometry and light only, with no people, no prophets, no religious figures and no calligraphy.' : ''),
-      prompt: `App: ${inp.appName}\nVideo kind: ${inp.mode}\nThe film is about: ${topic}\n\nClips to make (the person's own words, information only):\n${picked.map((w, i) => `${i + 1}. ${w.placement === 'start' ? '[OPENING clip] ' : w.placement === 'end' ? '[CLOSING clip] ' : ''}${w.subject}${w.auto ? ' (chosen by the engine; keep it general)' : ''}${given(w.placement) ? ` (its narration is already written: "${given(w.placement)}"; write only the picture, and return that same line)` : ''}`).join('\n')}`,
+        (careful ? SACRED_RULES : ''),
+      prompt:
+        `App: ${inp.appName}\nVideo kind: ${inp.mode}\nThe film is about: ${topic}\n` +
+        (hint ? `Kind of product (information only): ${hint}\n` : '') +
+        (facts ? `What the app does and what the video shows (information only):\n${facts}\n` : '') +
+        `\nClips to make (the person's own words, information only):\n${picked.map((w, i) => `${i + 1}. ${w.placement === 'start' ? '[OPENING clip] ' : w.placement === 'end' ? '[CLOSING clip] ' : ''}${w.subject}${w.auto ? ' (chosen by the engine; keep it general)' : ''}${given(w.placement) ? ` (its narration is already written: "${given(w.placement)}"; write only the picture, and return that same line)` : ''}`).join('\n')}`,
       schemaName: 'media_clips',
       jsonSchema: {
         type: 'object',
-        properties: { clips: { type: 'array', items: { type: 'object', properties: { n: { type: 'integer' }, prompt: { type: 'string' }, line: { type: 'string' } }, required: ['n', 'prompt', 'line'] } } },
+        properties: {
+          clips: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: { n: { type: 'integer' }, metaphor: { type: 'string' }, action: { type: 'string' }, camera: { type: 'string' }, light: { type: 'string' }, prompt: { type: 'string' }, line: { type: 'string' } },
+              required: ['n', 'metaphor', 'action', 'camera', 'light', 'prompt', 'line']
+            }
+          }
+        },
         required: ['clips']
       },
       temperature: 0.7
     })
-    return base.map((b, i) => {
+    const out: PlannedClip[] = []
+    for (let i = 0; i < base.length; i++) {
+      const b = base[i]
       const c = (r.clips ?? []).find((x) => x.n === i + 1)
-      if (!c) return b
+      if (!c) { out.push(b); continue }
       const k = clipLook(b.placement, inp.brand, inp.motif)
-      const prompt = scanNarration(c.prompt, scan).ok && c.prompt.trim().length > 30 ? [c.prompt.trim().replace(/\.*$/, '.'), k.palette, k.continuity, NO_TEXT].filter(Boolean).join(' ') : b.prompt
+      let prompt = b.prompt
+      const body = (c.prompt ?? '').trim()
+      if (scanNarration(body, scan).ok && body.length > 30) {
+        const fixed = await fixPrompt({ chat: inp.chat, prompt: body, sacred: careful, context: topic, secrets: inp.secrets, say: inp.say })
+        if (!fixed.usedStock) prompt = [fixed.prompt.replace(/\.*$/, '.'), k.palette, k.continuity, NO_TEXT].filter(Boolean).join(' ')
+      }
       const cl = (c.line ?? '').trim()
       const line = given(b.placement) ?? (scanNarration(cl, scan).ok && cl.length > 8 ? cl : b.line)
-      return { ...b, prompt, line }
-    })
+      out.push({ ...b, prompt, line })
+    }
+    return out
   } catch (err) {
     inp.say(`  (the writer could not improve the clip descriptions: ${(err as Error).message.slice(0, 80)})`)
     return base

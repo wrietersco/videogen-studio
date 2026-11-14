@@ -267,6 +267,32 @@ export class MediaRouter {
     return { buffer, assetId: asset.id, source: 'generated', reused: false }
   }
 
+  /** one landscape 16:9 still from the configured image model (never stock, never a second candidate); metered by the provider */
+  async keyframe(prompt: string): Promise<{ jpeg: Buffer }> {
+    const p = this.painter()
+    if (!p?.provider.generateImage) throw new Error('no image model configured')
+    const buffer = await p.provider.generateImage({ prompt, width: 1280, height: 720, model: p.model })
+    const sharp = (await import('sharp')).default
+    return { jpeg: await sharp(buffer).resize({ width: 1280, height: 720, fit: 'cover' }).jpeg({ quality: 90 }).toBuffer() }
+  }
+
+  /** is this still a coherent, concrete picture with no readable text? null = no review model available (the caller skips the check) */
+  async reviewKeyframe(jpeg: Buffer): Promise<{ ok: boolean; reason?: string } | null> {
+    const vision = this.d.providerForRole?.('image-process') ?? this.d.provider(this.d.settings().provider)
+    if (vision.id === 'mock') return null
+    try {
+      const sharp = (await import('sharp')).default
+      const preview = await sharp(jpeg).resize({ width: 720, height: 720, fit: 'inside' }).jpeg().toBuffer()
+      const r = await vision.generateJSON<{ coherent: boolean; hasReadableText: boolean; reason: string }>({
+        system: 'You check one picture that will be the opening frame of an AI video shot. Answer coherent=true only if it is a concrete, believable picture of a clear subject with no melted, garbled or distorted shapes. hasReadableText=true if any words, letters, numbers or logos can be read in it (nonsense lettering counts). Give a short reason.',
+        prompt: 'Check this opening frame.', schemaName: 'KeyframeCheck',
+        jsonSchema: { type: 'object', properties: { coherent: { type: 'boolean' }, hasReadableText: { type: 'boolean' }, reason: { type: 'string' } }, required: ['coherent', 'hasReadableText', 'reason'], additionalProperties: false },
+        images: [{ mimeType: 'image/jpeg', base64: preview.toString('base64') }], temperature: 0.1, maxTokens: 120
+      })
+      return { ok: r.coherent === true && r.hasReadableText !== true, reason: r.reason }
+    } catch { return null }
+  }
+
   private async scoreImage(buffer: Buffer, brief: string): Promise<number | null> {
     const vision = this.d.providerForRole?.('image-process') ?? this.d.provider(this.d.settings().provider)
     if (vision.id === 'mock') return null

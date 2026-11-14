@@ -942,8 +942,25 @@ if (headlessFile) {
         const ready = mode === 'plan' ? (planEnt()?.clipsPerVideo ?? 0) > 0 : mode !== 'programmatic' && keyOf('gemini').length > 0
         if (!ready) return null
         return {
-          clip: async (prompt, seconds) => {
-            const asset = await media.clipToLibrary(prompt, 'landscape', { fresh: true, projectId: `ar-${runId}`, durationSec: seconds })
+          // a cheap 16:9 still of the clip's first frame (the user's image model, metered by the provider under the "ai keyframe" stage), checked by the vision model
+          still: media.imageAvailable() && !['none', 'stock'].includes(effective.media.image || 'auto')
+            ? async (prompt: string) => {
+                meter.setStage('ai keyframe')
+                try {
+                  const { jpeg } = await media.keyframe(prompt)
+                  const dir = join(appReconStore.runDir(runId), 'keyframes')
+                  mkdirSync(dir, { recursive: true })
+                  const file = join(dir, `keyframe-${Date.now()}.jpg`)
+                  writeFileSync(file, jpeg)
+                  const e = meter.current()?.entries.at(-1)
+                  return { file, costUsd: e?.kind === 'image' ? e.usd : undefined }
+                } finally { meter.setStage('ai clip') }
+              }
+            : undefined,
+          reviewStill: async (file: string) => media.reviewKeyframe(readFileSync(file)),
+          clip: async (prompt, seconds, opts) => {
+            if (opts?.imageFile) meter.setStage('ai clip')
+            const asset = await media.clipToLibrary(prompt, 'landscape', { fresh: true, projectId: `ar-${runId}`, durationSec: seconds, ...(opts?.imageFile ? { image: readFileSync(opts.imageFile) } : {}) })
             const file = library.path(asset.id)
             if (!file) throw new Error('The AI clip was made but could not be found in the library')
             return { file, durationSec: asset.durationSec }
