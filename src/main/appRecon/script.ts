@@ -141,7 +141,7 @@ export function scriptPlan(inp: ScriptPlanInput): Plan {
   const s = (t: string) => scrubText(t, { values: inp.secrets })
   const steps: Step[] = []
   const beats: BeatFacts[] = []
-  const notes: string[] = [`The ${inp.outcome.results.filter((r) => !r.item.login).length} steps you wrote are done exactly as written and in order; nothing else was explored.`]
+  const notes: string[] = [`Your ${inp.outcome.results.length} steps are done exactly as written and in order${inp.outcome.results.some((r) => r.item.login) ? ' (the log-in step is done by the sign-in you set up)' : ''}; nothing else was explored.`]
   let sid = 0
   const id = () => `s${++sid}`
   const L = inp.map.login

@@ -53,14 +53,14 @@ describe('reading AI media requests from the words a person typed', () => {
 
   it('works with no writer: a stock picture description and line, never the secret', async () => {
     const asked = parseMediaAsk('I need an AI video to illustrate the workflow as beautiful motion diagram.')
-    const planned = await planMedia({ chat: null, requests: asked.requests, auto: false, appName: 'x.test', context: '', mode: 'walkthrough', secrets: [], say: () => undefined })
+    const planned = await planMedia({ chat: null, requests: asked.requests, auto: false, appName: 'x.test', topic: '', context: '', mode: 'walkthrough', secrets: [], say: () => undefined })
     expect(planned).toHaveLength(1)
     expect(planned[0].prompt.toLowerCase()).toContain('workflow')
     expect(planned[0].prompt).toMatch(/no text/i)
-    const auto = await planMedia({ chat: null, requests: [], auto: true, appName: 'x.test', context: 'password hunter2 flow', mode: 'launch', secrets: ['hunter2'], say: () => undefined })
+    const auto = await planMedia({ chat: null, requests: [], auto: true, appName: 'x.test', topic: '', context: 'password hunter2 flow', mode: 'launch', secrets: ['hunter2'], say: () => undefined })
     expect(auto).toHaveLength(1)
     expect(JSON.stringify(auto)).not.toContain('hunter2')
-    expect(await planMedia({ chat: null, requests: [], auto: false, appName: 'x', context: '', mode: 'walkthrough', secrets: [], say: () => undefined })).toHaveLength(0)
+    expect(await planMedia({ chat: null, requests: [], auto: false, appName: 'x', topic: '', context: '', mode: 'walkthrough', secrets: [], say: () => undefined })).toHaveLength(0)
   })
 
   it('chooses a music style by itself, and a writer cannot slip in an artist name', async () => {

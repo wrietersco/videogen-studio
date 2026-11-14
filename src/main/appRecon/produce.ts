@@ -161,7 +161,7 @@ export function addressTimeline(take: Take, offsetSec: number, totalSec: number)
   return out
 }
 /** text for ffmpeg's drawtext: escape the characters its filter syntax treats as special */
-const dt = (s: string) => s.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, '').replace(/%/g, '\\%')
+const dt = (s: string) => s.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, '’').replace(/%/g, '\\%')
 
 const FONT_BOLD = ['C:/Windows/Fonts/segoeuib.ttf', '/System/Library/Fonts/Supplemental/Arial Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'].find(existsSync) ?? FONT
 
@@ -243,6 +243,10 @@ export interface ProduceInput {
   musicMood?: VideoSpec['musicMood']
   /** launch films: a title card before the demo and a closing card after it */
   intro?: CardPlan
+  /** "the problem" card, between the opening and the demo */
+  problem?: CardPlan
+  /** no composed score plays when the AI music is not used (the person ruled out instruments or music) */
+  noBuiltinMusic?: boolean
   outro?: CardPlan
   /** the film is stretched (by holding the closing card) to this length when the parts are shorter */
   targetSec?: number
@@ -298,13 +302,19 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
     return i < 0 ? demo : (timed[i + 1]?.start ?? demo)
   }
   const wanted = (inp.inserts ?? []).map((p, k) => ({ p, k, t: cutAt(p) })).sort((a, b) => a.t - b.t || a.k - b.k)
-  type Item = { kind: 'intro' } | { kind: 'demo'; a: number; b: number; afterInsert: boolean } | { kind: 'ins'; p: InsertPlan } | { kind: 'outro' }
+  type Item = { kind: 'intro' } | { kind: 'problem' } | { kind: 'demo'; a: number; b: number; afterInsert: boolean } | { kind: 'ins'; p: InsertPlan } | { kind: 'outro' }
   const items: Item[] = []
+  // an AI opening comes before the title card, an AI closing after the closing card: the order the person asked for
+  const opening = wanted.filter((w) => w.p.at.kind === 'start')
+  const closing = wanted.filter((w) => w.p.at.kind === 'end')
+  for (const w of opening) items.push({ kind: 'ins', p: w.p })
   if (inp.intro) items.push({ kind: 'intro' })
+  if (inp.problem) items.push({ kind: 'problem' })
   let cur = 0
-  let afterInsert = false
+  let afterInsert = !inp.intro && !inp.problem && opening.length > 0
   const tail: InsertPlan[] = []
   for (const w of wanted) {
+    if (w.p.at.kind !== 'afterBeat') continue
     if (w.t >= demo - MIN_PART) { tail.push(w.p); continue }
     if (w.t > cur + MIN_PART) {
       items.push({ kind: 'demo', a: cur, b: w.t, afterInsert })
@@ -316,9 +326,11 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   items.push({ kind: 'demo', a: cur, b: demo, afterInsert })
   for (const p of tail) items.push({ kind: 'ins', p })
   if (inp.outro) items.push({ kind: 'outro' })
+  for (const w of closing) items.push({ kind: 'ins', p: w.p })
 
   const lengthOf = (it: Item): number => {
     if (it.kind === 'intro') return introSec
+    if (it.kind === 'problem') return Math.max(4.2, spoken(inp.problem!) + 0.5 + 0.9)
     if (it.kind === 'demo') return it.b - it.a
     if (it.kind === 'ins') return Math.max(it.p.clipSec, spoken(it.p) + 0.5 + 0.9)
     return 0
@@ -328,7 +340,7 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   items.forEach((it, i) => {
     const st = i === 0 ? 0 : starts[i - 1] + durs[i - 1] - X
     starts.push(st)
-    durs.push(it.kind === 'outro' ? Math.max(spoken(inp.outro!) + 0.5 + 1.8, inp.targetSec ? inp.targetSec - st : 0) : lengthOf(it))
+    durs.push(it.kind === 'outro' ? Math.max(spoken(inp.outro!) + 0.5 + 1.8, inp.targetSec && i === items.length - 1 ? inp.targetSec - st : 0) : lengthOf(it))
   })
   const total = starts.at(-1)! + durs.at(-1)!
   const demoParts = items.map((it, i) => ({ it, st: starts[i] })).filter((x): x is { it: Extract<Item, { kind: 'demo' }>; st: number } => x.it.kind === 'demo')
@@ -348,7 +360,8 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
     for (let i = 0; i < pcm.length && off + i < voice.length; i++) voice[off + i] += pcm[i]
   }
   items.forEach((it, i) => {
-    if (it.kind === 'intro') lay(inp.intro!.pcm, 0.5)
+    if (it.kind === 'intro') lay(inp.intro!.pcm, starts[i] + 0.5)
+    if (it.kind === 'problem') lay(inp.problem!.pcm, starts[i] + 0.5)
     if (it.kind === 'ins') lay(it.p.pcm, starts[i] + 0.5)
     if (it.kind === 'outro') lay(inp.outro!.pcm, starts[i] + 0.5)
   })
@@ -376,7 +389,7 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
       inp.log?.(`The AI music could not be used (${(err as Error).message.slice(0, 100)}), so the built-in score plays instead.`)
     }
   }
-  if (!music) music = scoreMusic(spec, cuts, total)
+  if (!music && !inp.noBuiltinMusic) music = scoreMusic(spec, cuts, total)
   if (music) duck(music, voice)
   const bus = stereo(total)
   mixIn(bus, voice, 0, 0.9)
@@ -421,6 +434,12 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
       const t = cardText(inp.intro!)
       graph.push(`[${n}:v]${norm}${t ? ',' + t : ''},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[intro]`)
       labels.push('intro')
+      n++
+    } else if (it.kind === 'problem') {
+      inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-problem', inp.problem!, 0.5, inp.look?.backdrop))
+      const t = cardText(inp.problem!)
+      graph.push(`[${n}:v]${norm}${t ? ',' + t : ''},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[problem]`)
+      labels.push('problem')
       n++
     } else if (it.kind === 'demo') {
       labels.push(demoParts.length > 1 ? `dp${partNo++}` : 'demo')

@@ -25,6 +25,8 @@ export interface MediaRequest {
   /** what the clip should be about, in their words, lead-in removed */
   subject: string
   placement: Placement
+  /** the sentence only says where the clip goes ("use ai video intro"); the subject is then the film itself */
+  generic: boolean
 }
 
 export interface MediaAsk {
@@ -66,9 +68,13 @@ const typedPart = (context: string): string => context.split(/\n\s*Attached note
 const LIST_LINE = /^\s*(?:(?:step\s*)?\d{1,2}\s*[.):-]|[-*•▪●])\s+/i
 const STEP_VERB = /^\s*(?:(?:step\s*)?\d{1,2}\s*[.):-]|[-*•▪●])?\s*(?:(?:and|then|now|next|please|from|in|on)\b[^,]{0,40},?\s*)?(?:click|press|tap|select|choose|open|go\s+to|navigate|type|enter|scroll|log|sign)\b/i
 
+const PLACE_WORD = /\b(?:intro|outro|opening|closing|ending)\b/i
+
 export function isMediaSentence(s: string): boolean {
   if (NEGATIVE.test(s)) return false
   if (LIST_LINE.test(s) && STEP_VERB.test(s)) return false
+  // "ai-video based outro": an AI video named by where it goes needs no other verb
+  if (AI_WORD.test(s) && MEDIA_NOUN.test(s) && PLACE_WORD.test(s)) return true
   if (AI_WORD.test(s) && MEDIA_NOUN.test(s) && INTENT.test(s)) return true
   return MOTION_DIAGRAM.test(s) && /\b(?:illustrat\w*|visuali[sz]\w*|explain\w*|depict\w*|diagram|workflow|flow|process)\b/i.test(s) && /\b(?:ai|generated?|generate|make|create|need|want|add|include)\b/i.test(s)
 }
@@ -82,7 +88,8 @@ export function parseMediaAsk(context: string): MediaAsk {
     const placement: Placement = START.test(said) ? 'start' : END.test(said) ? 'end' : MIDDLE.test(said) ? 'middle' : 'start'
     let subject = said.replace(LEAD, '').replace(KIND, '').replace(/^(?:to|that|which|of|for|about|showing|showcasing|illustrating)\s+/i, '').replace(/[.!?]+$/, '').trim()
     if (subject.length < 6) subject = said.replace(/[.!?]+$/, '')
-    requests.push({ said: said.slice(0, 400), subject: subject.slice(0, 300), placement })
+    const content = subject.toLowerCase().replace(/\b(?:intro|outro|opening|closing|ending|based|use|ai|a\.i\.|video|videos|clip|clips|a|an|the|for|my|our|please|and|with|at|start|end|generated|short)\b/g, ' ').replace(/[^a-z]+/g, ' ').trim()
+    requests.push({ said: said.slice(0, 400), subject: subject.slice(0, 300), placement, generic: content.length < 6 })
   }
   return { requests: requests.slice(0, MAX_CLIPS), declined }
 }
@@ -111,9 +118,19 @@ export interface PlannedClip {
 
 const NO_TEXT = 'No text, no letters, no logos, no watermarks, no faces. Smooth, slow, continuous motion.'
 
-function fallbackPrompt(subject: string): string {
+/** subjects that call for a respectful, abstract treatment: no depictions of people or religious figures */
+const SACRED = /\b(?:qur'?an\w*|islam\w*|halal|muslims?|allah|prophets?|hadith|verses?|tafsir|taaweel|mosque)\b/i
+
+function fallbackPrompt(subject: string, placement: Placement, careful: boolean): string {
   const s = subject.replace(/[.!?]+$/, '')
-  return `A beautiful, elegant motion-graphics sequence that illustrates ${s}. Clean abstract shapes and softly glowing lines flow from one step to the next on a deep, dark blue background with a subtle gradient. ${NO_TEXT}`
+  const frame =
+    placement === 'start' ? `An elegant, welcoming opening sequence that introduces ${s}.`
+    : placement === 'end' ? `A calm, uplifting closing sequence that leaves a lasting impression of ${s}.`
+    : `A beautiful, elegant motion-graphics sequence that illustrates ${s}.`
+  const look = careful
+    ? 'Serene abstract geometric patterns and softly glowing threads of light slowly connect and unfold into a luminous network of ideas, in deep green and warm gold tones. Respectful and calm. No depiction of people, prophets or religious figures, no calligraphy.'
+    : 'Clean abstract shapes and softly glowing lines flow from one step to the next on a deep, dark blue background with a subtle gradient.'
+  return `${frame} ${look} ${NO_TEXT}`
 }
 
 export interface PlanMediaInput {
@@ -122,6 +139,8 @@ export interface PlanMediaInput {
   /** no request was written but AI clips are switched on: one opening clip about the app */
   auto: boolean
   appName: string
+  /** what the whole film is about (the feature and its promise, or the person's own opening words): the subject of a clip that only says where it goes */
+  topic: string
   /** the typed words, already scrubbed */
   context: string
   mode: 'walkthrough' | 'launch'
@@ -132,21 +151,24 @@ export interface PlanMediaInput {
 /** decides what each clip shows and says; the person's own sentences come first */
 export async function planMedia(inp: PlanMediaInput): Promise<PlannedClip[]> {
   const scan = { values: inp.secrets }
-  const wants: Array<{ subject: string; placement: Placement; said: string; auto: boolean }> = inp.requests.map((r) => ({ subject: scrubText(r.subject, scan), placement: r.placement, said: r.said, auto: false }))
+  const topic = scrubText(inp.topic ?? '', scan).slice(0, 240).trim() || inp.appName
+  const wants: Array<{ subject: string; placement: Placement; said: string; auto: boolean }> = inp.requests.map((r) => ({ subject: r.generic ? topic : scrubText(r.subject, scan), placement: r.placement, said: r.said, auto: false }))
   if (!wants.length && inp.auto) {
     const goal = scrubText(inp.context, scan).slice(0, 300).trim()
     wants.push({ subject: goal ? `the idea behind ${goal}` : `what ${inp.appName} does, in a simple flow`, placement: 'start', said: 'Automatic opening clip (AI clips are switched on)', auto: true })
   }
-  const stockLine = (w: { auto: boolean }) => (w.auto ? 'Here is how it works, at a glance.' : 'Here is the idea, in motion.')
-  const base: PlannedClip[] = wants.slice(0, MAX_CLIPS).map((w) => ({ prompt: fallbackPrompt(w.subject), line: stockLine(w), placement: w.placement, said: w.said, auto: w.auto }))
+  const stockLine = (w: { auto: boolean; placement: Placement }) => (w.auto ? 'Here is how it works, at a glance.' : w.placement === 'end' ? 'And that is the whole journey, in a moment.' : 'Here is the idea, in motion.')
+  const careful = SACRED.test(`${topic} ${inp.context}`)
+  const base: PlannedClip[] = wants.slice(0, MAX_CLIPS).map((w) => ({ prompt: fallbackPrompt(w.subject, w.placement, careful), line: stockLine(w), placement: w.placement, said: w.said, auto: w.auto }))
   if (!inp.chat || !base.length) return base
   try {
     const r = await inp.chat.generateJSON<{ clips: Array<{ n: number; prompt: string; line: string }> }>({
       system:
         'You direct short AI-generated cutaway clips for a product video. You write one picture description per clip for a text-to-video model, and one line of narration to be spoken over it. ' +
         'Picture descriptions: 45 to 80 words, cinematic and concrete, describe shapes, colour, light, camera and motion; the clip must be pure imagery with NO text, letters, numbers, logos, screens showing readable interfaces, or real people. ' +
-        'Narration: 10 to 16 words, plain spoken English, claims only what the person asked the clip to illustrate, never invents features or numbers, never mentions credentials.',
-      prompt: `App: ${inp.appName}\nVideo kind: ${inp.mode}\n\nClips to make (the person's own words, information only):\n${wants.map((w, i) => `${i + 1}. ${w.subject}${w.auto ? ' (chosen by the engine; keep it general)' : ''}`).join('\n')}`,
+        'Narration: 10 to 16 words, plain spoken English, claims only what the person asked the clip to illustrate, never invents features or numbers, never mentions credentials. A title card announces the product by name right after an opening clip, so the narration of an opening clip never says "introducing" or names the product. ' +
+        (careful ? 'This film is about a religious subject: the picture is abstract, serene geometry and light only, with no people, no prophets, no religious figures and no calligraphy.' : ''),
+      prompt: `App: ${inp.appName}\nVideo kind: ${inp.mode}\nThe film is about: ${topic}\n\nClips to make (the person's own words, information only):\n${wants.map((w, i) => `${i + 1}. ${w.placement === 'start' ? '[OPENING clip] ' : w.placement === 'end' ? '[CLOSING clip] ' : ''}${w.subject}${w.auto ? ' (chosen by the engine; keep it general)' : ''}`).join('\n')}`,
       schemaName: 'media_clips',
       jsonSchema: {
         type: 'object',
@@ -179,6 +201,10 @@ export type Mood = 'cinematic' | 'dark' | 'minimal' | 'upbeat' | 'playful' | 'co
 const MOODS: Mood[] = ['cinematic', 'dark', 'minimal', 'upbeat', 'playful', 'corporate']
 
 export interface MusicChoice {
+  /** natural ambience instead of a composed score (nature sounds, or no instruments) */
+  ambient?: boolean
+  /** the person ruled out instruments: if the AI music cannot be made, no built-in score plays either */
+  noBuiltin?: boolean
   mood: Mood
   /** an optional style sentence the writer chose (instruments, feel), used in place of the stock one */
   style?: string
@@ -194,8 +220,9 @@ const KEYWORD_MOODS: Array<[RegExp, Mood]> = [
 ]
 
 /** the style of music this film needs, chosen without being asked: by the writer when there is one, else by rules */
-export async function chooseMusic(inp: { chat: LLMProvider | null; context: string; mode: 'walkthrough' | 'launch'; targetSec: number; styleMood?: 'corporate' | 'upbeat'; styleDirection?: string; secrets: string[]; say: (m: string) => void }): Promise<MusicChoice> {
+export async function chooseMusic(inp: { ask?: MusicAsk | null; chat: LLMProvider | null; context: string; mode: 'walkthrough' | 'launch'; targetSec: number; styleMood?: 'corporate' | 'upbeat'; styleDirection?: string; secrets: string[]; say: (m: string) => void }): Promise<MusicChoice> {
   const scan = { values: inp.secrets }
+  if (inp.ask && (inp.ask.sounds.length || inp.ask.noInstruments)) return askedMusic(inp.ask)
   const ctx = scrubText(typedPart(inp.context), scan).slice(0, 1200)
   const ruleMood = (): MusicChoice => {
     const hit = KEYWORD_MOODS.find(([re]) => re.test(ctx))
@@ -227,4 +254,116 @@ export async function chooseMusic(inp: { chat: LLMProvider | null; context: stri
 export function withStyle(brief: string, style?: string): string {
   if (!style) return brief
   return brief.replace(/^Instrumental background score, .*$/m, `Instrumental background score, ${style}.`)
+}
+
+
+
+// ------------------------------------------------ what the person wrote about the sound and the shape of the film
+
+export interface MusicAsk {
+  said: string
+  /** nature sounds named ("soft airy white noise", "birdsong"…) */
+  sounds: string[]
+  /** "halal music", "no instruments": only natural sound, nothing played or sung */
+  noInstruments: boolean
+  /** "no music" */
+  none: boolean
+}
+
+const MUSIC_WORD = /\b(?:music|soundtrack|background\s+(?:sounds?|audio|noise)|sound\s*scape|ambien(?:ce|t)|score)\b/i
+const NO_MUSIC = /\b(?:no|without|skip)\s+(?:any\s+)?(?:background\s+)?music\b/i
+const NO_INSTRUMENTS = /\b(?:halal|no\s+instruments?|without\s+(?:any\s+)?instruments?|instrument-?free|no\s+(?:drums?|percussion|vocals?|singing))\b/i
+const SOUNDS: Array<[RegExp, string]> = [
+  [/\bwhite\s+noise\b/i, 'soft, airy white noise'],
+  [/\bbirds?(?:song)?\b|\bbirdsong\b/i, 'birdsong'],
+  [/\bthunder\w*/i, 'distant, soft rolling thunder'],
+  [/\brain\w*/i, 'gentle rain'],
+  [/\bwind\b|\bbreeze\b/i, 'a light breeze'],
+  [/\bwaves?\b|\bocean\b|\bsea\b/i, 'gentle waves'],
+  [/\briver\b|\bstream\b|\bwater\b/i, 'flowing water'],
+  [/\bforest\b/i, 'a quiet forest'],
+  [/\bcrickets?\b/i, 'crickets'],
+  [/\bnatur(?:e|al)\b/i, 'natural ambience']
+]
+
+/** the music wishes in the typed words: nature sounds, no instruments, or no music at all */
+export function parseMusicAsk(context: string): MusicAsk | null {
+  let found = null as MusicAsk | null
+  for (const line of typedPart(context).split('\n')) {
+    if (!line.trim() || (LIST_LINE.test(line) && STEP_VERB.test(line))) continue
+    for (const said of sentencesOfLine(line)) {
+      if (!MUSIC_WORD.test(said)) continue
+      const sounds = SOUNDS.filter(([re]) => re.test(said)).map(([, s]) => s)
+      const none = NO_MUSIC.test(said)
+      const noInstruments = NO_INSTRUMENTS.test(said)
+      if (!sounds.length && !noInstruments && !none) continue
+      const prev: MusicAsk | null = found
+      const all: string[] = [...new Set([...(prev?.sounds ?? []), ...sounds])]
+      // "natural" alone is only a hint; specific sounds replace it
+      const specific: string[] = all.filter((x) => x !== 'natural ambience')
+      found = { said: said.slice(0, 300), sounds: specific.length ? specific : all, noInstruments: (prev?.noInstruments ?? false) || noInstruments, none: (prev?.none ?? false) || none }
+    }
+  }
+  return found
+}
+
+function askedMusic(ask: MusicAsk): MusicChoice {
+  const sounds = ask.sounds.length ? ask.sounds : ['natural ambience']
+  const list = sounds.length > 1 ? `${sounds.slice(0, -1).join(', ')} and ${sounds.at(-1)}` : sounds[0]
+  return {
+    mood: 'minimal',
+    ambient: true,
+    noBuiltin: ask.noInstruments,
+    style: `calm natural soundscape of ${list}, slowly evolving, with no drums, no melody and no instruments`,
+    why: ask.noInstruments ? 'natural sound only, no instruments, as you asked' : 'the natural sounds you asked for'
+  }
+}
+
+/** the brief for a pure ambience track (the composed-score brief talks about BPM, motifs and builds) */
+export function ambientBrief(choice: MusicChoice, totalSec: number, voiced: boolean): string {
+  return [
+    `Natural ambient soundscape: ${choice.style ?? 'calm natural ambience'}.`,
+    'No drums, no beat, no melody, no instruments, no vocals, no lyrics, no choir, no spoken word.',
+    `Total length about ${Math.round(totalSec)} seconds: slowly evolving, calm and steady in level, with a gentle natural ending.`,
+    voiced ? 'It plays under a voiceover, so keep it soft and uncluttered.' : ''
+  ].filter(Boolean).join('\n')
+}
+
+export interface StructureAsk {
+  /** "after the intro, present the problem statement" */
+  problem: boolean
+  said: string
+}
+
+const PROBLEM = /\bproblem(?:\s+statement)?\b/i
+const PROBLEM_VERB = /\b(?:present|show|state|explain|describe|introduce|start|open|begin|set\s*up|outline|include|add)\w*/i
+const NEGATIVE_PROBLEM = /\b(?:no|skip|without|don'?t)\b[^.!?\n]{0,25}\bproblem\b/i
+
+const isProblemSentence = (s: string): boolean => PROBLEM.test(s) && PROBLEM_VERB.test(s) && !NEGATIVE_PROBLEM.test(s)
+
+/** how the person wants the film shaped (a problem statement before the answer) */
+export function parseStructure(context: string): StructureAsk {
+  for (const line of typedPart(context).split('\n')) {
+    if (!line.trim() || LIST_LINE.test(line)) continue
+    for (const said of sentencesOfLine(line)) if (isProblemSentence(said)) return { problem: true, said: said.slice(0, 300) }
+  }
+  return { problem: false, said: '' }
+}
+
+function isProductionSentence(s: string): boolean {
+  if (MUSIC_WORD.test(s) && (SOUNDS.some(([re]) => re.test(s)) || NO_INSTRUMENTS.test(s) || NO_MUSIC.test(s))) return true
+  return isProblemSentence(s)
+}
+
+/** the typed words with every sentence that is about the film's production (AI clips, music, structure) taken out: those are read as instructions, never as steps or topics */
+export function withoutProductionSentences(context: string): string {
+  const [typed, ...rest] = withoutMediaSentences(context).split(/(\n\s*Attached notes \(information only\):)/)
+  const kept = (typed ?? '')
+    .split('\n')
+    .map((line) => {
+      if (!line.trim()) return ''
+      if (LIST_LINE.test(line)) return line
+      return sentencesOfLine(line).filter((s) => !isProductionSentence(s)).join(' ')
+    })
+  return [kept.join('\n').replace(/\n{3,}/g, '\n\n').trim(), ...rest].join('')
 }

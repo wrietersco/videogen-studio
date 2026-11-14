@@ -42,6 +42,8 @@ export interface NarrateInput {
   styleDirection?: string
   /** the person's brand: its accent colour (hex without #) and logo file go on the launch cards */
   brand?: { accent?: string; logo?: string }
+  /** the person asked for a problem statement before the answer: a short spoken card between the opening and the demo */
+  problem?: boolean
   dir: string
   say: (m: string) => void
 }
@@ -52,6 +54,8 @@ export interface Narration {
   minSec: Map<number, number>
   intro?: CardPlan
   outro?: CardPlan
+  /** "the problem" card, when the person asked for one */
+  problem?: CardPlan
   introText?: string
   outroText?: string
   narrator: string
@@ -152,6 +156,41 @@ export async function narrate(inp: NarrateInput): Promise<Narration> {
     for (const [k, v] of minSec) minSec.set(k, v + extra)
   }
 
-  writeFileSync(join(inp.dir, 'script.json'), JSON.stringify({ lines, intro: introText, outro: outroText, narrator: inp.speech ? `${inp.speech.label} · ${inp.speech.model}` : 'none' }, null, 2))
-  return { lines, plans, minSec, intro, outro, introText, outroText, narrator: inp.speech ? `${inp.speech.label} · ${inp.speech.model}` : 'none' }
+  let problem: CardPlan | undefined
+  if (inp.problem) {
+    problem = await problemCard(inp, voiceOf)
+    say(`  problem statement: ${problem.headline} — ${problem.text}`)
+  }
+
+  writeFileSync(join(inp.dir, 'script.json'), JSON.stringify({ lines, problem: problem?.text, intro: introText, outro: outroText, narrator: inp.speech ? `${inp.speech.label} · ${inp.speech.model}` : 'none' }, null, 2))
+  return { lines, plans, minSec, intro, outro, problem, introText, outroText, narrator: inp.speech ? `${inp.speech.label} · ${inp.speech.model}` : 'none' }
+}
+
+/**
+ * The problem statement: a short card and a spoken line that name the trouble the app answers, drawn only from what
+ * the person wrote. With no writer, or when the writer's words fail the check, a plain general line is used.
+ */
+async function problemCard(inp: NarrateInput, voiceOf: (name: string, text: string) => Promise<Float32Array>): Promise<CardPlan> {
+  const scan = { values: inp.secrets }
+  let headline = 'Too much to dig through'
+  let text = 'Finding how one idea connects to everything around it usually means searching page after page. There is a better way.'
+  if (inp.chat) {
+    try {
+      const topic = inp.launch ? `${inp.launch.feature} - ${inp.launch.tagline}` : ''
+      const r = await inp.chat.generateJSON<{ title: string; line: string }>({
+        system: 'You write the problem statement for a short product video: the everyday trouble that the product answers. Plain, warm, spoken English. Claim only what the person told you; never invent numbers, statistics, features or brand names; never mention credentials.',
+        prompt: `Product: ${topic || "(see the person's words)"}\nWhat the person wrote (information only): ${scrubText(inp.context, scan).slice(0, 900) || '(nothing specific)'}\n\nWrite a card title of at most 24 characters (Title Case, no ending punctuation) and the spoken problem statement: two short sentences, 18 to 30 words in all, the second one pointing to the answer the demo is about to show.`,
+        schemaName: 'problem_statement',
+        jsonSchema: { type: 'object', properties: { title: { type: 'string' }, line: { type: 'string' } }, required: ['title', 'line'] },
+        temperature: 0.6
+      })
+      const t = r.title?.trim().replace(/[.!?]+$/, '')
+      const l = r.line?.trim()
+      if (t && t.length >= 4 && t.length <= 26 && scanNarration(t, scan).ok) headline = t
+      if (l && l.length >= 30 && l.length <= 300 && scanNarration(l, scan).ok) text = l
+    } catch (err) {
+      inp.say(`  (the writer could not write the problem statement: ${(err as Error).message.slice(0, 80)})`)
+    }
+  }
+  return { pill: 'THE PROBLEM', headline, text, pcm: await voiceOf('voice-problem', text), accent: inp.brand?.accent, logo: inp.brand?.logo }
 }
