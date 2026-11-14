@@ -25,6 +25,11 @@ const DEFAULT_MODEL = 'gemini-3.8-flash'
 // gemini-2.5-flash-image was shut down 2026-10-02
 const DEFAULT_IMAGE_MODEL = 'gemini-3.1-flash-image'
 
+type InteractionAudio = {
+  steps?: Array<{ type?: string; content?: Array<{ type?: string; data?: string; mime_type?: string }> }>
+  outputs?: Array<{ type?: string; data?: string; mime_type?: string }>
+  usage?: { total_input_tokens?: number; total_output_tokens?: number }
+}
 type UsageMeta = { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number } }
 
 export class GeminiProvider implements LLMProvider {
@@ -139,10 +144,47 @@ export class GeminiProvider implements LLMProvider {
     return Buffer.from(b64, 'base64')
   }
 
-  /** Gemini TTS: 24 kHz 16-bit mono PCM, wrapped as WAV; style rides in the prompt */
+  /**
+   * Gemini TTS: 24 kHz 16-bit mono PCM, wrapped as WAV.
+   * The 3.x speech models take the transcript verbatim and the delivery as a separate `speech_metadata` annotation
+   * (Interactions API); a direction written into the text is spoken aloud. The 2.5 models still read the direction
+   * from the prompt. If the Interactions call fails, the 3.x model is asked again with the transcript alone:
+   * plain speech is better than a narrator who reads the direction out.
+   */
   async tts(req: TTSRequest): Promise<TTSResult> {
     const model = req.model ?? 'gemini-2.5-flash-preview-tts'
-    const text = req.instructions ? `${req.instructions.split('.')[0]}. Read this: ${req.text}` : req.text
+    if (/^gemini-3\.\d+.*-tts/.test(model)) {
+      try {
+        return await this.ttsInteractions(req, model)
+      } catch (err) {
+        if (err instanceof ProviderError && (err.kind === 'auth' || err.kind === 'network')) throw err
+        return this.ttsGenerate(req, model, req.text)
+      }
+    }
+    return this.ttsGenerate(req, model, req.instructions ? `${req.instructions.split('.')[0]}. Read this: ${req.text}` : req.text)
+  }
+
+  private async ttsInteractions(req: TTSRequest, model: string): Promise<TTSResult> {
+    const style = req.instructions?.replace(/\s+/g, ' ').trim().slice(0, 240)
+    const json = await this.request<InteractionAudio>('POST', '/interactions', {
+      model,
+      input: [{ type: 'user_input', content: [{ type: 'text', text: req.text, ...(style ? { annotations: [{ type: 'speech_metadata', style }] } : {}) }] }],
+      response_format: { type: 'audio' },
+      generation_config: { speech_config: [{ voice: req.voice ?? 'Charon' }] }
+    })
+    const pool = [...(json.steps ?? []).filter((s) => s.type === 'model_output').flatMap((s) => s.content ?? []), ...(json.outputs ?? [])]
+    const block = pool.find((c) => c.data && (c.type === 'audio' || /^audio\//i.test(c.mime_type ?? '')))
+    if (!block?.data) throw new ProviderError('speech returned no audio', this.id, 'server')
+    const raw = Buffer.from(block.data, 'base64')
+    const isWav = raw.subarray(0, 4).toString('latin1') === 'RIFF'
+    const rate = Number(/rate=(\d+)/i.exec(block.mime_type ?? '')?.[1]) || 24000
+    const audio = isWav ? raw : pcmToWav(raw, rate)
+    const sec = isWav ? Math.max(0, (raw.length - 44) / 48000) : raw.length / (2 * rate)
+    meter.record({ kind: 'voice', provider: 'gemini', model, usage: { inputTokens: json.usage?.total_input_tokens ?? Math.ceil(req.text.length / 4), outputTokens: json.usage?.total_output_tokens ?? Math.round(sec * 25) } })
+    return { audio, mimeType: 'audio/wav', words: [] }
+  }
+
+  private async ttsGenerate(req: TTSRequest, model: string, text: string): Promise<TTSResult> {
     const json = await this.request<{ candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string } }> } }> } & UsageMeta>(
       'POST',
       `/models/${model}:generateContent`,

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import sharp from 'sharp'
@@ -94,6 +94,16 @@ describe.skipIf(!findChrome() || !canShowWindow())('the film follows the brief (
       return readFileSync(file)
     }
   }
+  const spoken: string[] = []
+  const speech = {
+    id: 'fake', label: 'Fake voice', model: 'fake-1', voices: ['v'], defaultVoice: () => 'v',
+    tts: async (req: { text: string; instructions?: string }) => {
+      spoken.push(req.text)
+      const file = join(root, `tone-${spoken.length}.wav`)
+      ff(['-f', 'lavfi', '-i', 'sine=frequency=220:duration=1.2', '-ar', '24000', '-ac', '1', file])
+      return { audio: readFileSync(file), mimeType: 'audio/wav', words: [] }
+    }
+  }
   const frameAt = async (video: string, t: number) => {
     const out = join(root, `f-${Math.round(t * 10)}.png`)
     ff(['-ss', String(t), '-i', video, '-frames:v', '1', out])
@@ -115,12 +125,16 @@ describe.skipIf(!findChrome() || !canShowWindow())('the film follows the brief (
       depth: 'quick',
       targetSec: 30,
       chat: null,
-      speech: null,
+      speech,
       media: { tools, clips: false, music: false }
     }
     const out = await runAppRecording(input, hooks())
     expect(out.video).toBeTruthy()
     expect(out.aiClips).toBe(2)
+    // both AI clips are voiced, not only subtitled
+    expect(existsSync(join(root, 'film', 'final', 'voice-clip-0.wav'))).toBe(true)
+    expect(existsSync(join(root, 'film', 'final', 'voice-clip-1.wav'))).toBe(true)
+    expect((out.mediaNotes ?? []).join(' ')).not.toMatch(/voice for an AI clip could not/)
     // natural sounds are made on this PC: the music model is never called
     expect(out.aiMusic).toBe(false)
     expect(briefs.filter((b) => b !== 'clip')).toHaveLength(0)

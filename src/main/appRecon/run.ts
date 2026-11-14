@@ -428,7 +428,11 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
         try {
           const made = await tools.clip(c.prompt, sec)
           const clipSec = made.durationSec ?? probe(made.file).durationSec ?? sec
-          const pcm = await voiceLine(narration.plans.some((p) => p.pcm.length) ? inp.speech : null, join(inp.runDir, 'final'), `voice-clip-${n}`, c.line, tone).catch(() => new Float32Array(0))
+          mkdirSync(join(inp.runDir, 'final'), { recursive: true })
+          const pcm = await voiceLine(narration.plans.some((p) => p.pcm.length) ? inp.speech : null, join(inp.runDir, 'final'), `voice-clip-${n}`, c.line, tone).catch((err) => {
+            mediaNotes.push(`The voice for an AI clip could not be made (${String((err as Error)?.message ?? err).slice(0, 120)}), so it shows only as subtitles.`)
+            return new Float32Array(0)
+          })
           inserts.push({ at: where(c.placement), file: made.file, clipSec, text: c.line, pcm, tag: 'AI-generated illustration' })
           mediaNotes.push(`AI clip (${c.placement === 'start' ? 'at the start' : c.placement === 'end' ? 'at the end' : 'in the middle'}): ${c.said.slice(0, 120)}`)
           n++
