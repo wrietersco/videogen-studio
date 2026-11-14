@@ -19,6 +19,45 @@ import { redactionInitScript, cursorInitScript, verifyScript, type RedactionConf
  * with the action.
  */
 
+const nap = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+/**
+ * Let the viewer see the result of what was just done. A filter, a graph or a
+ * search draws for a moment, so this waits until the page stops changing (at
+ * most 6 seconds); then, when the page itself runs past the screen, it scrolls
+ * down through the result and back up. It scrolls the page, never the mouse
+ * wheel, so a graph that zooms on the wheel is left exactly as it is.
+ */
+export async function inspectView(page: Page, pace: number): Promise<void> {
+  if (pace === 0) {
+    await nap(250)
+    return
+  }
+  let last = ''
+  let still = 0
+  const until = Date.now() + 6000
+  while (Date.now() < until && still < 3) {
+    await nap(300)
+    const now = await page.evaluate(() => `${document.body?.innerText.length ?? 0}|${document.querySelectorAll('*').length}|${document.querySelectorAll('svg *').length}`).catch(() => '')
+    if (now === last) still++
+    else {
+      still = 0
+      last = now
+    }
+  }
+  const room = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight).catch(() => 0)
+  if (room > 120) {
+    const stops = Math.min(4, Math.ceil(room / 300))
+    for (let i = 1; i <= stops; i++) {
+      await page.evaluate((y) => scrollTo({ top: y, behavior: 'smooth' }), (room * i) / stops).catch(() => undefined)
+      await nap(900)
+    }
+    await nap(600)
+    await page.evaluate(() => scrollTo({ top: 0, behavior: 'smooth' })).catch(() => undefined)
+    await nap(700)
+  } else await nap(900)
+}
+
 export class FrameRecorder {
   private client: CDPSession | null = null
   private frames: Array<{ n: number; ts: number }> = []
@@ -324,6 +363,10 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           await page.keyboard.press(step.text as 'Enter')
           await Promise.race([nav, sleep(1500)])
           say(step.id, `pressed ${step.text}`)
+        } else if (step.kind === 'wait' && step.intent === 'inspect') {
+          // the result of what was just done: wait for it to finish drawing, then let the viewer see all of it
+          await inspectView(page, pace)
+          say(step.id, 'looked at the result')
         } else if (step.kind === 'wait') {
           await sleep((step.expect ? 0 : 800) * pace)
         } else if (step.kind === 'handoff') {

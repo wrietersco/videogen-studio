@@ -1,7 +1,8 @@
 import type { AppMap, AppPage, Playbook, Step } from '@shared/appRecon'
 import { PlaybookSchemaCheck } from './schemaCheck'
 import { scrubText } from './detect'
-import type { ExploredStep, Exploration, Visit } from './explore'
+import { readUseCase } from './directives'
+import type { ExploredStep, Exploration, Interaction, Visit } from './explore'
 
 /**
  * The planner: chooses what the video shows.
@@ -14,7 +15,7 @@ import type { ExploredStep, Exploration, Visit } from './explore'
  * steps.
  */
 
-export type BeatKind = 'login-open' | 'login-user' | 'login-pass' | 'login-submit' | 'login' | 'page' | 'logout'
+export type BeatKind = 'login-open' | 'login-user' | 'login-pass' | 'login-submit' | 'login' | 'page' | 'result' | 'detail' | 'logout'
 
 export interface BeatFacts {
   beat: number
@@ -117,7 +118,40 @@ function factsFor(v: Visit, secrets: string[]): string[] {
   return out
 }
 
-const OPENERS = [(c: string) => `Next, ${c}.`, (c: string) => `Now the ${c} page.`, (c: string) => `Here is ${c}.`, (c: string) => `Then, ${c}.`]
+/** the labels a graph or chart draws on itself, from the text the scout read */
+function drawnLabels(text: string | undefined): string[] {
+  const m = /Labels drawn on the page: (.*)$/s.exec(text ?? '')
+  return m ? m[1].split(', ').map((s) => s.trim()).filter(Boolean) : []
+}
+
+/** the beat that shows what a typed step produced: the person's goal, and what the page shows now */
+function resultBeat(i: Interaction, goal: string, secrets: string[], beat: number): BeatFacts {
+  const s = (t: string) => scrubText(t, { values: secrets })
+  const typed = i.steps.find((t) => t.kind === 'type')
+  const what = typed?.text ?? ''
+  const facts: string[] = [`The page has finished updating after "${s(what)}" was typed, and the result is on screen`]
+  if (goal) facts.push(`What the person wants this video to get across, in their words: ${s(goal).slice(0, 400)}`)
+  if (i.after?.text) facts.push(`The page now shows: ${s(i.after.text).slice(0, 700)}`)
+  if (i.after?.headings.length) facts.push(`Headings now: ${i.after.headings.slice(0, 4).map(s).join('; ')}`)
+  const labels = drawnLabels(i.after?.text).filter((l) => l.toLowerCase() !== what.toLowerCase()).slice(0, 3)
+  const shows = labels.length ? ` Among what is shown: ${list(labels.map(s))}.` : ''
+  const line = `With ${what ? `"${s(what)}"` : 'that'} entered, the view narrows to what matches.${shows} Take a moment to look at the result.`
+  return { beat, kind: 'result', chapter: 'The result', facts, fallback: line, launchFallback: `Type ${what ? `"${s(what)}"` : 'it in'}, and the view narrows to just what you asked for.${shows}` }
+}
+
+/** the beat for the thing opened to make the point */
+function detailBeat(i: Interaction, goal: string, secrets: string[], beat: number): BeatFacts {
+  const s = (t: string) => scrubText(t, { values: secrets })
+  const name = s(i.followed ?? 'one of the results')
+  const facts: string[] = [`The person opens "${name}" from the results to look closer`]
+  if (goal) facts.push(`What the person wants this video to get across, in their words: ${s(goal).slice(0, 400)}`)
+  if (i.after?.title) facts.push(`Page title: ${s(i.after.title)}`)
+  if (i.after?.headings.length) facts.push(`Headings: ${i.after.headings.slice(0, 4).map(s).join('; ')}`)
+  if (i.after?.text) facts.push(`On screen: ${s(i.after.text).slice(0, 700)}`)
+  return { beat, kind: 'detail', chapter: titleCase(name.replace(/[^\p{L}\p{N} '&-]/gu, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 4).join(' ')) || 'A closer look', facts, fallback: `Opening ${name} gives a closer look at it.`, launchFallback: `One click on ${name}, and the detail is right there.` }
+}
+
+const OPENERS =[(c: string) => `Next, ${c}.`, (c: string) => `Now the ${c} page.`, (c: string) => `Here is ${c}.`, (c: string) => `Then, ${c}.`]
 /** links that only lead back to where the viewer has been */
 const BACK_LINK = /^(home|back|dashboard|overview|main|menu|logo)$/i
 
@@ -148,6 +182,7 @@ export function planBeats(inp: PlanInput): Plan {
   const notes: string[] = []
   const loginFocus = !inp.scripted && LOGIN_FOCUS.test(context)
   const keywords = new Set(words(context))
+  const goal = readUseCase(context).goal
   const writeIntent = WRITE_INTENT.test(context)
   const maxBeats = Math.max(4, Math.min(8, Math.round((inp.targetSec ?? 44) / 7)))
 
@@ -198,7 +233,8 @@ export function planBeats(inp: PlanInput): Plan {
   // after a login-focused sign-in only the landing page adds anything
   const asked = (v: Visit) => !!v.asked || v.interactions.some((i) => i.asked)
   const picked = inp.scripted && candidates.some(asked)
-    ? scored.filter((c) => asked(c.v)).slice(0, Math.max(1, maxBeats - beat))
+    // what the person typed is shown in full: the cap on beats does not apply to it, so nothing they asked for is cut
+    ? scored.filter((c) => asked(c.v)).slice(0, 6)
     : signIn && loginFocus ? chosen.filter((c) => c.v.index === 0).slice(0, Math.min(room, 1)) : chosen
   if (candidates.length > picked.length) notes.push(`${candidates.length - picked.length} explored page(s) left out to keep the video short`)
 
@@ -215,6 +251,19 @@ export function planBeats(inp: PlanInput): Plan {
     beats.push({ beat, kind: 'page', chapter, facts: factsFor(v, inp.secrets), fallback: pageLine(v, chapter, first && signIn, inp.secrets, beats.length) })
     first = false
     beat++
+    // the extra mile: a typed step is followed by a beat that lets its result be seen, and by what was opened to make the point
+    const typedAsk = doneAsked.find((i) => i.steps.some((t) => t.kind === 'type'))
+    if (typedAsk) {
+      steps.push({ id: id(), beat, kind: 'wait', intent: 'inspect', label: 'result', focus: 'page' })
+      beats.push(resultBeat(typedAsk, goal, inp.secrets, beat))
+      beat++
+      for (const f of v.interactions.filter((i) => i.followed && i.steps.length).slice(0, 2)) {
+        for (const e of f.steps) steps.push(toStep(e, id(), beat))
+        steps.push({ id: id(), beat, kind: 'wait', intent: 'inspect', label: 'opened', focus: 'page' })
+        beats.push(detailBeat(f, goal, inp.secrets, beat))
+        beat++
+      }
+    }
   }
 
   // sign out, when the video is about signing in and out
@@ -240,7 +289,7 @@ export function planBeats(inp: PlanInput): Plan {
 
 /** what the review screen shows for a plan: the beats and the words that will be said */
 export function reviewBeats(plan: Plan, launch: boolean): Array<{ beat: number; kind: string; chapter: string; text: string; removable: boolean }> {
-  return plan.beats.map((b) => ({ beat: b.beat, kind: b.kind, chapter: b.chapter, text: launch && b.launchFallback ? b.launchFallback : b.fallback, removable: b.kind === 'page' }))
+  return plan.beats.map((b) => ({ beat: b.beat, kind: b.kind, chapter: b.chapter, text: launch && b.launchFallback ? b.launchFallback : b.fallback, removable: b.kind === 'page' || b.kind === 'result' || b.kind === 'detail' }))
 }
 
 /**
@@ -249,7 +298,13 @@ export function reviewBeats(plan: Plan, launch: boolean): Array<{ beat: number; 
  * break), and edited words still go through the narration check later.
  */
 export function applyReviewEdits(plan: Plan, edits: { removeBeats: number[]; lines: Record<number, string> }): Plan {
-  const drop = new Set(plan.beats.filter((b) => b.kind === 'page' && edits.removeBeats.includes(b.beat)).map((b) => b.beat))
+  const drop = new Set(plan.beats.filter((b) => (b.kind === 'page' || b.kind === 'result' || b.kind === 'detail') && edits.removeBeats.includes(b.beat)).map((b) => b.beat))
+  // the result and the closer look belong to the beat that typed: without it they would show a page nobody opened
+  let gone = false
+  for (const b of plan.beats) {
+    if (b.kind === 'page') gone = drop.has(b.beat)
+    else if ((b.kind === 'result' || b.kind === 'detail') && gone) drop.add(b.beat)
+  }
   const beats = plan.beats
     .filter((b) => !drop.has(b.beat))
     .map((b) => {

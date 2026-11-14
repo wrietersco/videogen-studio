@@ -1,7 +1,7 @@
 import { BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
-import { isAppId, isRunId, validateApp, type ReviewEdits, type RunEvent, type RunRecord } from '../../shared/appRecording'
+import { brandSourceOf, isAppId, isRunId, validateApp, type ReviewEdits, type RunEvent, type RunRecord } from '../../shared/appRecording'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { applyReviewEdits, reviewBeats } from './planner'
 import { readStyle } from './style'
@@ -167,7 +167,8 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
       depth: app.depth,
       targetSec: app.targetSec,
       reviewFirst: app.reviewFirst,
-      brand: app.mode === 'launch' && app.brandId ? (d.brand?.(app.brandId) ?? undefined) : undefined,
+      brand: brandSourceOf(app.brandSource, !!app.brandId) === 'kit' && app.brandId ? (d.brand?.(app.brandId) ?? undefined) : undefined,
+      siteBrand: brandSourceOf(app.brandSource, !!app.brandId) === 'site',
       signal: abort.signal,
       reuse: savedPlan ?? undefined,
       control
@@ -211,7 +212,7 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
           advisory: out.advisory
         }
         if (out.video) d.store.savePlan(id, out.plan)
-        record.notes = [...record.notes, ...styleNotes]
+        record.notes = [...record.notes, ...(out.brandNotes ?? []), ...styleNotes]
         d.store.saveRun(record)
         send({ kind: 'done', runId: rec.id, run: record })
         notify('Your app video is ready', app.name)

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type AppInput, type ReviewBeat, type RunEvent, type RunRecord, type SavedApp } from '../api'
 import { Section, fmtDur } from '../components/ui'
-import { DEFAULT_CHECKS, DEPTH_LABELS, type AppChecks, type Depth } from '@shared/appRecording'
+import { brandSourceOf, DEFAULT_CHECKS, DEPTH_LABELS, type AppChecks, type BrandSource, type Depth } from '@shared/appRecording'
 
 /**
  * Record an app — one page: tell it where the app is and what the video should
@@ -33,25 +33,26 @@ interface Form {
   useAi: boolean
   reviewFirst: boolean
   brandId: string
+  brandSource: BrandSource
   styleImages: string[]
   styleVideo: string
 }
 
 const blank = (): Form => ({
   name: '', url: '', context: '', document: null, signIn: 'saved', username: '', password: '', hasPassword: false, guardrailText: '', checks: { ...DEFAULT_CHECKS }, depth: 'standard',
-  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, useAi: true, reviewFirst: false, brandId: '', styleImages: [], styleVideo: ''
+  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, useAi: true, reviewFirst: false, brandId: '', brandSource: 'none', styleImages: [], styleVideo: ''
 })
 
 const fromApp = (a: SavedApp): Form => ({
   id: a.id, name: a.name, url: a.url, context: a.context, document: a.document ?? null, signIn: a.signIn, username: a.username ?? '', password: '', hasPassword: a.hasPassword, guardrailText: a.guardrailText,
   checks: a.checks, depth: a.depth, revealUsername: a.revealUsername, mode: a.mode, feature: a.launch?.feature ?? '', tagline: a.launch?.tagline ?? 'Simple. Fast. Safe.', closing: a.launch?.closing ?? 'Try it today',
-  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, useAi: a.useAi, reviewFirst: a.reviewFirst, brandId: a.brandId ?? '', styleImages: a.styleImages ?? [], styleVideo: a.styleVideo ?? ''
+  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, useAi: a.useAi, reviewFirst: a.reviewFirst, brandId: a.brandId ?? '', brandSource: brandSourceOf(a.brandSource, !!a.brandId), styleImages: a.styleImages ?? [], styleVideo: a.styleVideo ?? ''
 })
 
 const toInput = (f: Form): AppInput => ({
   id: f.id, name: f.name, url: f.url, context: f.context, document: f.document, signIn: f.signIn, username: f.username || undefined, password: f.password || undefined, guardrailText: f.guardrailText,
   checks: f.checks, depth: f.depth, revealUsername: f.revealUsername, mode: f.mode,
-  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, useAi: f.useAi, reviewFirst: f.reviewFirst, brandId: f.brandId || undefined, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined
+  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, useAi: f.useAi, reviewFirst: f.reviewFirst, brandId: f.brandSource === 'kit' ? f.brandId || undefined : undefined, brandSource: f.brandSource === 'kit' && !f.brandId ? 'none' : f.brandSource, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined
 })
 
 const STAGES: Array<{ id: string; label: string }> = [
@@ -232,7 +233,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
             <div className="mt-2 text-[11px] text-ink/45">Tip: a dedicated test account is safest, since the app really signs in twice (once to explore, once to record).</div>
           </Section>
 
-          <Section icon="🧭" title="How much to explore" hint="Exploring is not the same as recording: the video shows only the best 4 to 8 moments.">
+          <Section icon="🧭" title="How much to explore" hint="Exploring is not the same as recording: the video shows the best moments. Steps you type are always shown in full, results included.">
             <div className="flex flex-wrap gap-2">
               {(Object.keys(DEPTH_LABELS) as Depth[]).map((d) => (
                 <button key={d} onClick={() => set('depth', d)} title={DEPTH_LABELS[d].hint} className={`rounded-full border-2 px-3 py-1 text-xs font-bold ${form.depth === d ? 'border-grape bg-grape text-white' : 'border-ink/10 bg-white text-ink/65 hover:border-grape/50'}`}>
@@ -260,15 +261,30 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
                 <input aria-label="Tagline" value={form.tagline} onChange={(e) => set('tagline', e.target.value)} placeholder="Tagline" className="field px-4 py-2.5 text-sm" />
                 <input aria-label="Closing line" value={form.closing} onChange={(e) => set('closing', e.target.value)} placeholder="Closing line" className="field px-4 py-2.5 text-sm" />
                 <input aria-label="Call to action" value={form.cta} onChange={(e) => set('cta', e.target.value)} placeholder="Label, e.g. Available now" className="field px-4 py-2.5 text-sm" />
-                <label className="flex items-center gap-2 text-xs text-ink/70 md:col-span-2">
-                  Brand kit for the title and closing cards
-                  <select aria-label="Brand kit" value={form.brandId} onChange={(e) => set('brandId', e.target.value)} className="field !py-1 px-3 text-xs">
-                    <option value="">No brand</option>
-                    {kits.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
-                  </select>
-                  <span className="text-ink/45">{kits.length ? 'Its logo and colour appear on the cards.' : 'Make a kit in Create → Brand to use a logo here.'}</span>
-                </label>
               </div>
+            )}
+          </Section>
+
+          <Section icon="🏷️" title="Branding" hint="Whose logo and colours the video wears: the cards of a launch film and the backdrop around the app.">
+            <div className="flex flex-wrap gap-2">
+              {([['none', 'None'], ['site', "The website's own"], ['kit', 'One of my brand kits']] as const).map(([id, label]) => (
+                <button key={id} onClick={() => set('brandSource', id)} className={`rounded-full border-2 px-3 py-1 text-xs font-bold ${form.brandSource === id ? 'border-grape bg-grape text-white' : 'border-ink/10 bg-white text-ink/65 hover:border-grape/50'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {form.brandSource === 'site' && (
+              <div className="mt-2 text-xs text-ink/55">The logo file is taken from the website (up to 3 tries). If it cannot be fetched, a picture of the logo is taken from the page. The colours come from the logo and the page.</div>
+            )}
+            {form.brandSource === 'kit' && (
+              <label className="mt-3 flex flex-wrap items-center gap-2 text-xs text-ink/70">
+                Brand kit
+                <select aria-label="Brand kit" value={form.brandId} onChange={(e) => set('brandId', e.target.value)} className="field !py-1 px-3 text-xs">
+                  <option value="">Choose a kit</option>
+                  {kits.map((k) => <option key={k.id} value={k.id}>{k.name}</option>)}
+                </select>
+                <span className="text-ink/45">{kits.length ? 'Its logo and colour appear on the cards.' : 'Make a kit in Create → Brand to use a logo here.'}</span>
+              </label>
             )}
           </Section>
 

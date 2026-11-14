@@ -52,6 +52,8 @@ export interface AppInput {
   reviewFirst: boolean
   /** a brand kit whose logo and colour go on a launch film's cards ('' = none) */
   brandId?: string
+  /** where the video's branding comes from: none, one of the person's own brand kits, or the website being recorded (its logo and colours) */
+  brandSource?: BrandSource
   /** reference pictures (up to 3) whose colours steer the backdrop and cards, and one reference video whose pace steers the music */
   styleImages: string[]
   styleVideo?: string
@@ -119,6 +121,15 @@ export const DEPTH_LABELS: Record<Depth, { label: string; hint: string }> = {
 }
 
 const DEPTHS: Depth[] = ['quick', 'standard', 'thorough']
+
+export type BrandSource = 'none' | 'kit' | 'site'
+/** an app saved before the choice existed keeps working: a chosen kit means "my kit" */
+export function brandSourceOf(v: unknown, hasKit: boolean): BrandSource {
+  if (v === 'site') return 'site'
+  if (v === 'kit') return hasKit ? 'kit' : 'none'
+  if (v === 'none') return 'none'
+  return hasKit ? 'kit' : 'none'
+}
 const str = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 
 /** the single place a screen's input becomes something the main process will store and run */
@@ -177,6 +188,7 @@ export function validateApp(raw: unknown): { ok: true; value: AppInput } | { ok:
       useAi: r.useAi !== false,
       reviewFirst: r.reviewFirst === true,
       brandId: typeof r.brandId === 'string' && /^[\w-]{1,60}$/.test(r.brandId) ? r.brandId : undefined,
+      brandSource: brandSourceOf(r.brandSource, typeof r.brandId === 'string' && /^[\w-]{1,60}$/.test(r.brandId)),
       styleImages: (Array.isArray(r.styleImages) ? r.styleImages : []).filter((x): x is string => typeof x === 'string' && x.length > 0 && x.length < 600).slice(0, 3),
       styleVideo: typeof r.styleVideo === 'string' && r.styleVideo.length > 0 && r.styleVideo.length < 600 ? r.styleVideo : undefined
     }

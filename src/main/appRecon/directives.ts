@@ -66,7 +66,31 @@ export function parseDirectives(context: string): Directive[] {
   return out
 }
 
-const GENERIC_BOX = new Set(['filter', 'search', 'box', 'field', 'input', 'bar', 'text', 'query', 'find', 'the', 'here'])
+const TOPIC_STOP = new Set([
+  'explain', 'there', 'many', 'just', 'alone', 'does', 'cover', 'covers', 'covered', 'subject', 'show', 'shows', 'make', 'video', 'with', 'this', 'that', 'from', 'about', 'have', 'what', 'into', 'then',
+  'them', 'they', 'very', 'also', 'here', 'page', 'type', 'filter', 'search', 'click', 'open', 'please', 'want', 'need', 'would', 'could', 'should', 'when', 'where', 'which', 'while', 'your', 'their',
+  'tell', 'describe', 'mention', 'highlight', 'point', 'some', 'more', 'much', 'most', 'every', 'each', 'only', 'even', 'such', 'like', 'been', 'being', 'were', 'will', 'shall', 'login', 'sign', 'signin'
+])
+const wordsOf = (s: string): string[] => s.toLowerCase().normalize('NFKD').match(/[\p{L}\p{N}]{4,}/gu)?.filter((w) => !TOPIC_STOP.has(w)) ?? []
+
+/**
+ * What the person said beyond the steps: the goal in their own words and the
+ * words that matter in it ("quran", "psychology", "baqarah"). The steps are
+ * carried out; this is what the video should make sure to show and explain, so
+ * the recording does not stop at the typed step and leave the point unmade.
+ */
+export function readUseCase(context: string): { steps: Directive[]; goal: string; topics: string[] } {
+  const typed = context.split(/\n\s*Attached notes \(information only\):/)[0] ?? ''
+  const steps = parseDirectives(context)
+  let rest = typed
+  for (const d of steps) rest = rest.replace(d.said, ' ')
+  const goal = rest.replace(/->|→|=>|⇒|➜|>>/g, ' ').replace(/\s+/g, ' ').replace(/^[\s,.;:-]+|[\s,.;:-]+$/g, '')
+  const topics: string[] = []
+  for (const w of [...steps.flatMap((d) => (d.kind === 'type' ? wordsOf(d.text) : [])), ...wordsOf(goal)]) if (!topics.includes(w)) topics.push(w)
+  return { steps, goal, topics: topics.slice(0, 12) }
+}
+
+const GENERIC_BOX =new Set(['filter', 'search', 'box', 'field', 'input', 'bar', 'text', 'query', 'find', 'the', 'here'])
 const tokens = (s: string): string[] => s.toLowerCase().normalize('NFKD').match(/[a-z0-9]{3,}/g) ?? []
 
 /** the page is the one the person named: every word of the name is in its title, headings, address, or the link that led to it */

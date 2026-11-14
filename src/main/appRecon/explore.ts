@@ -44,6 +44,8 @@ export interface Interaction {
   after?: AppPage
   /** the person asked for exactly this, in their own words */
   asked?: string
+  /** the explorer went one step further than asked, to show what the person is getting at: the name of what it opened */
+  followed?: string
 }
 
 export interface Visit {
@@ -89,6 +91,8 @@ export interface ExploreInput {
   directives?: Directive[]
   /** the person wrote a list of steps, so once all of them are done there is nothing more to look for */
   scripted?: boolean
+  /** the words that matter in what the person wants shown: after a typed step, something that mentions them is opened to show the point */
+  topics?: string[]
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -263,6 +267,15 @@ export async function explore(inp: ExploreInput): Promise<Exploration> {
         a.done = true
         a.why = undefined
         say(`typed "${d.text}" into ${field.label || 'the box'} as asked${changed ? ': the page changed' : ''}`)
+        // the extra mile: the person is getting at something, so open what shows it while the typed text is still in place
+        if (after && inp.topics?.length) {
+          try {
+            const done = await followThrough(page, gate, sp, after, inp.topics, d.text, inp.depth === 'thorough' ? 2 : 1, visit, outDir, say)
+            actions += done
+          } catch (err) {
+            say(`going one step further did not work: ${(err as Error).message.slice(0, 80)}`)
+          }
+        }
       } catch (err) {
         a.why = `typing into "${field.label || d.into}" did not work (${(err as Error).message.slice(0, 60)})`
       }
@@ -305,6 +318,47 @@ export async function explore(inp: ExploreInput): Promise<Exploration> {
     a.why = a.directive.kind === 'open' ? `no page or link called "${a.directive.target}" was found` : `no box called "${a.directive.into || 'search'}" was found on the pages that were explored`
   }
   return { visits, actions, stoppedBy, elapsedMs: Date.now() - t0, asked }
+}
+
+const NAV_LABEL = /^(home|back|dashboard|overview|main|menu|logo|sign\s?-?(in|out)|log\s?-?(in|out)|skip|close|cancel|help|settings|profile|account)$/i
+
+/** how many of the topic words a label mentions */
+export function topicHits(label: string, topics: string[]): number {
+  const l = label.toLowerCase().normalize('NFKD')
+  return topics.filter((t) => l.includes(t)).length
+}
+
+/**
+ * After the typed step, open the thing on the page that best shows what the
+ * person is getting at (a result whose name mentions their words), read-only.
+ * It is a link on an allowed site, or a button that only looks at things, and
+ * only ever one or two. Returns how many actions were taken.
+ */
+async function followThrough(page: Page, gate: PolicyGate, before: AppPage, after: AppPage, topics: string[], typed: string, max: number, visit: Visit, outDir: string, say: (m: string) => void): Promise<number> {
+  const had = new Set(before.controls.map((c) => `${c.kind}|${c.label}`))
+  const own = new Set([...before.headings, before.title].map((h) => h.trim().toLowerCase()))
+  const picks = after.controls
+    .filter((c) => c.label && c.label.length <= 70 && !NAV_LABEL.test(c.label.trim()) && !own.has(c.label.trim().toLowerCase()) && topicHits(c.label, topics) > 0)
+    .filter((c) => (c.kind === 'link' ? !!c.href && gate.hostAllowed(c.href) && gate.peekClick({ label: c.label, kind: 'link', href: c.href }).allow : SAFE_BUTTON.test(c.label.trim()) && gate.peekClick({ label: c.label, kind: 'button' }).allow))
+    // a link that only leads to where the person has been (the page itself) shows nothing new
+    .filter((c) => !(c.kind === 'link' && c.href && normalize(c.href) === normalize(before.url)))
+    .map((c) => ({ c, rank: topicHits(c.label, topics) * 10 + (had.has(`${c.kind}|${c.label}`) ? 0 : 4) + ((c.rect?.y ?? 0) > 110 ? 3 : 0) - (c.label.toLowerCase() === typed.toLowerCase() ? 1 : 0) }))
+    .sort((x, y) => y.rank - x.rank)
+  let n = 0
+  for (const { c } of picks.slice(0, max)) {
+    if (!gate.checkClick({ label: c.label, kind: c.kind, href: c.href }).allow) continue
+    const fp = await fingerprint(page)
+    await page.click(c.selector)
+    n++
+    await settle(page)
+    const changed = (await fingerprint(page)) !== fp
+    const shown = await scoutPage(page, outDir, `p${visit.index + 1}-follow${visit.interactions.length + 1}`, { revealIdentifiers: false }).catch(() => undefined)
+    visit.interactions.push({ steps: [{ kind: 'click', selector: c.selector, label: c.label }], changed, writes: false, after: shown, followed: c.label })
+    say(`went one step further and opened "${c.label}", which mentions what you asked about${changed ? '' : ' (the page did not change)'}`)
+    // once the view has moved on, the other picks (taken from the earlier view) no longer apply
+    if (changed) break
+  }
+  return n
 }
 
 /** try what a person would try on this page; returns how many actions were taken */

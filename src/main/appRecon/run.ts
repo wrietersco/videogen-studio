@@ -5,7 +5,7 @@ import type { AppMap, AppPage, Playbook, Step, Take } from '@shared/appRecon'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { enforcePolicy, launch } from './browser'
 import { scrubMap } from './detect'
-import { parseDirectives } from './directives'
+import { parseDirectives, readUseCase } from './directives'
 import { checkCompatibility, explore, openPage, passInterstitial, settle, type Depth, type Exploration } from './explore'
 import { narrate, type LaunchInfo } from './narrate'
 import { planBeats, type Plan } from './planner'
@@ -14,6 +14,8 @@ import { produce } from './produce'
 import { FrameRecorder, prepare, runPlaybook } from './recorder'
 import type { RedactionConfig } from './redact'
 import { buildAppMap, scoutPage } from './scout'
+import { captureSiteBrand, type SiteBrand } from './siteBrand'
+import { lookFromPalette } from './style'
 
 /**
  * One recording, start to finish:
@@ -56,6 +58,8 @@ export interface RunInput {
   musicMood?: 'corporate' | 'upbeat'
   /** the person's brand kit: accent colour (hex without #) and logo file for the title and closing cards */
   brand?: { accent?: string; logo?: string }
+  /** take the logo and colours from the website being recorded instead (wins over `brand`) */
+  siteBrand?: boolean
   /** colours from the person's reference pictures: backdrop and card accent */
   look?: { backdrop: [string, string]; accent: string }
   /** the steps of an earlier run: they are checked against the app as it is now, and only the broken ones are changed */
@@ -87,6 +91,8 @@ export interface RunOutput {
   advisory: string[]
   redactionMisses: number
   runDir: string
+  /** what was taken from the website's own branding, in plain words */
+  brandNotes?: string[]
 }
 
 export class RunCancelled extends Error {
@@ -162,6 +168,17 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     check()
 
     const first = await scoutPage(page, scoutDir, 'p0-start', { revealIdentifiers: reveal })
+    // the website's own logo and colours, read from the page it opens on (before anything is typed or clicked)
+    let site: SiteBrand | undefined
+    if (inp.siteBrand) {
+      hooks.progress('explore', "Reading the website's logo and colours")
+      site = await captureSiteBrand(page, { dir: inp.runDir, siteHost: new URL(page.url()).hostname, log: say }).catch((err) => ({ colors: [], notes: [`Branding from the website could not be read (${(err as Error).message.slice(0, 80)}), so the video uses its normal look.`] }) as SiteBrand)
+      for (const n of site.notes) say(n)
+      await page.evaluate(() => scrollTo(0, 0)).catch(() => undefined)
+    }
+    const brand = site ? { accent: site.accent, logo: site.logo } : inp.brand
+    // reference pictures the person chose win for the backdrop; otherwise the brand (the site's or the kit's colour) tints it
+    const look = inp.look ?? site?.look ?? (!site && inp.brand?.accent ? (lookFromPalette([`#${inp.brand.accent}`]) ?? undefined) : undefined)
     const pages: AppPage[] = [first]
     let map = buildAppMap(inp.startUrl, pages)
     // the sign-in is often one click away from the page the app opens on
@@ -264,7 +281,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       await settle(page)
     } else {
       hooks.progress('explore', 'Exploring the app')
-      exploration = await explore({ page, gate, startUrl: inp.startUrl, outDir: scoutDir, depth: inp.depth, revealIdentifiers: reveal, log: say, signal: inp.signal, pause, directives, scripted })
+      exploration = await explore({ page, gate, startUrl: inp.startUrl, outDir: scoutDir, depth: inp.depth, revealIdentifiers: reveal, log: say, signal: inp.signal, pause, directives, scripted, topics: readUseCase(inp.context).topics })
       pages.push(...exploration.visits.map((v) => v.page))
       // a typed step that could not be done stops the run here, before anything is recorded or paid for
       const missed = (exploration.asked ?? []).filter((a) => !a.done)
@@ -289,7 +306,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     writeFileSync(join(inp.runDir, 'beats.json'), JSON.stringify(plan.beats, null, 2))
     const base: RunOutput = {
       plan, map: safeMap, compat, stoppedBy: exploration.stoppedBy, pages: exploration.visits.length, actions: exploration.actions,
-      blockedHosts: gate.blockedHosts(), enforced, advisory, redactionMisses: 0, runDir: inp.runDir
+      blockedHosts: gate.blockedHosts(), enforced, advisory, redactionMisses: 0, runDir: inp.runDir, brandNotes: site?.notes ?? []
     }
     if (inp.stopAfter === 'explore' || inp.stopAfter === 'plan') return base
     if ((inp.reviewFirst || advisory.length) && hooks.review) {
@@ -303,7 +320,9 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
 
     // ------------------------------------------------------------ script
     hooks.progress('script', 'Writing and voicing the script')
-    const narration = await narrate({ chat: inp.chat, speech: inp.speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: inp.context, secrets, targetSec: inp.targetSec, brand: inp.brand || inp.look ? { accent: inp.brand?.accent ?? inp.look?.accent.slice(1), logo: inp.brand?.logo } : undefined, dir: inp.runDir, say })
+    const narration = await narrate({ chat: inp.chat, speech: inp.speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: inp.context, secrets, targetSec: inp.targetSec, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, dir: inp.runDir, say })
+    // a result the person asked to see stays on screen long enough to be taken in, whatever the narration length
+    for (const b of plan.beats) if ((b.kind === 'result' || b.kind === 'detail') && (narration.minSec.get(b.beat) ?? 0) < RESULT_HOLD_SEC) narration.minSec.set(b.beat, RESULT_HOLD_SEC)
     check()
 
     // ------------------------------------------------------------ record
@@ -345,7 +364,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       outro: narration.outro,
       targetSec: inp.mode === 'launch' ? inp.launch?.targetSec : undefined,
       keep: false,
-      look: inp.look
+      look
     })
     return { ...base, plan, video: res.file, durationSec: res.durationSec, redactionMisses: take.redactionMisses }
   } finally {
@@ -360,6 +379,8 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
 }
 
 const BROWSER_CHECK = 'The site kept showing its "checking your browser" page and never opened the app, so no video was made. Choose "I\'ll sign in myself" so the check runs in a window you can see, or ask whoever runs the site to let this computer through.'
+/** the least time the result of a typed step (and what was opened to make the point) is held on screen */
+const RESULT_HOLD_SEC = 6.5
 /** a link or button that leads to the sign-in form */
 const SIGN_IN_LINK = /^(?:login\s+)?(?:log\s?-?in|sign\s?-?in|sign\s?-?on|member\s+login|account\s+login)$/i
 
