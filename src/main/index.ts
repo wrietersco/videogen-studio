@@ -31,6 +31,8 @@ import { FootageStore } from './footage/store'
 import { FootageService } from './footage/service'
 import { registerFootageIpc } from './footage/ipc'
 import { meter, readProjectUsage, type UsageRun } from './usage/meter'
+import { SpendLedgerStore } from './usage/spendLedger'
+import { eraseProject, releaseLibrary } from './store/erase'
 import { checkForUpdate, downloadUpdate, installUpdate } from './updater'
 import type { PlanId } from '@shared/plans'
 import { clampSeats, REQUEST_LIMITS, UPGRADE_PLANS, type MyRequest } from '@shared/requests'
@@ -48,6 +50,8 @@ import { setClipCap } from './director/director'
 registerAssetScheme()
 
 const store = new ProjectStore(projectsDir)
+/** what erased videos cost (totals only), so spending still adds up after a deletion */
+const spendLedger = new SpendLedgerStore(join(app.getPath('userData'), 'spend-ledger.json'))
 const library = new AssetLibrary(libraryDir, builtinPackDir, () => settings.sharing)
 const brands = new BrandStore(brandDir)
 /** decrypted keys, cached (safeStorage round-trips are not free) */
@@ -756,8 +760,11 @@ function registerIpc(): void {
     if ([...jobs.values()].some((j) => jobProject(j) === id)) {
       return { ok: false, error: 'This project is currently generating — stop it first' }
     }
-    return { ok: store.delete(id) }
+    return eraseProject({ store, library, ledger: spendLedger }, id)
   })
+
+  /** what deleted videos cost, kept after their files are gone */
+  ipcMain.handle('usage:erased', () => spendLedger.read())
 
   ipcMain.handle('project:reveal', (_e, id: string, filePath?: string) => {
     // absolute path (stored render) or project-relative; default: the project folder
@@ -921,6 +928,7 @@ if (headlessFile) {
       window: () => win,
       isBusy: busyNow,
       setBusy: (b) => { footageBusy = b },
+      forgetRun: (runId, usage) => { spendLedger.add(usage); releaseLibrary(library, [`ar-${runId}`]) },
       brand: (id) => {
         const kit = brands.get(id)
         if (!kit) return null

@@ -1,12 +1,12 @@
 import { BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { brandSourceOf, isAppId, isRunId, validateApp, type ReviewEdits, type RunEvent, type RunRecord } from '../../shared/appRecording'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { applyReviewEdits, reviewBeats } from './planner'
 import { readStyle, youtubeReadiness } from './style'
 import { RunCancelled, runAppRecording, type MediaTools, type RunHooks, type RunInput, type RunOutput } from './run'
-import { meter } from '../usage/meter'
+import { meter, readProjectUsage, type ProjectUsage } from '../usage/meter'
 import type { AppReconStore } from './store'
 import type { GeminiProvider } from '../providers/gemini'
 
@@ -28,6 +28,8 @@ export interface AppReconIpcDeps {
   brand?: (id: string) => { accent?: string; logo?: string } | null
   /** the AI that reads YouTube references by link; null when no Gemini account is connected */
   gemini?: () => Pick<GeminiProvider, 'readVideoUrl'> | null
+  /** a recording was erased: keep only what it cost, and let go of the library clips made for it */
+  forgetRun?: (runId: string, usage: ProjectUsage) => void
   /** replaceable for tests */
   runner?: (input: RunInput, hooks: RunHooks) => Promise<RunOutput>
 }
@@ -287,6 +289,26 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
     shell.showItemInFolder(f)
     return true
   })
+  /** what one recording cost: the receipt filed in its own folder */
+  ipcMain.handle('apprec:runUsage', (_e, runId: unknown) => (isRunId(runId) ? readProjectUsage(d.store.runDir(runId)) : { runs: [], totalUsd: 0, savedUsd: 0 }))
+
+  /** erase one recording from this PC: its video, notes, playbook and receipts; only the cost stays in the totals */
+  ipcMain.handle('apprec:removeRun', (_e, runId: unknown) => {
+    if (!isRunId(runId)) return fail('Invalid recording')
+    if (current?.runId === runId) return fail('This recording is still being made. Stop it first.')
+    try {
+      const dir = d.store.runDir(runId)
+      if (!existsSync(join(dir, 'run.json'))) return fail('This recording is already gone')
+      const usage = readProjectUsage(dir)
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 })
+      if (existsSync(dir)) return fail('Some files are still in use. Close any player showing this video and try again.')
+      d.forgetRun?.(runId, usage)
+      return { ok: true as const }
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
   ipcMain.handle('apprec:revealRun', (_e, runId: unknown) => {
     if (!isRunId(runId)) return false
     const dir = d.store.runDir(runId)

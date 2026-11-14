@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type AppInput, type ReviewBeat, type RunEvent, type RunRecord, type SavedApp } from '../api'
 import { Section, fmtDur } from '../components/ui'
+import { CostToggle } from '../components/CostReceipt'
 import { MAX_STYLE_LINKS, parseYouTubeUrl } from '@shared/youtube'
 import { brandSourceOf, DEFAULT_CHECKS, DEPTH_LABELS, type AppChecks, type BrandSource, type Depth } from '@shared/appRecording'
 
@@ -88,6 +89,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
   const [kits, setKits] = useState<Array<{ id: string; name: string }>>([])
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [confirmRun, setConfirmRun] = useState<string | null>(null)
   const formRef = useRef(form)
   formRef.current = form
 
@@ -465,13 +467,35 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
             <div className="text-sm font-black">Earlier recordings</div>
             <div className="mt-2 space-y-2">
               {myRuns.slice(0, 8).map((r) => (
-                <div key={r.id} className="card flex items-center gap-3 px-4 py-2 text-sm">
+                <div key={r.id} className="card px-4 py-2 text-sm">
+                <div className="flex items-center gap-3">
                   <span>{r.status === 'done' ? '✅' : r.status === 'cancelled' ? '⏹️' : r.status === 'running' ? '⏳' : '⚠️'}</span>
                   <span className="flex-1 truncate">
                     {new Date(r.startedAt).toLocaleString()} · {r.status === 'done' ? `${fmtDur(r.durationSec)} · ${r.pages ?? 0} pages explored` : (r.error ?? r.status)}
                   </span>
                   {r.video && <button onClick={() => api.appRec.play(r.id)} className="btn-ghost !px-3 !py-1 !text-xs">▶ Play</button>}
                   {r.video && <button onClick={() => api.appRec.reveal(r.id)} className="btn-ghost !px-3 !py-1 !text-xs">📂 Show</button>}
+                  {r.status !== 'running' && (confirmRun === r.id ? (
+                    <span className="flex items-center gap-1">
+                      <button
+                        onClick={async () => {
+                          const res = await api.appRec.removeRun(r.id)
+                          setConfirmRun(null)
+                          if (!res.ok) setError(res.error ?? 'Could not delete the recording')
+                          void refresh()
+                        }}
+                        title="Removes the video, its notes and its history from this computer. Only its cost stays in your totals."
+                        className="rounded-xl bg-coral px-2.5 py-1 text-xs font-bold text-white"
+                      >
+                        Delete everything
+                      </button>
+                      <button onClick={() => setConfirmRun(null)} className="rounded-xl px-2 py-1 text-xs font-bold text-ink/60 hover:bg-ink/5">Keep</button>
+                    </span>
+                  ) : (
+                    <button onClick={() => setConfirmRun(r.id)} title="Delete this recording and every file made for it" className="rounded-xl px-2 py-1 text-sm text-ink/40 transition-colors hover:bg-coral-soft hover:text-coral">🗑</button>
+                  ))}
+                </div>
+                {r.status === 'done' && <CostToggle runId={r.id} />}
                 </div>
               ))}
             </div>

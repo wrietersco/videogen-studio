@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api, type ProjectMeta } from '../api'
 import { EmptyState } from '../components/ui'
+import { CostToggle } from '../components/CostReceipt'
+import { useInsider } from '../components/Account'
+import { fmtUsd } from '@shared/pricing'
 
 export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) => void }) {
   const [projects, setProjects] = useState<ProjectMeta[]>([])
@@ -8,9 +11,12 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [rerendering, setRerendering] = useState<{ id: string; pct: number } | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const insider = useInsider()
+  const [erased, setErased] = useState<{ videos: number; totalUsd: number } | null>(null)
 
   const refresh = async () => {
     setProjects(await api.listProjects())
+    api.erasedSpend().then(setErased).catch(() => {})
   }
 
   useEffect(() => {
@@ -51,7 +57,8 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
 
   const remove = async (id: string) => {
     const res = await api.deleteProject(id)
-    if (!res.ok) setToast(res.error ?? 'Could not delete project')
+    if (!res.ok) setToast(res.error ?? 'Could not delete the video')
+    else setToast('🗑 Deleted — the video and all its files are gone from this computer')
     setConfirmDelete(null)
     refresh()
   }
@@ -100,6 +107,12 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
           </button>
         </div>
 
+        {insider && erased && erased.videos > 0 && (
+          <p className="mb-4 text-xs text-ink/55">
+            🧾 {erased.videos} deleted video{erased.videos > 1 ? 's' : ''} cost {fmtUsd(erased.totalUsd)} — kept in your totals, nothing else is kept.
+          </p>
+        )}
+
         {toast && (
           <div className="pop-in fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-2xl border-2 border-ink/10 bg-white px-4 py-3 text-sm font-semibold text-ink shadow-2xl">
             {toast}
@@ -141,6 +154,8 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
                       {p.lastError}
                     </div>
                   )}
+
+                  <CostToggle projectId={p.id} />
 
                   {busyHere && (
                     <div className="mt-3">
@@ -194,8 +209,8 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
                     </button>
                     {confirmDelete === p.id ? (
                       <span className="ml-auto flex items-center gap-1">
-                        <button onClick={() => remove(p.id)} className="rounded-xl bg-coral px-2.5 py-1.5 text-xs font-bold text-white">
-                          Delete forever
+                        <button onClick={() => remove(p.id)} title="Removes the video, its scenes, pictures, voice and music made for it, and its history from this computer. Only its cost stays in your totals." className="rounded-xl bg-coral px-2.5 py-1.5 text-xs font-bold text-white">
+                          Delete everything
                         </button>
                         <button onClick={() => setConfirmDelete(null)} className="rounded-xl px-2 py-1.5 text-xs font-bold text-ink/60 hover:bg-ink/5">
                           Keep
@@ -204,7 +219,7 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
                     ) : (
                       <button
                         onClick={() => setConfirmDelete(p.id)}
-                        title="Delete this video"
+                        title="Delete this video and every file made for it"
                         className="ml-auto rounded-xl px-2 py-1.5 text-sm text-ink/40 transition-colors hover:bg-coral-soft hover:text-coral"
                       >
                         🗑

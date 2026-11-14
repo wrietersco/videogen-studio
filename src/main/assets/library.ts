@@ -196,6 +196,15 @@ export class AssetLibrary {
     return true
   }
 
+  /** replace the list of projects that used an asset (a project was erased) */
+  setUsedIn(id: string, usedIn: string[]): void {
+    const a = this.get(id)
+    const dir = this.dirOf.get(id)
+    if (!a || !dir) return
+    a.usedIn = usedIn
+    if (a.source !== 'builtin') writeFileSync(join(dir, `${id}.json`), JSON.stringify(a, null, 2))
+  }
+
   markUsed(id: string, projectId: string): void {
     const a = this.get(id)
     const dir = this.dirOf.get(id)

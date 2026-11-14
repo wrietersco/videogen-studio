@@ -169,7 +169,8 @@ declare global {
       getProjectUsage: (id: string) => Promise<ProjectUsage>
       listProjects: () => Promise<ProjectMeta[]>
       getProject: (id: string) => Promise<ProjectView>
-      deleteProject: (id: string) => Promise<{ ok: boolean; error?: string }>
+      deleteProject: (id: string) => Promise<{ ok: boolean; error?: string; assets?: number; files?: number }>
+      erasedSpend: () => Promise<{ videos: number; totalUsd: number; savedUsd: number; byKind: Record<string, number> }>
       revealProject: (id: string, filePath?: string) => Promise<boolean>
       playProject: (id: string, filePath?: string) => Promise<boolean>
       applyEdit: (projectId: string, spec: VideoSpec) => Promise<{ ok: boolean; error?: string }>
@@ -278,6 +279,8 @@ declare global {
         play: (runId: string) => Promise<boolean>
         reveal: (runId: string) => Promise<boolean>
         revealRun: (runId: string) => Promise<boolean>
+        runUsage: (runId: string) => Promise<ProjectUsage>
+        removeRun: (runId: string) => Promise<{ ok: boolean; error?: string }>
         onEvent: (cb: (event: RunEvent) => void) => () => void
       }
       references: {

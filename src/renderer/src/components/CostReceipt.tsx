@@ -54,12 +54,12 @@ function sumUsage(es: UsageEntry[]): UsageEntry['usage'] {
   return out
 }
 
-export function CostReceipt(props: { projectId?: string | null; live?: boolean; compact?: boolean }) {
+export function CostReceipt(props: { projectId?: string | null; runId?: string | null; live?: boolean; compact?: boolean }) {
   // provider costs and model names are for superadmins and own-key licences only
   return useInsider() ? <Receipt {...props} /> : null
 }
 
-function Receipt({ projectId, live, compact }: { projectId?: string | null; live?: boolean; compact?: boolean }) {
+function Receipt({ projectId, runId, live, compact }: { projectId?: string | null; runId?: string | null; live?: boolean; compact?: boolean }) {
   const [entries, setEntries] = useState<UsageEntry[]>([])
   const [history, setHistory] = useState<ProjectUsage | null>(null)
 
@@ -70,14 +70,14 @@ function Receipt({ projectId, live, compact }: { projectId?: string | null; live
   }, [live])
 
   useEffect(() => {
-    if (!projectId || live) return
-    const load = () => api.getProjectUsage(projectId).then(setHistory).catch(() => setHistory(null))
+    if ((!projectId && !runId) || live) return
+    const load = () => (runId ? api.appRec.runUsage(runId) : api.getProjectUsage(projectId as string)).then(setHistory).catch(() => setHistory(null))
     load()
     // the receipt is filed when the job closes, just after its last pipeline event
     return api.onUsageRun((p) => {
       if (p.projectId === projectId) load()
     })
-  }, [projectId, live])
+  }, [projectId, runId, live])
 
   const all = live ? entries : (history?.runs.flatMap((r) => r.entries) ?? [])
   const total = all.filter((e) => !e.saved).reduce((a, e) => a + e.usd, 0)
@@ -135,6 +135,41 @@ function Receipt({ projectId, live, compact }: { projectId?: string | null; live
         Paid to the AI companies through your own keys · prices as of {PRICES_AS_OF}
         {runs > 1 ? ` · ${runs} jobs (generate + reworks)` : ''}
       </div>
+    </div>
+  )
+}
+
+/**
+ * One line under a finished video: what it cost, and a button for the breakdown.
+ * Only people on their own keys (and superadmins) see it — they pay the providers.
+ */
+export function CostToggle({ projectId, runId }: { projectId?: string; runId?: string }) {
+  return useInsider() ? <Toggle projectId={projectId} runId={runId} /> : null
+}
+
+function Toggle({ projectId, runId }: { projectId?: string; runId?: string }) {
+  const [usage, setUsage] = useState<ProjectUsage | null>(null)
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    let live = true
+    const p = runId ? api.appRec.runUsage(runId) : api.getProjectUsage(projectId as string)
+    p.then((u) => live && setUsage(u)).catch(() => {})
+    return () => { live = false }
+  }, [projectId, runId])
+  const entries = usage?.runs.flatMap((r) => r.entries) ?? []
+  const total = entries.filter((e) => !e.saved).reduce((a, e) => a + e.usd, 0)
+  if (!usage) return null
+  return (
+    <div className="mt-2">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="rounded-full bg-sunny-soft px-2.5 py-1 text-[11px] font-bold text-ink"
+        title="What this video cost, call by call"
+        aria-expanded={open}
+      >
+        🧾 {entries.length === 0 ? 'No paid calls' : fmtUsd(total)} · {open ? 'hide' : 'breakdown'}
+      </button>
+      {open && <div className="mt-2"><Receipt projectId={projectId} runId={runId} /></div>}
     </div>
   )
 }

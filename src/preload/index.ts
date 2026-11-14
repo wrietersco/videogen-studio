@@ -45,6 +45,7 @@ const api = {
   listProjects: () => ipcRenderer.invoke('projects:list'),
   getProject: (id: string) => ipcRenderer.invoke('project:get', id),
   deleteProject: (id: string) => ipcRenderer.invoke('project:delete', id),
+  erasedSpend: () => ipcRenderer.invoke('usage:erased'),
   revealProject: (id: string, filePath?: string) => ipcRenderer.invoke('project:reveal', id, filePath),
   playProject: (id: string, filePath?: string) => ipcRenderer.invoke('project:play', id, filePath),
   applyEdit: (projectId: string, spec: unknown) => ipcRenderer.invoke('gen:applyEdit', projectId, spec),
@@ -158,6 +159,8 @@ const api = {
     play: (runId: string) => ipcRenderer.invoke('apprec:play', runId),
     reveal: (runId: string) => ipcRenderer.invoke('apprec:reveal', runId),
     revealRun: (runId: string) => ipcRenderer.invoke('apprec:revealRun', runId),
+    runUsage: (runId: string) => ipcRenderer.invoke('apprec:runUsage', runId),
+    removeRun: (runId: string) => ipcRenderer.invoke('apprec:removeRun', runId),
     onEvent: (cb: (event: unknown) => void) => {
       const listener = (_e: unknown, payload: unknown) => cb(payload)
       ipcRenderer.on('apprec:event', listener)
