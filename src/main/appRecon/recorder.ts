@@ -319,7 +319,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           const url = step.url ?? playbook.startUrl
           if (!o.gate.hostAllowed(url)) return { ok: false, failure: `${step.id}: ${url} is outside the allowed sites`, beats, navigations, log, redactionMisses: misses }
           // the recording may already be sitting on this page (so the video never opens on a blank screen)
-          if (page.url() !== url) await page.goto(url, { waitUntil: 'load', timeout: 20000 })
+          if (page.url() !== url) await page.goto(url, { waitUntil: 'load', timeout: 20000 }).catch(async (err: Error) => { if (!/timeout/i.test(err.message) || !(await page.evaluate(() => document.readyState !== 'loading' && (document.body?.innerText.trim().length ?? 0) > 20).catch(() => false))) throw err })
           await page.mouse.move(mouse.x, mouse.y) // the pointer reappears on the new page
           say(step.id, `opened ${url}`)
         } else if (step.kind === 'type' && (step.selector || step.find)) {

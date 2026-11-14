@@ -134,7 +134,15 @@ export async function passInterstitial(page: Page, ms = 25000): Promise<boolean>
 
 /** open an address and wait until the app itself is on screen; false when a browser check never went away */
 export async function openPage(page: Page, url: string, timeout = 20000): Promise<boolean> {
-  await page.goto(url, { waitUntil: 'load', timeout })
+  try {
+    await page.goto(url, { waitUntil: 'load', timeout })
+  } catch (err) {
+    // a slow ad, font or live connection can keep the 'load' event from firing for a page that is already usable:
+    // carry on when the page is on screen, else try once more waiting only for the document
+    if (!/timeout/i.test(String((err as Error)?.message ?? err))) throw err
+    const usable = await page.evaluate(() => document.readyState !== 'loading' && (document.body?.innerText.trim().length ?? 0) > 20).catch(() => false)
+    if (!usable) await page.goto(url, { waitUntil: 'domcontentloaded', timeout: Math.max(timeout, 30000) })
+  }
   const through = await passInterstitial(page)
   await settle(page)
   return through
