@@ -5,7 +5,7 @@ import sharp from 'sharp'
 import type { Rect, Take } from '@shared/appRecon'
 import type { VideoSpec } from '@shared/spec'
 import { duck } from '../audio/mix'
-import { ffmpegBin, loudnorm, mixIn, SR, stereo, writeWav } from '../audio/pcm'
+import { ffmpegBin, loudnorm, mixIn, SR, stereo, writeWav, type Stereo } from '../audio/pcm'
 import { scoreMusic } from '../audio/score'
 import { filterPath } from '../footage/captions'
 import { displayAddress } from './detect'
@@ -82,9 +82,9 @@ const clock = (sec: number): string => {
 const assSafe = (s: string) => s.replace(/[{}]/g, '').replace(/\\/g, '/').trim()
 
 /** captions spread across the spoken part, 2–6 words at a time, plus a step marker for each beat */
-export function buildCaptions(beats: Array<{ start: number; end: number; voiceStart: number; voiceSec: number; text: string; chapter: string; index: number }>, W = 1920, H = 1080): string {
+export function buildCaptions(beats: Array<{ start: number; end: number; voiceStart: number; voiceSec: number; text: string; chapter: string; index: number }>, W = 1920, H = 1080, extras: Array<{ start: number; end: number; voiceStart: number; voiceSec: number; text: string }> = []): string {
   const events: string[] = []
-  for (const b of beats) {
+  for (const b of [...beats, ...extras.map((e) => ({ ...e, chapter: '', index: 0 }))]) {
     const words = b.text.split(/\s+/).filter(Boolean)
     const chunks: string[] = []
     let cur: string[] = []
@@ -101,7 +101,7 @@ export function buildCaptions(beats: Array<{ start: number; end: number; voiceSt
       events.push(`Dialogue: 0,${clock(at)},${clock(at + dur)},Cap,,0,0,0,,${assSafe(c)}`)
       at += dur
     })
-    events.push(`Dialogue: 1,${clock(b.start + 0.2)},${clock(b.end - 0.1)},Chip,,0,0,0,,{\\an6\\pos(${WIN.x + WIN.w - 22},${WIN.y + 23})\\fad(250,200)}  ${b.index}  ${assSafe(b.chapter)}  `)
+    if (b.index > 0) events.push(`Dialogue: 1,${clock(b.start + 0.2)},${clock(b.end - 0.1)},Chip,,0,0,0,,{\\an6\\pos(${WIN.x + WIN.w - 22},${WIN.y + 23})\\fad(250,200)}  ${b.index}  ${assSafe(b.chapter)}  `)
   }
   return [
     '[Script Info]', 'ScriptType: v4.00+', `PlayResX: ${W}`, `PlayResY: ${H}`, 'WrapStyle: 0', 'ScaledBorderAndShadow: yes', '',
@@ -219,6 +219,19 @@ function ffmpeg(args: string[], what: string): void {
   if (r.status !== 0) throw new Error(`${what} failed: ${r.stderr?.toString().slice(0, 600)}`)
 }
 
+/** an AI-made clip that cuts into the film, with the line said over it */
+export interface InsertPlan {
+  /** before the first page, straight after a beat, or after the last one */
+  at: { kind: 'start' } | { kind: 'end' } | { kind: 'afterBeat'; beat: number }
+  file: string
+  /** length of the clip file, in seconds */
+  clipSec: number
+  text: string
+  pcm: Float32Array
+  /** small label drawn on the clip */
+  tag?: string
+}
+
 export interface ProduceInput {
   dir: string
   framesList: string
@@ -237,12 +250,18 @@ export interface ProduceInput {
   keep?: boolean
   /** colours taken from the person's reference pictures */
   look?: { backdrop: [string, string]; accent: string }
+  /** AI-made clips that cut in between the pages */
+  inserts?: InsertPlan[]
+  /** a track made by AI for this film (decoded); null or a failure keeps the built-in score */
+  aiMusic?: (info: { cuts: number[]; total: number }) => Promise<Stereo | null>
+  log?: (message: string) => void
 }
 
 export interface ProduceResult {
   file: string
   durationSec: number
   captionsFile: string
+  musicSource: 'ai' | 'builtin'
 }
 
 export async function produce(inp: ProduceInput): Promise<ProduceResult> {
@@ -256,17 +275,12 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   const CX = track(keys.map((k) => ({ t: k.t, v: k.cx })))
   const CY = track(keys.map((k) => ({ t: k.t, v: k.cy })))
 
-  // ---- the film's clock: [intro card] ⟶ demo ⟶ [closing card], each crossfaded into the next
+  // ---- the film's clock: [intro card] ⟶ demo (cut where an AI clip goes) ⟶ [closing card], each crossfaded into the next
   const X = 0.6
-  const spoken = (c: CardPlan) => (c.pcm.length ? c.pcm.length / SR : readSec(c.text))
+  const spoken = (c: { pcm: Float32Array; text: string }) => (c.pcm.length ? c.pcm.length / SR : readSec(c.text))
   const introSec = inp.intro ? Math.max(4.2, spoken(inp.intro) + 0.5 + 0.9) : 0
-  const demoStart = inp.intro ? introSec - X : 0
-  const demoEnd = demoStart + demo
-  const outroStart = inp.outro ? demoEnd - X : demoEnd
-  const outroSec = inp.outro ? Math.max(spoken(inp.outro) + 0.5 + 1.8, inp.targetSec ? inp.targetSec - outroStart : 0) : 0
-  const total = inp.outro ? outroStart + outroSec : demoEnd
 
-  // ---- timing of the demo's beats on the film's clock
+  // ---- timing of the demo's beats on the demo's own clock
   const timed = inp.take.beats.map((b, i) => {
     const plan = inp.beats.find((p) => p.beat === b.beat)
     const start = Math.max(0, b.startSec - inp.offsetSec)
@@ -274,18 +288,95 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
     return { b, plan, start, end, voiceStart: start + 0.45, voiceSec: plan ? (plan.pcm.length ? plan.pcm.length / SR : readSec(plan.text)) : 0, index: i + 1 }
   })
 
+  // ---- where each AI clip cuts in: a time on the demo's clock, always at the start of a beat
+  const MIN_PART = 0.4
+  const cutAt = (p: InsertPlan): number => {
+    if (p.at.kind === 'start') return 0
+    if (p.at.kind === 'end') return demo
+    const beat = p.at.beat
+    const i = timed.findIndex((t) => t.b.beat === beat)
+    return i < 0 ? demo : (timed[i + 1]?.start ?? demo)
+  }
+  const wanted = (inp.inserts ?? []).map((p, k) => ({ p, k, t: cutAt(p) })).sort((a, b) => a.t - b.t || a.k - b.k)
+  type Item = { kind: 'intro' } | { kind: 'demo'; a: number; b: number; afterInsert: boolean } | { kind: 'ins'; p: InsertPlan } | { kind: 'outro' }
+  const items: Item[] = []
+  if (inp.intro) items.push({ kind: 'intro' })
+  let cur = 0
+  let afterInsert = false
+  const tail: InsertPlan[] = []
+  for (const w of wanted) {
+    if (w.t >= demo - MIN_PART) { tail.push(w.p); continue }
+    if (w.t > cur + MIN_PART) {
+      items.push({ kind: 'demo', a: cur, b: w.t, afterInsert })
+      cur = w.t
+    }
+    items.push({ kind: 'ins', p: w.p })
+    afterInsert = true
+  }
+  items.push({ kind: 'demo', a: cur, b: demo, afterInsert })
+  for (const p of tail) items.push({ kind: 'ins', p })
+  if (inp.outro) items.push({ kind: 'outro' })
+
+  const lengthOf = (it: Item): number => {
+    if (it.kind === 'intro') return introSec
+    if (it.kind === 'demo') return it.b - it.a
+    if (it.kind === 'ins') return Math.max(it.p.clipSec, spoken(it.p) + 0.5 + 0.9)
+    return 0
+  }
+  const starts: number[] = []
+  const durs: number[] = []
+  items.forEach((it, i) => {
+    const st = i === 0 ? 0 : starts[i - 1] + durs[i - 1] - X
+    starts.push(st)
+    durs.push(it.kind === 'outro' ? Math.max(spoken(inp.outro!) + 0.5 + 1.8, inp.targetSec ? inp.targetSec - st : 0) : lengthOf(it))
+  })
+  const total = starts.at(-1)! + durs.at(-1)!
+  const demoParts = items.map((it, i) => ({ it, st: starts[i] })).filter((x): x is { it: Extract<Item, { kind: 'demo' }>; st: number } => x.it.kind === 'demo')
+  /** a moment of the demo (its own clock) on the film's clock */
+  const film = (t: number): number => {
+    const part = [...demoParts].reverse().find((x) => x.it.a <= t + 1e-6) ?? demoParts[0]
+    return part.st + (t - part.it.a)
+  }
+  /** a beat that comes straight out of a clip waits for the cross-fade to finish before it is spoken */
+  const lead = (t: number): number => (demoParts.some((x) => x.it.afterInsert && Math.abs(x.it.a - t) < 1e-6 && x.it.a > 0) ? X + 0.1 : 0)
+  const filmBeats = timed.map((t) => ({ ...t, fStart: film(t.start), fVoice: film(t.start) + 0.45 + lead(t.start) }))
+
   // ---- sound: voice, then music ducked under it
   const voice = new Float32Array(Math.ceil(total * SR))
   const lay = (pcm: Float32Array, at: number) => {
     const off = Math.round(at * SR)
     for (let i = 0; i < pcm.length && off + i < voice.length; i++) voice[off + i] += pcm[i]
   }
-  if (inp.intro) lay(inp.intro.pcm, 0.5)
-  for (const t of timed) if (t.plan) lay(t.plan.pcm, demoStart + t.voiceStart)
-  if (inp.outro) lay(inp.outro.pcm, outroStart + 0.5)
+  items.forEach((it, i) => {
+    if (it.kind === 'intro') lay(inp.intro!.pcm, 0.5)
+    if (it.kind === 'ins') lay(it.p.pcm, starts[i] + 0.5)
+    if (it.kind === 'outro') lay(inp.outro!.pcm, starts[i] + 0.5)
+  })
+  for (const t of filmBeats) if (t.plan) lay(t.plan.pcm, t.fVoice)
   const spec = { title: inp.title, musicMood: inp.musicMood ?? 'corporate', design: { look: 'social' } } as unknown as VideoSpec
-  const cuts = [0, ...(inp.intro ? [demoStart] : []), ...timed.map((t) => demoStart + t.start), ...(inp.outro ? [outroStart] : [])]
-  const music = scoreMusic(spec, [...new Set(cuts.map((c) => Math.round(c * 100) / 100))].sort((a, b) => a - b), total)
+  const cuts = [...new Set([0, ...starts, ...filmBeats.map((t) => t.fStart)].map((c) => Math.round(c * 100) / 100))].sort((a, b) => a - b)
+  let music: Stereo | null = null
+  let musicSource: 'ai' | 'builtin' = 'builtin'
+  if (inp.aiMusic) {
+    try {
+      const m = await inp.aiMusic({ cuts, total })
+      if (m && m.l.length > SR) {
+        // the track is fitted to the film: cut at the end with a short fade, or left to finish early
+        music = stereo(total)
+        const n = Math.min(music.l.length, m.l.length)
+        const fade = Math.min(n, Math.round(1.5 * SR))
+        for (let i = 0; i < n; i++) {
+          const g = m.l.length > music.l.length && i > n - fade ? (n - i) / fade : 1
+          music.l[i] = m.l[i] * g
+          music.r[i] = m.r[i] * g
+        }
+        musicSource = 'ai'
+      }
+    } catch (err) {
+      inp.log?.(`The AI music could not be used (${(err as Error).message.slice(0, 100)}), so the built-in score plays instead.`)
+    }
+  }
+  if (!music) music = scoreMusic(spec, cuts, total)
   if (music) duck(music, voice)
   const bus = stereo(total)
   mixIn(bus, voice, 0, 0.9)
@@ -296,7 +387,8 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   loudnorm(wav, mix)
 
   // ---- picture: camera + captions
-  const ass = buildCaptions(timed.map((t) => ({ start: demoStart + t.start, end: demoStart + t.end, voiceStart: demoStart + t.voiceStart, voiceSec: t.voiceSec, text: t.plan?.text ?? '', chapter: t.plan?.chapter ?? '', index: t.index })))
+  const insertCaptions = items.flatMap((it, i) => (it.kind === 'ins' && it.p.text ? [{ start: starts[i], end: starts[i] + durs[i], voiceStart: starts[i] + 0.5, voiceSec: spoken(it.p), text: it.p.text }] : []))
+  const ass = buildCaptions(filmBeats.map((t) => ({ start: t.fStart, end: t.fStart + (t.end - t.start), voiceStart: t.fVoice, voiceSec: t.voiceSec, text: t.plan?.text ?? '', chapter: t.plan?.chapter ?? '', index: t.index })), 1920, 1080, insertCaptions)
   const captionsFile = join(inp.dir, 'captions.ass')
   writeFileSync(captionsFile, ass)
   const x = `min(max((${CX})*iw-iw/zoom/2,0),iw-iw/zoom)`
@@ -314,22 +406,43 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
     `[1:v][pa]overlay=${PAGE.x}:${PAGE.y}:shortest=1:format=auto${addr},${norm},trim=duration=${num(demo)},setpts=PTS-STARTPTS[demo]`
   ]
   const inputs = ['-i', raw, '-loop', '1', '-framerate', '30', '-i', bg, '-loop', '1', '-framerate', '30', '-i', mask, '-i', mix]
-  let last = 'demo'
   let n = 4
-  if (inp.intro) {
-    inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-intro', inp.intro, 0.3, inp.look?.backdrop))
-    const t = cardText(inp.intro)
-    graph.push(`[${n}:v]${norm}${t ? ',' + t : ''},trim=duration=${num(introSec)},setpts=PTS-STARTPTS[intro]`)
-    graph.push(`[intro][${last}]xfade=transition=fade:duration=${X}:offset=${num(introSec - X)}[v1]`)
-    last = 'v1'
-    n++
+  // the demo is cut into parts wherever a clip goes in
+  if (demoParts.length > 1) {
+    graph.push(`[demo]split=${demoParts.length}${demoParts.map((_, k) => `[m${k}]`).join('')}`)
+    demoParts.forEach((x2, k) => graph.push(`[m${k}]trim=start=${num(x2.it.a)}:end=${num(x2.it.b)},setpts=PTS-STARTPTS,${norm}[dp${k}]`))
   }
-  if (inp.outro) {
-    inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-outro', inp.outro, 0.7, inp.look?.backdrop))
-    const t = cardText(inp.outro)
-    graph.push(`[${n}:v]${norm}${t ? ',' + t : ''},fade=t=out:st=${num(outroSec - 0.8)}:d=0.8,trim=duration=${num(outroSec)},setpts=PTS-STARTPTS[outro]`)
-    graph.push(`[${last}][outro]xfade=transition=fade:duration=${X}:offset=${num(outroStart)}[v2]`)
-    last = 'v2'
+  const labels: string[] = []
+  let partNo = 0
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (it.kind === 'intro') {
+      inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-intro', inp.intro!, 0.3, inp.look?.backdrop))
+      const t = cardText(inp.intro!)
+      graph.push(`[${n}:v]${norm}${t ? ',' + t : ''},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[intro]`)
+      labels.push('intro')
+      n++
+    } else if (it.kind === 'demo') {
+      labels.push(demoParts.length > 1 ? `dp${partNo++}` : 'demo')
+    } else if (it.kind === 'ins') {
+      inputs.push('-i', it.p.file)
+      const tag = FONT_BOLD && it.p.tag ? `,drawtext=fontfile='${filterPath(FONT_BOLD)}':text='${dt(it.p.tag)}':x=44:y=38:fontsize=24:fontcolor=white@0.92:box=1:boxcolor=black@0.4:boxborderw=11:enable='between(t,0.5,${num(Math.max(1, durs[i] - 0.5))})'` : ''
+      const hold = Math.max(0, durs[i] - it.p.clipSec) + 0.2
+      graph.push(`[${n}:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,${norm},tpad=stop_mode=clone:stop_duration=${num(hold)},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS${tag}[in${i}]`)
+      labels.push(`in${i}`)
+      n++
+    } else {
+      inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-outro', inp.outro!, 0.7, inp.look?.backdrop))
+      const t = cardText(inp.outro!)
+      graph.push(`[${n}:v]${norm}${t ? ',' + t : ''},fade=t=out:st=${num(durs[i] - 0.8)}:d=0.8,trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[outro]`)
+      labels.push('outro')
+      n++
+    }
+  }
+  let last = labels[0]
+  for (let i = 1; i < labels.length; i++) {
+    graph.push(`[${last}][${labels[i]}]xfade=transition=fade:duration=${X}:offset=${num(starts[i])}[x${i}]`)
+    last = `x${i}`
   }
   graph.push(`[${last}]subtitles='${filterPath(captionsFile)}',format=yuv420p[v]`)
   const script = join(inp.dir, 'graph.txt')
@@ -340,5 +453,5 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
     'final video'
   )
   if (!inp.keep) rmSync(wav, { force: true })
-  return { file, durationSec: total, captionsFile }
+  return { file, durationSec: total, captionsFile, musicSource }
 }

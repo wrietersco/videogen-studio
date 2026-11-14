@@ -15,7 +15,7 @@ import type { ExploredStep, Exploration, Interaction, Visit } from './explore'
  * steps.
  */
 
-export type BeatKind = 'login-open' | 'login-user' | 'login-pass' | 'login-submit' | 'login' | 'page' | 'result' | 'detail' | 'logout'
+export type BeatKind = 'login-open' | 'login-user' | 'login-pass' | 'login-submit' | 'login' | 'page' | 'result' | 'detail' | 'logout' | 'step'
 
 export interface BeatFacts {
   beat: number
@@ -28,6 +28,8 @@ export interface BeatFacts {
   fallback: string
   /** the same, in the tone of a launch film */
   launchFallback?: string
+  /** the person asked for this to be explained: the line may be longer and must draw on the facts */
+  long?: boolean
 }
 
 export interface PlanInput {

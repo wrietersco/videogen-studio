@@ -7,10 +7,17 @@ import { enforcePolicy, launch } from './browser'
 import { scrubMap } from './detect'
 import { parseDirectives, readUseCase } from './directives'
 import { checkCompatibility, explore, openPage, passInterstitial, settle, type Depth, type Exploration } from './explore'
-import { narrate, type LaunchInfo } from './narrate'
+import { narrate, voiceLine, type LaunchInfo } from './narrate'
 import { planBeats, type Plan } from './planner'
 import { interpretGuardrails, PolicyGate, type RestrictionChecks } from './policy'
-import { produce } from './produce'
+import { produce, type InsertPlan } from './produce'
+import { performScript, scriptPlan, type ScriptOutcome } from './script'
+import { parseStepScript } from './stepScript'
+import { chooseMusic, clipSeconds, parseMediaAsk, planMedia, withStyle, withoutMediaSentences, type Placement } from './aiMedia'
+import { musicBrief } from '../audio/cue'
+import { decodeStereo } from '../audio/pcm'
+import { probe } from '../assets/probe'
+import type { VideoSpec } from '@shared/spec'
 import { FrameRecorder, prepare, runPlaybook } from './recorder'
 import type { RedactionConfig } from './redact'
 import { buildAppMap, scoutPage } from './scout'
@@ -27,6 +34,14 @@ import { lookFromPalette } from './style'
  * sign-in counts as the first of at most two sign-in attempts per run; the
  * recording's own sign-in is the second.
  */
+
+/** what the AI media models can do for this run (supplied by the app; absent = the free engine only) */
+export interface MediaTools {
+  /** one clip of this many whole seconds (3 to 10); resolves to the file */
+  clip(prompt: string, seconds: number): Promise<{ file: string; durationSec?: number }>
+  /** one finished track (an audio file's bytes) for this brief */
+  music(brief: string): Promise<Buffer>
+}
 
 export type Stage = 'explore' | 'plan' | 'script' | 'record' | 'produce'
 
@@ -68,6 +83,11 @@ export interface RunInput {
   reuse?: Plan
   /** the person can press Take over while the app is being explored */
   control?: { takeover: boolean }
+  /**
+   * AI-made supporting media. `clips`: the person ticked "AI video clips" (one opening clip is added when they wrote no request);
+   * `music`: the person ticked "AI music". Sentences in the typed words that ask for an AI video are carried out whenever `tools` exist.
+   */
+  media?: { tools: MediaTools | null; clips: boolean; music: boolean }
 }
 
 export interface RunHooks {
@@ -95,6 +115,10 @@ export interface RunOutput {
   runDir: string
   /** what was taken from the website's own branding, in plain words */
   brandNotes?: string[]
+  /** what happened with AI clips and music, in plain words */
+  mediaNotes?: string[]
+  aiClips?: number
+  aiMusic?: boolean
 }
 
 export class RunCancelled extends Error {
@@ -117,6 +141,9 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
   const secrets = inp.vault ? [vault.password, vault.username] : []
   const redaction: RedactionConfig = { selectors: [], values: inp.vault ? [vault.password, ...(inp.revealUsername ? [] : [vault.username])] : [], privacy: !!guardrails.privacyMode }
   const scoutDir = join(inp.runDir, 'scout')
+  // sentences that ask for AI video are instructions for the media step, never steps to perform on the app
+  const ask = parseMediaAsk(inp.context)
+  const ctxClean = withoutMediaSentences(inp.context)
   const reveal = !!inp.revealUsername
 
   const browser = await launch({ userDataDir: join(inp.runDir, 'profile'), headless: inp.signIn !== 'self' })
@@ -246,8 +273,12 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       // an app that sends a signed-in person elsewhere is left where it put them
     }
 
-    const directives = inp.reuse ? [] : parseDirectives(inp.context)
-    const scripted = directives.some((d) => d.kind === 'type') || (directives.length > 0 && /->|→|=>|⇒|➜|>>/.test(inp.context))
+    // a numbered list of steps is a script: it is performed exactly, and nothing else is explored
+    const script = inp.reuse ? null : parseStepScript(ctxClean)
+    let scriptOut: ScriptOutcome | null = null
+    let beganAt = ''
+    const directives = inp.reuse || script ? [] : parseDirectives(ctxClean)
+    const scripted = directives.some((d) => d.kind === 'type') || (directives.length > 0 && /->|→|=>|⇒|➜|>>/.test(ctxClean))
     if (directives.length) say(`Steps you asked for: ${directives.map((d) => (d.kind === 'open' ? `open "${d.target}"` : `type "${d.text}" into "${d.into || 'the search box'}"`)).join(', then ')}`)
 
     let exploration: Exploration = { visits: [], actions: 0, stoppedBy: 'done', elapsedMs: 0 }
@@ -281,9 +312,19 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       reuseNotes.push(...(rr.repairs?.length ? rr.repairs.map((r) => `Repaired: ${r}`) : ['The saved steps still work, so none were changed.']))
       hooks.progress('explore', rr.repairs?.length ? `${rr.repairs.length} saved step(s) needed repair` : 'All saved steps still work')
       await settle(page)
+    } else if (script) {
+      await pause()
+      hooks.progress('explore', `Doing your ${script.items.filter((i) => !i.login).length} steps, exactly as written`)
+      beganAt = page.url()
+      scriptOut = await performScript({ page, gate, script, log: say, signal: inp.signal })
+      if (scriptOut.failure) {
+        if (inp.signal?.aborted) throw new RunCancelled()
+        throw new Error(scriptOut.failure)
+      }
+      pages.push(await scoutPage(page, scoutDir, 'p-steps-end', { revealIdentifiers: reveal }))
     } else {
       hooks.progress('explore', 'Exploring the app')
-      exploration = await explore({ page, gate, startUrl: inp.startUrl, outDir: scoutDir, depth: inp.depth, revealIdentifiers: reveal, log: say, signal: inp.signal, pause, directives, scripted, topics: readUseCase(inp.context).topics })
+      exploration = await explore({ page, gate, startUrl: inp.startUrl, outDir: scoutDir, depth: inp.depth, revealIdentifiers: reveal, log: say, signal: inp.signal, pause, directives, scripted, topics: readUseCase(ctxClean).topics })
       pages.push(...exploration.visits.map((v) => v.page))
       // a typed step that could not be done stops the run here, before anything is recorded or paid for
       const missed = (exploration.asked ?? []).filter((a) => !a.done)
@@ -297,17 +338,19 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     const safeMap = scrubMap(map, { values: secrets, kinds: guardrails.privacyMode ? undefined : ['token', 'card', 'ssn', 'secret'] })
     writeFileSync(join(inp.runDir, 'app-map.json'), JSON.stringify(safeMap, null, 2))
     const cookies = inp.signIn === 'self' ? await ctx.cookies() : []
-    hooks.progress('explore', `Explored ${exploration.visits.length} page(s) with ${exploration.actions} action(s)`)
+    hooks.progress('explore', scriptOut ? `Did ${scriptOut.results.filter((r) => !r.item.login).length} step(s) with ${scriptOut.actions} action(s)` : `Explored ${exploration.visits.length} page(s) with ${exploration.actions} action(s)`)
 
     // ------------------------------------------------------------ plan
     hooks.progress('plan', 'Choosing what the video shows')
     let plan: Plan = reused
       ? { ...reused, notes: [...reused.notes.filter((n) => !n.startsWith('Repaired: ') && !n.startsWith('The saved steps') && !/explored page/.test(n)), ...reuseNotes] }
-      : planBeats({ map: safeMap, exploration, context: inp.context, startUrl: inp.startUrl, targetSec: inp.targetSec ?? inp.launch?.targetSec, hasVault: useVault, secrets, scripted })
+      : scriptOut && script
+        ? scriptPlan({ script, outcome: scriptOut, map: safeMap, startUrl: inp.startUrl, beganAt, hasVault: useVault, secrets })
+        : planBeats({ map: safeMap, exploration, context: ctxClean, startUrl: inp.startUrl, targetSec: inp.targetSec ?? inp.launch?.targetSec, hasVault: useVault, secrets, scripted })
     writeFileSync(join(inp.runDir, 'playbook.json'), JSON.stringify(plan.playbook, null, 2))
     writeFileSync(join(inp.runDir, 'beats.json'), JSON.stringify(plan.beats, null, 2))
     const base: RunOutput = {
-      plan, map: safeMap, compat, stoppedBy: exploration.stoppedBy, pages: exploration.visits.length, actions: exploration.actions,
+      plan, map: safeMap, compat, stoppedBy: exploration.stoppedBy, pages: scriptOut ? scriptOut.results.length : exploration.visits.length, actions: exploration.actions,
       blockedHosts: gate.blockedHosts(), enforced, advisory, redactionMisses: 0, runDir: inp.runDir, brandNotes: site?.notes ?? []
     }
     if (inp.stopAfter === 'explore' || inp.stopAfter === 'plan') return base
@@ -322,7 +365,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
 
     // ------------------------------------------------------------ script
     hooks.progress('script', 'Writing and voicing the script')
-    const narration = await narrate({ chat: inp.chat, speech: inp.speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: inp.context, secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, dir: inp.runDir, say })
+    const narration = await narrate({ chat: inp.chat, speech: inp.speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: ctxClean, secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, dir: inp.runDir, say })
     // a result the person asked to see stays on screen long enough to be taken in, whatever the narration length
     for (const b of plan.beats) if ((b.kind === 'result' || b.kind === 'detail') && (narration.minSec.get(b.beat) ?? 0) < RESULT_HOLD_SEC) narration.minSec.set(b.beat, RESULT_HOLD_SEC)
     check()
@@ -352,8 +395,48 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     if (inp.stopAfter === 'record') return { ...base, plan, redactionMisses: 0 }
     check()
 
+    // ------------------------------------------------------------ AI media (only now: the recording is verified, so nothing is paid for in vain)
+    const mediaNotes: string[] = []
+    const inserts: InsertPlan[] = []
+    const tools = inp.media?.tools ?? null
+    const askedClips = ask.requests.length > 0
+    const lengthSec = inp.targetSec ?? inp.launch?.targetSec ?? 44
+    if (ask.declined) mediaNotes.push('You wrote that you do not want an AI video, so none was made.')
+    else if (askedClips && !tools) mediaNotes.push('You asked for an AI video, but AI media is not available for this video (the AI option is off, the plan does not include it, or no Gemini key is set), so it was made without one.')
+    else if (inp.media?.clips && !tools) mediaNotes.push('AI video clips were ticked, but AI media is not available for this video, so it was made without them.')
+    if (tools && !ask.declined && (askedClips || inp.media?.clips)) {
+      hooks.progress('produce', 'Making AI video clips')
+      const sec = clipSeconds(lengthSec)
+      const planned = await planMedia({ chat: inp.chat, requests: ask.requests, auto: !!inp.media?.clips, appName: displayHost(inp.startUrl), context: ctxClean, mode: inp.mode, secrets, say })
+      const tone = inp.mode === 'launch' ? 'Confident, upbeat product-launch announcer. Warm, energetic, with a clear sense of occasion, at a brisk but natural pace.' : 'Calm, clear, friendly product-demo narrator at an unhurried pace.'
+      const middle = (): number => plan.beats[Math.max(0, Math.ceil(plan.beats.length / 2) - 1)]?.beat ?? 0
+      const where = (p: Placement): InsertPlan['at'] => (p === 'start' ? { kind: 'start' } : p === 'end' ? { kind: 'end' } : { kind: 'afterBeat', beat: middle() })
+      let n = 0
+      for (const c of planned) {
+        check()
+        say(`AI clip ${n + 1} of ${planned.length} (${sec}s): ${c.said.slice(0, 100)}`)
+        try {
+          const made = await tools.clip(c.prompt, sec)
+          const clipSec = made.durationSec ?? probe(made.file).durationSec ?? sec
+          const pcm = await voiceLine(narration.plans.some((p) => p.pcm.length) ? inp.speech : null, join(inp.runDir, 'final'), `voice-clip-${n}`, c.line, tone).catch(() => new Float32Array(0))
+          inserts.push({ at: where(c.placement), file: made.file, clipSec, text: c.line, pcm, tag: 'AI-generated illustration' })
+          mediaNotes.push(`AI clip (${c.placement === 'start' ? 'at the start' : c.placement === 'end' ? 'at the end' : 'in the middle'}): ${c.said.slice(0, 120)}`)
+          n++
+        } catch (err) {
+          if (err instanceof RunCancelled || inp.signal?.aborted) throw err
+          mediaNotes.push(`An AI clip could not be made (${String((err as Error)?.message ?? err).slice(0, 140)}), so the video goes on without it.`)
+        }
+      }
+    }
+    let musicChoice: Awaited<ReturnType<typeof chooseMusic>> | undefined
+    if (tools && inp.media?.music) {
+      musicChoice = await chooseMusic({ chat: inp.chat, context: inp.context, mode: inp.mode, targetSec: lengthSec, styleMood: inp.musicMood, styleDirection: inp.styleDirection, secrets, say })
+      say(`AI music: ${musicChoice.mood}${musicChoice.style ? ` — ${musicChoice.style}` : ''} (${musicChoice.why})`)
+    } else if (inp.media?.music) mediaNotes.push('AI music was ticked, but it is not available for this video (the AI option is off, the plan does not include it, or no Gemini key is set), so the built-in score plays.')
+    check()
+
     // ------------------------------------------------------------ produce
-    hooks.progress('produce', 'Making the video')
+    hooks.progress('produce', inserts.length || musicChoice ? 'Making the video, with AI media' : 'Making the video')
     const res = await produce({
       dir: join(inp.runDir, 'final'),
       framesList: framed.listFile,
@@ -361,14 +444,29 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       take,
       beats: narration.plans,
       title: inp.mode === 'launch' && inp.launch ? `${inp.launch.feature} launch` : plan.playbook.title,
-      musicMood: inp.musicMood ?? (inp.mode === 'launch' ? 'upbeat' : 'corporate'),
+      musicMood: musicChoice?.mood ?? inp.musicMood ?? (inp.mode === 'launch' ? 'upbeat' : 'corporate'),
+      inserts,
+      log: say,
+      aiMusic:
+        musicChoice && tools
+          ? async ({ total, cuts }) => {
+              const stub = { musicMood: musicChoice!.mood, style: 'social', design: { look: 'social' }, voiceover: narration.plans.some((p) => p.pcm.length) ? [1] : [], narration: [] } as unknown as VideoSpec
+              const brief = musicBrief(stub, cuts, total)
+              if (!brief) return null
+              const audio = await tools.music(withStyle(brief, musicChoice!.style))
+              const file = join(inp.runDir, 'final', 'ai-music.mp3')
+              writeFileSync(file, audio)
+              return decodeStereo(file)
+            }
+          : undefined,
       intro: narration.intro,
       outro: narration.outro,
       targetSec: inp.mode === 'launch' ? inp.launch?.targetSec : undefined,
       keep: false,
       look
     })
-    return { ...base, plan, video: res.file, durationSec: res.durationSec, redactionMisses: take.redactionMisses }
+    if (musicChoice) mediaNotes.push(res.musicSource === 'ai' ? `AI music: ${musicChoice.mood} — ${musicChoice.why}` : 'The AI music could not be used, so the built-in score plays.')
+    return { ...base, plan, video: res.file, durationSec: res.durationSec, redactionMisses: take.redactionMisses, mediaNotes, aiClips: inserts.length, aiMusic: res.musicSource === 'ai' }
   } finally {
     inp.signal?.removeEventListener('abort', onAbort)
     await browser.close().catch(() => undefined)

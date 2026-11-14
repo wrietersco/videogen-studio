@@ -9,6 +9,7 @@ import type { PolicyGate } from './policy'
 import { checkSecretFill } from './detect'
 import { classifyField } from './sensitivity'
 import { redactionInitScript, cursorInitScript, verifyScript, type RedactionConfig } from './redact'
+import { findElement, scrollArea } from './resolve'
 
 /**
  * Recorder — a screencast of the page, plus a timeline of what was done when.
@@ -277,9 +278,21 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
 
   const repairs: string[] = []
   const dropped = new Set<string>()
-  const steps = o.repair ? playbook.steps.map((st) => ({ ...st, expect: st.expect ? { ...st.expect } : undefined })) : playbook.steps
+  // the steps are copied: finding a control again by its description changes the copy, never the saved playbook
+  const steps = playbook.steps.map((st) => ({ ...st, expect: st.expect ? { ...st.expect } : undefined }))
+  let lastSel: string | undefined
   /** where a step's target is now; 'gone' (repair mode only) when it cannot be found any more */
   const locate = async (step: Step): Promise<Rect | 'gone' | null> => {
+    // a step the person wrote is found by what they called the control, so a page that moved or redrew still works
+    if (step.find) {
+      const { found } = await findElement(page, step.find, 8000)
+      if (found) {
+        step.selector = found.selector
+        const r0 = await rectOf(found.selector)
+        if (r0) return r0
+      }
+      if (!step.selector) return null
+    }
     const r = await rectOf(step.selector!)
     if (r || !o.repair) return r
     const fixed = await findByLabel(page, step)
@@ -309,7 +322,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           if (page.url() !== url) await page.goto(url, { waitUntil: 'load', timeout: 20000 })
           await page.mouse.move(mouse.x, mouse.y) // the pointer reappears on the new page
           say(step.id, `opened ${url}`)
-        } else if (step.kind === 'type' && step.selector) {
+        } else if (step.kind === 'type' && (step.selector || step.find)) {
           const found = await locate(step)
           if (found === 'gone') continue
           const r = found
@@ -320,7 +333,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           await sleep(220 * pace)
           // a stored secret goes only into the field it is for, on the app's own pages
           for (const m of (step.text ?? '').matchAll(/\{\{secret:(\w+)\}\}/g)) {
-            const h = await page.$eval(step.selector, (el) => {
+            const h = await page.$eval(step.selector!, (el) => {
               const i = el as HTMLInputElement
               const lab = i.labels && i.labels[0] ? i.labels[0].innerText : ''
               return { type: i.type || '', name: i.getAttribute('name') ?? '', id: i.id, label: lab || i.getAttribute('aria-label') || '', placeholder: i.getAttribute('placeholder') ?? '', autocomplete: i.getAttribute('autocomplete') ?? '' }
@@ -328,17 +341,21 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
             const fill = checkSecretFill({ secret: m[1], fieldKind: classifyField(h), pageAllowed: o.gate.hostAllowed(page.url()) })
             if (!fill.allow) return { ok: false, failure: `${step.id}: blocked — ${fill.reason}`, beats, navigations, log, redactionMisses: misses }
           }
+          // text the person wrote replaces what the box already holds
+          if (step.find) await page.evaluate((sel) => { const e = document.querySelector(sel) as HTMLInputElement | null; if (e && typeof e.select === 'function') e.select() }, step.selector!).catch(() => undefined)
           const value = resolve(step.text ?? '')
-          await page.keyboard.type(value, { delay: pace === 0 ? 0 : 70 })
+          await page.keyboard.type(value, { delay: pace === 0 ? 0 : step.find ? 55 : 70 })
+          if (step.find) await sleep(pace === 0 ? 300 : 900) // suggestions arrive a moment later
           say(step.id, `typed into "${step.label ?? step.selector}" (${value.length} characters)`)
+          lastSel = step.selector
           focusRect = r
           focusKind = step.focus
-        } else if (step.kind === 'click' && step.selector) {
+        } else if (step.kind === 'click' && (step.selector || step.find)) {
           const found = await locate(step)
           if (found === 'gone') continue
           const r = found
           if (!r) return { ok: false, failure: `${step.id}: could not find "${step.label ?? step.selector}"`, beats, navigations, log, redactionMisses: misses }
-          const info = await page.$eval(step.selector, (el) => {
+          const info = await page.$eval(step.selector!, (el) => {
             const h = el as HTMLElement
             const label = (h.innerText || (el as HTMLInputElement).value || el.getAttribute('aria-label') || el.getAttribute('title') || el.querySelector('img[alt]')?.getAttribute('alt') || el.querySelector('svg title')?.textContent || '').trim()
             const hint = [el.id, h.className && typeof h.className === 'string' ? h.className : '', el.getAttribute('name'), el.getAttribute('data-testid'), el.getAttribute('data-action')].filter(Boolean).join(' ')
@@ -355,6 +372,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           await Promise.race([nav, sleep(1800)])
           await page.mouse.move(mouse.x, mouse.y)
           say(step.id, `clicked "${label || step.label}" (${verdict.reason})`)
+          lastSel = step.selector
           focusRect = r
           focusKind = step.focus
         } else if (step.kind === 'press' && step.text) {
@@ -363,6 +381,12 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           await page.keyboard.press(step.text as 'Enter')
           await Promise.race([nav, sleep(1500)])
           say(step.id, `pressed ${step.text}`)
+        } else if (step.kind === 'scroll') {
+          // turn the wheel over the area the person named, as long as the explanation of it lasts
+          const need = (o.beatMinSec?.get(beat) ?? 0) * 1000
+          const budget = pace === 0 ? 0 : Math.max(3500, need - (Date.now() - startMs) - 1800)
+          const out = await scrollArea(page, step.find, step.text === 'up' ? 'up' : 'down', { near: lastSel, budgetMs: budget, instant: pace === 0, mouseTo: (x, y) => glide(x, y, 700) })
+          say(step.id, `scrolled ${step.text === 'up' ? 'up' : 'down'}${out.moved ? '' : ' (nothing moved)'}`)
         } else if (step.kind === 'wait' && step.intent === 'inspect') {
           // the result of what was just done: wait for it to finish drawing, then let the viewer see all of it
           await inspectView(page, pace)

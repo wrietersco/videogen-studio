@@ -929,6 +929,25 @@ if (headlessFile) {
         const accent = primary && luminanceOf(primary) >= 0.08 ? primary.replace('#', '') : undefined
         return { accent, logo: brands.logoPath(id, 'onDark') ?? undefined }
       },
+      // AI clips and music (Gemini Omni and Lyria): on a plan they need clips in the plan, with your own keys they need a Gemini key
+      media: (runId) => {
+        const ready = mode === 'plan' ? (planEnt()?.clipsPerVideo ?? 0) > 0 : mode !== 'programmatic' && keyOf('gemini').length > 0
+        if (!ready) return null
+        return {
+          clip: async (prompt, seconds) => {
+            const asset = await media.clipToLibrary(prompt, 'landscape', { fresh: true, projectId: `ar-${runId}`, durationSec: seconds })
+            const file = library.path(asset.id)
+            if (!file) throw new Error('The AI clip was made but could not be found in the library')
+            return { file, durationSec: asset.durationSec }
+          },
+          music: async (brief) => {
+            const gemini = providerRegistry.get('gemini') as unknown as GeminiProvider
+            const [p, m] = (effective.media.music || '').split(':')
+            const { audio } = await gemini.music(brief, p === 'gemini' && m ? m : 'lyria-3.5')
+            return audio
+          }
+        }
+      },
       // the free engine always works; the AI writer and voice follow the plan, like every other AI feature
       ai: () =>
         mode === 'programmatic'

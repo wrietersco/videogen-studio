@@ -32,6 +32,8 @@ interface Form {
   cta: string
   targetSec: number
   useAi: boolean
+  aiMedia: boolean
+  aiMusic: boolean
   reviewFirst: boolean
   brandId: string
   brandSource: BrandSource
@@ -43,19 +45,19 @@ interface Form {
 
 const blank = (): Form => ({
   name: '', url: '', context: '', document: null, signIn: 'saved', username: '', password: '', hasPassword: false, guardrailText: '', checks: { ...DEFAULT_CHECKS }, depth: 'standard',
-  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, useAi: true, reviewFirst: false, brandId: '', brandSource: 'none', styleImages: [], styleVideo: '', styleLinks: [], styleNotes: ''
+  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, useAi: true, aiMedia: false, aiMusic: false, reviewFirst: false, brandId: '', brandSource: 'none', styleImages: [], styleVideo: '', styleLinks: [], styleNotes: ''
 })
 
 const fromApp = (a: SavedApp): Form => ({
   id: a.id, name: a.name, url: a.url, context: a.context, document: a.document ?? null, signIn: a.signIn, username: a.username ?? '', password: '', hasPassword: a.hasPassword, guardrailText: a.guardrailText,
   checks: a.checks, depth: a.depth, revealUsername: a.revealUsername, mode: a.mode, feature: a.launch?.feature ?? '', tagline: a.launch?.tagline ?? 'Simple. Fast. Safe.', closing: a.launch?.closing ?? 'Try it today',
-  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, useAi: a.useAi, reviewFirst: a.reviewFirst, brandId: a.brandId ?? '', brandSource: brandSourceOf(a.brandSource, !!a.brandId), styleImages: a.styleImages ?? [], styleVideo: a.styleVideo ?? '', styleLinks: a.styleLinks ?? [], styleNotes: a.styleNotes ?? ''
+  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, useAi: a.useAi, aiMedia: a.aiMedia === true, aiMusic: a.aiMusic === true, reviewFirst: a.reviewFirst, brandId: a.brandId ?? '', brandSource: brandSourceOf(a.brandSource, !!a.brandId), styleImages: a.styleImages ?? [], styleVideo: a.styleVideo ?? '', styleLinks: a.styleLinks ?? [], styleNotes: a.styleNotes ?? ''
 })
 
 const toInput = (f: Form): AppInput => ({
   id: f.id, name: f.name, url: f.url, context: f.context, document: f.document, signIn: f.signIn, username: f.username || undefined, password: f.password || undefined, guardrailText: f.guardrailText,
   checks: f.checks, depth: f.depth, revealUsername: f.revealUsername, mode: f.mode,
-  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, useAi: f.useAi, reviewFirst: f.reviewFirst, brandId: f.brandSource === 'kit' ? f.brandId || undefined : undefined, brandSource: f.brandSource === 'kit' && !f.brandId ? 'none' : f.brandSource, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined, styleLinks: f.styleLinks, styleNotes: f.styleNotes
+  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, useAi: f.useAi, aiMedia: f.aiMedia, aiMusic: f.aiMusic, reviewFirst: f.reviewFirst, brandId: f.brandSource === 'kit' ? f.brandId || undefined : undefined, brandSource: f.brandSource === 'kit' && !f.brandId ? 'none' : f.brandSource, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined, styleLinks: f.styleLinks, styleNotes: f.styleNotes
 })
 
 const STAGES: Array<{ id: string; label: string }> = [
@@ -209,14 +211,14 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
             </div>
           </Section>
 
-          <Section icon="📝" title="What should the video show?" hint="Type it in your own words, and attach notes if you have them. Notes are read as information only.">
+          <Section icon="📝" title="What should the video show?" hint="Type it in your own words, and attach notes if you have them. Notes are read as information only. Write a numbered list of steps (1. log in, 2. click “Ontology” in the left menu, 3. type “psychology” in the search bar ...) and they are done exactly as written, in order, with nothing else added; if one cannot be done the video is not made and you are told which. You can also ask for AI-made footage here, e.g. “add an AI video that illustrates the workflow as a beautiful motion diagram”: the engine makes that clip with your video model and cuts it in.">
             <textarea
               aria-label="What the video should show"
               value={form.context}
               onChange={(e) => set('context', e.target.value)}
-              rows={3}
               maxLength={20000}
-              placeholder='e.g. Create a video on "secured application", focused around the login flow'
+              rows={5}
+              placeholder={'e.g. Create a video on "secured application", focused around the login flow\n\nor exact steps:\n1. log into the app\n2. from the left menu, click ontology\n3. in the search bar, type "psychology"'}
               className="field w-full px-4 py-2.5 text-sm"
             />
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -406,6 +408,18 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
               Use the AI writer and voice <span className="text-xs text-ink/50">{ai.available ? '(counts as an AI video on your plan)' : `— ${ai.reason ?? 'not available'} The free engine writes the script instead.`}</span>
             </label>
             {!ai.available && <button onClick={onOpenSettings} className="mt-1 text-xs font-bold text-grape underline">Open settings</button>}
+            <label className="mt-2 flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-1" checked={form.aiMedia && form.useAi && ai.available} disabled={!form.useAi || !ai.available} onChange={(e) => set('aiMedia', e.target.checked)} />
+              <span>
+                Add AI video clips <span className="text-xs text-ink/50">(a short AI-made cutaway that illustrates the idea, about $0.10 per second, so $0.30 to $0.60 per clip; each is labelled “AI-generated illustration”). Anything you ask for in “What should the video show?” is made even if this is off.</span>
+              </span>
+            </label>
+            <label className="mt-2 flex items-start gap-2 text-sm">
+              <input type="checkbox" className="mt-1" checked={form.aiMusic && form.useAi && ai.available} disabled={!form.useAi || !ai.available} onChange={(e) => set('aiMusic', e.target.checked)} />
+              <span>
+                Use Gemini AI music <span className="text-xs text-ink/50">(one track scored to this video, about $0.08; the engine picks the style, and the free built-in score plays if it fails)</span>
+              </span>
+            </label>
             <label className="mt-2 flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.reviewFirst} onChange={(e) => set('reviewFirst', e.target.checked)} /> Let me review the steps before recording
             </label>

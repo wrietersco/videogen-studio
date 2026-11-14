@@ -89,7 +89,20 @@ export const Guardrails = z.object({
 })
 export type Guardrails = z.infer<typeof Guardrails>
 
-export const StepKind = z.enum(['goto', 'type', 'click', 'press', 'wait', 'expect', 'handoff'])
+/** how to find a control by what a person would say about it: its name, where it sits, what it is next to */
+export const FindSpec = z.object({
+  /** the name the person used: visible text, an icon's tooltip or label, or the box's placeholder */
+  target: z.string(),
+  kind: z.enum(['click', 'type', 'scroll']),
+  region: z.enum(['left', 'right', 'top', 'bottom']).optional(),
+  /** words for the area it sits in: menu, search, pane, header, dropdown ... */
+  within: z.array(z.string()).optional(),
+  relation: z.object({ rel: z.enum(['above', 'below', 'leftOf', 'rightOf', 'near']), to: z.string() }).optional(),
+  role: z.enum(['suggestion', 'tab', 'icon']).optional()
+})
+export type FindSpec = z.infer<typeof FindSpec>
+
+export const StepKind = z.enum(['goto', 'type', 'click', 'press', 'wait', 'expect', 'handoff', 'scroll'])
 export const Step = z.object({
   id: z.string(),
   /** which narrated beat of the video this step belongs to */
@@ -110,6 +123,8 @@ export const Step = z.object({
       selectorVisible: z.string().optional()
     })
     .optional(),
+  /** a step the person wrote: the control is found again by this description each time, so a moved page still works */
+  find: FindSpec.optional(),
   /** the part of the screen the viewer should look at once this step is done */
   focus: z.enum(['target', 'form', 'banner', 'page']).optional()
 })

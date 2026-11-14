@@ -5,7 +5,7 @@ import { brandSourceOf, isAppId, isRunId, validateApp, type ReviewEdits, type Ru
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { applyReviewEdits, reviewBeats } from './planner'
 import { readStyle, youtubeReadiness } from './style'
-import { RunCancelled, runAppRecording, type RunHooks, type RunInput, type RunOutput } from './run'
+import { RunCancelled, runAppRecording, type MediaTools, type RunHooks, type RunInput, type RunOutput } from './run'
 import { meter } from '../usage/meter'
 import type { AppReconStore } from './store'
 import type { GeminiProvider } from '../providers/gemini'
@@ -22,6 +22,8 @@ export interface AppReconIpcDeps {
   providers: () => { chat: LLMProvider | null; speech: SpeechProvider | null }
   /** runs work that calls AI models as one AI video of the person's plan */
   aiJob: <T>(projectKey: string, title: string, fn: () => Promise<T>) => Promise<T>
+  /** the AI clip and music models for one run, or null when none is available (no Gemini key, or the plan has no AI media) */
+  media?: (runId: string) => MediaTools | null
   /** a brand kit's accent colour (hex without #) and logo file, when it has them */
   brand?: (id: string) => { accent?: string; logo?: string } | null
   /** the AI that reads YouTube references by link; null when no Gemini account is connected */
@@ -175,7 +177,8 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
       siteBrand: brandSourceOf(app.brandSource, !!app.brandId) === 'site',
       signal: abort.signal,
       reuse: savedPlan ?? undefined,
-      control
+      control,
+      media: { tools: useAi ? (d.media?.(rec.id) ?? null) : null, clips: app.aiMedia === true, music: app.aiMusic === true }
     }
     let styleNotes: string[] = []
     const exec = async () => {
@@ -219,7 +222,7 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
           advisory: out.advisory
         }
         if (out.video) d.store.savePlan(id, out.plan)
-        record.notes = [...record.notes, ...(out.brandNotes ?? []), ...styleNotes]
+        record.notes = [...record.notes, ...(out.brandNotes ?? []), ...(out.mediaNotes ?? []), ...styleNotes]
         d.store.saveRun(record)
         send({ kind: 'done', runId: rec.id, run: record })
         notify('Your app video is ready', app.name)

@@ -51,6 +51,10 @@ export interface AppInput {
   targetSec: number
   /** use the AI writer and voice when the plan allows; off = the free engine */
   useAi: boolean
+  /** allow AI-made video clips (a cutaway illustrating the idea). Sentences in "What should the video show?" that ask for an AI video are carried out whether or not this is ticked. Off by default: clips cost money. */
+  aiMedia?: boolean
+  /** use Gemini's AI music; the engine chooses the style itself. Off by default. */
+  aiMusic?: boolean
   reviewFirst: boolean
   /** a brand kit whose logo and colour go on a launch film's cards ('' = none) */
   brandId?: string
@@ -192,6 +196,8 @@ export function validateApp(raw: unknown): { ok: true; value: AppInput } | { ok:
       launch,
       targetSec: Number.isFinite(target) ? Math.max(20, Math.min(120, Math.round(target))) : 44,
       useAi: r.useAi !== false,
+      aiMedia: r.aiMedia === true,
+      aiMusic: r.aiMusic === true,
       reviewFirst: r.reviewFirst === true,
       brandId: typeof r.brandId === 'string' && /^[\w-]{1,60}$/.test(r.brandId) ? r.brandId : undefined,
       brandSource: brandSourceOf(r.brandSource, typeof r.brandId === 'string' && /^[\w-]{1,60}$/.test(r.brandId)),
