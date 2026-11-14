@@ -722,6 +722,12 @@ export class Orchestrator {
     targeted?: Map<string, string>,
     isometricOnly = false
   ): Promise<VideoSpec> {
+    // A resume that already has every coded scene needs no author or reviewer.
+    // Only reuse files in the project's custom-assets directory.
+    const isometricIds = isometricOnly
+      ? targeted ? [...targeted.keys()] : spec.scenes.filter(s => !spec.customVideos?.some(c => c.sceneId === s.id && /^assets\/custom\/[A-Za-z0-9._-]+\.mp4$/.test(c.file) && existsSync(join(this.store.dir(projectId), c.file)))).map(s => s.id)
+      : undefined
+    if (isometricIds && !isometricIds.length) return spec
     const provider = this.providerFor()
     const coder = this.codeProviderFor()
     const vision = this.visionProviderFor()
@@ -738,7 +744,7 @@ export class Orchestrator {
       return spec
     }
     const hasMedia = new Set(spec.crafts.filter((c) => c.media).map((c) => c.sceneId))
-    const ids = isometricOnly && targeted ? [...targeted.keys()] : isometricOnly ? spec.scenes.filter(s => !spec.customVideos?.some(c => c.sceneId === s.id && /^assets\/custom\/[A-Za-z0-9._-]+\.mp4$/.test(c.file) && existsSync(join(this.store.dir(projectId), c.file)))).map(s => s.id) : targeted ? [...targeted.keys()] : (await chooseCustomScenes(provider.id === 'mock' ? coder : provider, spec, prompt)).filter((id) => !hasMedia.has(id))
+    const ids = isometricIds ?? (targeted ? [...targeted.keys()] : (await chooseCustomScenes(provider.id === 'mock' ? coder : provider, spec, prompt)).filter((id) => !hasMedia.has(id)))
     if (!ids.length) return spec
     emit({ stage: 'custom', status: 'started', total: ids.length })
     const dir = this.store.dir(projectId)
