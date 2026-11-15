@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { CDPSession, Page } from 'puppeteer-core'
-import type { Playbook, Rect, Step, Take, TimelineBeat } from '@shared/appRecon'
+import { FILM, type Playbook, type Rect, type Step, type Take, type TimelineBeat } from '@shared/appRecon'
 import type { PolicyGate } from './policy'
 import { checkSecretFill } from './detect'
 import { classifyField } from './sensitivity'
@@ -201,7 +201,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
   const navigations: Take['navigations'] = /^https?:/.test(page.url()) ? [{ t: 0, url: page.url() }] : []
   page.on('framenavigated', (f) => { if (f === page.mainFrame()) navigations.push({ t: t(), url: f.url() }) })
   let misses = 0
-  let mouse = { x: 640, y: 360 }
+  let mouse = { x: FILM.width / 2, y: FILM.height / 2 }
   const say = (step: string, note: string) => {
     log.push({ t: t(), step, note })
     o.log?.(`  ${step}: ${note}`)

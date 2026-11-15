@@ -11,6 +11,11 @@ import { z } from 'zod'
  * the user for approval, versioned, and replayed without an AI in the loop.
  */
 
+/** the finished film's frame: the browser window opens at exactly this size, so the page is never squeezed */
+export const FILM = { width: 1920, height: 1080 }
+/** CSS pixel density of the frames recorded (4/3 keeps the frames at 2560×1440, the size they always were, so the pipeline stays just as fast) */
+export const REC_SCALE = 4 / 3
+
 export const FieldKind = z.enum(['password', 'otp', 'card', 'ssn', 'email', 'phone', 'person-name', 'address', 'username', 'search', 'text', 'other'])
 export type FieldKind = z.infer<typeof FieldKind>
 

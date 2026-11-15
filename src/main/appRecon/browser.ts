@@ -1,8 +1,13 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import electronModule from 'electron'
 import puppeteer, { type Browser, type Page } from 'puppeteer-core'
+import { FILM, REC_SCALE } from '@shared/appRecon'
 import type { PolicyGate } from './policy'
+
+/** BrowserWindow/screen only exist inside the Electron runtime; CLI/test runs get an empty stub. */
+const electron = electronModule as unknown as Partial<typeof import('electron')>
 
 /**
  * Our own Chromium, driven over the DevTools protocol. It never touches the
@@ -74,14 +79,81 @@ export async function launch(opts: LaunchOptions): Promise<Browser> {
   if (!executablePath) throw new Error('No Edge or Chrome was found on this computer, and the app has not downloaded its own browser yet. Install Edge or Chrome and try again.')
   const wantsWindow = opts.headless === false
   if (wantsWindow && !canShowWindow(executablePath)) throw new Error("“I’ll sign in myself” needs Edge or Chrome installed, because it opens a window for you. Install one, or save a login instead.")
-  return puppeteer.launch({
+  const width = opts.width ?? FILM.width
+  const height = opts.height ?? FILM.height
+  const args = ['--hide-scrollbars', '--force-color-profile=srgb', '--font-render-hinting=none', '--no-first-run', '--disable-extensions', '--lang=en-US', '--disable-features=Translate,MediaRouter']
+  if (wantsWindow) args.push(...windowArgs(width, height))
+  const browser = await puppeteer.launch({
     executablePath,
     // the downloaded headless-only browser uses the classic headless mode
     headless: wantsWindow ? false : /headless-shell/i.test(executablePath) ? 'shell' : true,
     userDataDir: opts.userDataDir,
-    defaultViewport: { width: opts.width ?? 1280, height: opts.height ?? 720, deviceScaleFactor: opts.scale ?? 2 },
-    args: ['--hide-scrollbars', '--force-color-profile=srgb', '--font-render-hinting=none', '--no-first-run', '--disable-extensions', '--lang=en-US', '--disable-features=Translate,MediaRouter']
+    defaultViewport: { width, height, deviceScaleFactor: opts.scale ?? REC_SCALE },
+    args
   })
+  if (wantsWindow) await fitWindow(browser, width, height)
+  return browser
+}
+
+/** how much bigger than the page a browser window is (title bar, toolbars, borders) */
+export interface ChromeDelta { w: number; h: number }
+
+/**
+ * First guess at that difference, deliberately generous: an oversized window
+ * shows the page at its true size with small blank margins, while a small
+ * window squeezes the whole film frame to fit. A second pass corrects it.
+ */
+export const CHROME_GUESS: ChromeDelta = { w: 48, h: 160 }
+
+/**
+ * The window size and position that shows a page of the given size at 1:1,
+ * once the real chrome is measured. Stays inside the screen's work area when
+ * one is known, so a small monitor simply fills the screen — the recorded
+ * film never depends on the window, only on the page itself.
+ */
+export function windowBounds(pageW: number, pageH: number, chrome: ChromeDelta, work?: { x: number; y: number; width: number; height: number }): { x: number; y: number; width: number; height: number } {
+  const width = Math.min(pageW + chrome.w, work?.width ?? pageW + chrome.w)
+  const height = Math.min(pageH + chrome.h, work?.height ?? pageH + chrome.h)
+  const x = (work?.x ?? 0) + Math.max(0, Math.round(((work?.width ?? width) - width) / 2))
+  const y = (work?.y ?? 0) + Math.max(0, Math.round(((work?.height ?? height) - height) / 2))
+  return { x, y, width, height }
+}
+
+/** the screen area windows should stay inside, when running inside the desktop app */
+function workArea(): { x: number; y: number; width: number; height: number } | undefined {
+  try {
+    const screen = electron.screen
+    if (typeof screen?.getPrimaryDisplay !== 'function') return undefined
+    return screen.getPrimaryDisplay().workArea
+  } catch {
+    return undefined
+  }
+}
+
+/** first-pass launch args: a generous, centred window so the page starts at its true size */
+function windowArgs(width: number, height: number): string[] {
+  const b = windowBounds(width, height, CHROME_GUESS, workArea())
+  return [`--window-position=${b.x},${b.y}`, `--window-size=${b.width},${b.height}`]
+}
+
+/**
+ * Second pass: with the page already shown 1:1, the real borders can be
+ * measured from the window itself and the frame fitted exactly.
+ * Cosmetic only — the recording captures the page, never the window.
+ */
+async function fitWindow(browser: Browser, width: number, height: number): Promise<void> {
+  try {
+    const page = (await browser.pages())[0]
+    if (!page) return
+    const chrome = await page.evaluate(() => ({ w: Math.max(0, window.outerWidth - window.innerWidth), h: Math.max(0, window.outerHeight - window.innerHeight) }))
+    const b = windowBounds(width, height, chrome, workArea())
+    const client = await page.createCDPSession()
+    const { windowId } = await client.send('Browser.getWindowForTarget')
+    await client.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal', left: b.x, top: b.y, width: b.width, height: b.height } })
+    await client.detach()
+  } catch {
+    /* sizing is best effort */
+  }
 }
 
 /** every request the page makes goes through the policy gate first */

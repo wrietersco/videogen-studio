@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Browser, Cookie, Page } from 'puppeteer-core'
-import type { AppMap, AppPage, Playbook, Step, Take } from '@shared/appRecon'
+import { FILM, REC_SCALE, type AppMap, type AppPage, type Playbook, type Step, type Take } from '@shared/appRecon'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { enforcePolicy, launch } from './browser'
 import { scrubMap } from './detect'
@@ -429,11 +429,11 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     if (!(await openPage(rpage, plan.playbook.startUrl, 30000))) throw new Error(BROWSER_CHECK)
     await new Promise((r) => setTimeout(r, 400))
     const rec = new FrameRecorder(rpage, join(inp.runDir, 'frames'))
-    await rec.start(2560, 1440)
+    await rec.start(FILM.width * REC_SCALE, FILM.height * REC_SCALE)
     const run = await runPlaybook(rpage, plan.playbook, { vault: { username: vault.username, password: vault.password }, gate, redaction: recRedaction, recorder: rec, beatMinSec: narration.minSec, pace: 1, log: say })
     await new Promise((r) => setTimeout(r, 1300))
     const framed = await rec.stop()
-    const take: Take = { fps: 30, viewport: { width: 1280, height: 720 }, durationSec: framed.durationSec, beats: run.beats, navigations: run.navigations, log: run.log, redactionMisses: run.redactionMisses }
+    const take: Take = { fps: 30, viewport: { ...FILM }, durationSec: framed.durationSec, beats: run.beats, navigations: run.navigations, log: run.log, redactionMisses: run.redactionMisses }
     writeFileSync(join(inp.runDir, 'take.json'), JSON.stringify({ ...take, frames: framed.frameCount }, null, 2))
     writeFileSync(join(inp.runDir, 'policy-audit.json'), JSON.stringify(gate.audit.filter((a) => !a.allow || a.kind === 'click'), null, 2))
     if (!run.ok) throw new Error(`Recording stopped: ${run.failure}`)
