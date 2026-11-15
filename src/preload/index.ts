@@ -167,6 +167,28 @@ const api = {
       return () => ipcRenderer.removeListener('apprec:event', listener)
     }
   },
+  market: {
+    state: () => ipcRenderer.invoke('market:state'),
+    save: (domain: string) => ipcRenderer.invoke('market:save', domain),
+    reanalyze: (id: string) => ipcRenderer.invoke('market:reanalyze', id),
+    siteMd: (id: string) => ipcRenderer.invoke('market:siteMd', id),
+    updateCard: (businessId: string, cardId: string, patch: unknown) => ipcRenderer.invoke('market:updateCard', businessId, cardId, patch),
+    addCard: (businessId: string) => ipcRenderer.invoke('market:addCard', businessId),
+    removeCard: (businessId: string, cardId: string) => ipcRenderer.invoke('market:removeCard', businessId, cardId),
+    moreIdeas: (businessId: string) => ipcRenderer.invoke('market:moreIdeas', businessId),
+    start: (businessId: string, cardId: string) => ipcRenderer.invoke('market:start', businessId, cardId),
+    cancel: () => ipcRenderer.invoke('market:cancel'),
+    play: (runId: string) => ipcRenderer.invoke('market:play', runId),
+    reveal: (runId: string) => ipcRenderer.invoke('market:reveal', runId),
+    runUsage: (runId: string) => ipcRenderer.invoke('market:runUsage', runId),
+    removeRun: (runId: string) => ipcRenderer.invoke('market:removeRun', runId),
+    remove: (id: string) => ipcRenderer.invoke('market:remove', id),
+    onEvent: (cb: (event: unknown) => void) => {
+      const listener = (_e: unknown, payload: unknown) => cb(payload)
+      ipcRenderer.on('market:event', listener)
+      return () => ipcRenderer.removeListener('market:event', listener)
+    }
+  },
   references: {
     inspect: (paths?: string[]) => ipcRenderer.invoke('refs:inspect', paths),
     readVideo: (req: unknown) => ipcRenderer.invoke('refs:readVideo', req)

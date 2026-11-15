@@ -47,3 +47,5 @@ export const builtinPackDir = resolve(appRoot, 'resources', 'asset-pack')
 export const footageDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'footage') : resolve(appRoot, 'footage')
 /** recorded apps: saved apps, their sealed logins, and every run (scout notes, playbook, finished video) */
 export const appReconDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'app-recordings') : resolve(appRoot, 'app-recordings')
+/** business profiles: the site read, the brand taken from it, the video cards and their films */
+export const marketingDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'business-profiles') : resolve(appRoot, 'business-profiles')

@@ -22,11 +22,13 @@ import { applyAutopilot, decide, decideCreative, honorShape } from './autopilot'
 import { enhancePrompt, type EnhanceRequest } from './promptEnhancer'
 import { PromptTemplateStore, type TemplateInput } from './store/promptTemplates'
 import { ensureBrowser } from './rendererService/hyperframes'
-import { projectsDir, appRoot, libraryDir, builtinPackDir, footageDir, brandDir, appReconDir } from './paths'
+import { projectsDir, appRoot, libraryDir, builtinPackDir, footageDir, brandDir, appReconDir, marketingDir } from './paths'
 import { AppReconStore } from './appRecon/store'
+import { MarketingStore } from './marketing/store'
 import type { GeminiProvider } from './providers/gemini'
 import { luminanceOf } from '@shared/brand'
 import { registerAppReconIpc } from './appRecon/ipc'
+import { registerMarketingIpc } from './marketing/ipc'
 import { FootageStore } from './footage/store'
 import { FootageService } from './footage/service'
 import { registerFootageIpc } from './footage/ipc'
@@ -81,6 +83,7 @@ const media = new MediaRouter({
 })
 const footageStore = new FootageStore(footageDir)
 const appReconStore = new AppReconStore(appReconDir, { enc: (s) => encryptKey(s), dec: (s) => decryptKey(s) })
+const marketingStore = new MarketingStore(marketingDir)
 const footage = new FootageService({
   store: footageStore,
   provider: () => providerRegistry.forRole('text') ?? providerRegistry.active(),
@@ -991,6 +994,68 @@ if (headlessFile) {
       aiJob: (projectKey, title, fn) => {
         if (mode === 'programmatic') return Promise.reject(new Error('AI is not available on this account.'))
         return withAccess({ projectKey, programmatic: false, title }, fn)
+      }
+    })
+    marketingStore.markInterrupted()
+    registerMarketingIpc({
+      store: marketingStore,
+      emit,
+      window: () => win,
+      isBusy: busyNow,
+      setBusy: (b) => { footageBusy = b },
+      // the free engine reads the site and writes stock cards; the AI writer and voice follow the plan, like every other AI feature
+      ai: () =>
+        mode === 'programmatic'
+          ? { available: false, reason: account.signedIn ? (planEnt()?.aiBlockedReason || 'AI is not available on this account.') : 'Sign in, or add your own keys, to use the AI writer and voice.' }
+          : { available: true },
+      providers: () => {
+        const chat = providerRegistry.forRole('text')
+        let speech: ReturnType<typeof media.speech> | null = null
+        try {
+          speech = mode === 'programmatic' ? null : media.speech()
+        } catch {
+          speech = null
+        }
+        return { chat: chat && chat.id !== 'mock' ? chat : null, speech }
+      },
+      aiJob: (projectKey, title, fn) => {
+        if (mode === 'programmatic') return Promise.reject(new Error('AI is not available on this account.'))
+        return withAccess({ projectKey, programmatic: false, title }, fn)
+      },
+      maxClips: () => (mode === 'plan' ? planEnt()?.clipsPerVideo ?? 0 : mode === 'programmatic' ? 0 : 2),
+      // the same AI clip, picture and music models the app recordings use
+      media: (runId) => {
+        const ready = mode === 'plan' ? (planEnt()?.clipsPerVideo ?? 0) > 0 : mode !== 'programmatic' && keyOf('gemini').length > 0
+        if (!ready) return null
+        return {
+          still: media.imageAvailable() && !['none', 'stock'].includes(effective.media.image || 'auto')
+            ? async (prompt: string) => {
+                meter.setStage('ai keyframe')
+                try {
+                  const { jpeg } = await media.keyframe(prompt)
+                  const dir = join(marketingStore.runDir(runId), 'keyframes')
+                  mkdirSync(dir, { recursive: true })
+                  const file = join(dir, `keyframe-${Date.now()}.jpg`)
+                  writeFileSync(file, jpeg)
+                  return { file }
+                } finally { meter.setStage('ai clip') }
+              }
+            : undefined,
+          reviewStill: async (file: string) => media.reviewKeyframe(readFileSync(file)),
+          clip: async (prompt, seconds, opts) => {
+            if (opts?.imageFile) meter.setStage('ai clip')
+            const asset = await media.clipToLibrary(prompt, 'landscape', { fresh: true, projectId: `mk-${runId}`, durationSec: seconds, ...(opts?.imageFile ? { image: readFileSync(opts.imageFile) } : {}) })
+            const file = library.path(asset.id)
+            if (!file) throw new Error('The AI clip was made but could not be found in the library')
+            return { file, durationSec: asset.durationSec }
+          },
+          music: async (brief) => {
+            const gemini = providerRegistry.get('gemini') as unknown as GeminiProvider
+            const [p, m] = (effective.media.music || '').split(':')
+            const { audio } = await gemini.music(brief, p === 'gemini' && m ? m : 'lyria-3.5')
+            return audio
+          }
+        }
       }
     })
     createWindow()

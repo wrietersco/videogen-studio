@@ -19,6 +19,8 @@ import type { EntitlementView, PlanId, Policy } from '@shared/plans'
 import type { BrandKitPatch, BrandKitView } from '@shared/brand'
 import type { AppInput, ReviewBeat, ReviewEdits, RunEvent, RunRecord, SavedApp } from '@shared/appRecording'
 export type { AppInput, ReviewBeat, ReviewEdits, RunEvent, RunRecord, SavedApp }
+import type { BusinessProfile, MarketEvent, MarketJob, MarketRunRecord, MarketStage, VideoCard } from '@shared/marketing'
+export type { BusinessProfile, MarketEvent, MarketJob, MarketRunRecord, MarketStage, VideoCard }
 import type { RefRole, VideoBrief } from '@shared/spec'
 
 export type { RefRole, VideoBrief }
@@ -282,6 +284,24 @@ declare global {
         runUsage: (runId: string) => Promise<ProjectUsage>
         removeRun: (runId: string) => Promise<{ ok: boolean; error?: string }>
         onEvent: (cb: (event: RunEvent) => void) => () => void
+      }
+      market: {
+        state: () => Promise<{ businesses: BusinessProfile[]; runs: MarketRunRecord[]; ai: { available: boolean; reason?: string }; current: { businessId: string; job: MarketJob; runId?: string } | null }>
+        save: (domain: string) => Promise<{ ok: true; businessId: string } | { ok: false; error: string }>
+        reanalyze: (id: string) => Promise<{ ok: true; businessId: string } | { ok: false; error: string }>
+        siteMd: (id: string) => Promise<{ ok: true; md: string } | { ok: false; error: string }>
+        updateCard: (businessId: string, cardId: string, patch: Partial<VideoCard>) => Promise<{ ok: true; profile: BusinessProfile } | { ok: false; error: string }>
+        addCard: (businessId: string) => Promise<{ ok: true; profile: BusinessProfile } | { ok: false; error: string }>
+        removeCard: (businessId: string, cardId: string) => Promise<{ ok: true; profile: BusinessProfile } | { ok: false; error: string }>
+        moreIdeas: (businessId: string) => Promise<{ ok: true; profile: BusinessProfile } | { ok: false; error: string }>
+        start: (businessId: string, cardId: string) => Promise<{ ok: true; runId: string } | { ok: false; error: string }>
+        cancel: () => Promise<boolean>
+        play: (runId: string) => Promise<boolean>
+        reveal: (runId: string) => Promise<boolean>
+        runUsage: (runId: string) => Promise<ProjectUsage>
+        removeRun: (runId: string) => Promise<{ ok: boolean; error?: string }>
+        remove: (id: string) => Promise<{ ok: true } | { ok: false; error: string }>
+        onEvent: (cb: (event: MarketEvent) => void) => () => void
       }
       references: {
         /** no paths opens a picker; dropped files pass their paths */

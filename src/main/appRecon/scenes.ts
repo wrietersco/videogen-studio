@@ -6,11 +6,12 @@ import { ffmpegBin } from '../audio/pcm'
 import { launch } from './browser'
 
 /**
- * Programmatic animated scenes for the launch film: title, "the problem" and
- * outro. Each is one self-contained page (inline CSS + canvas + JS, no network)
- * whose every frame is a pure function of time through window.__seek(t), so
- * the output is deterministic. renderScene steps through it frame by frame
- * and encodes a silent 1920x1080, 30 fps H.264 file.
+ * Programmatic animated scenes for the launch film: title, "the problem",
+ * mid-film points and the outro. Each is one self-contained page (inline
+ * CSS + canvas + JS, no network) whose every frame is a pure function of
+ * time through window.__seek(t), so the output is deterministic. renderScene
+ * steps through it frame by frame and encodes a silent 1920x1080, 30 fps
+ * H.264 file.
  */
 
 export type Motif = 'graph' | 'flow' | 'cards'
@@ -26,7 +27,8 @@ export function pickMotif(text: string): Motif {
 }
 
 export interface SceneInput {
-  kind: 'title' | 'problem' | 'outro'
+  /** 'point' is a mid-film statement scene: the motif builds the same way as the title, under a pill + headline */
+  kind: 'title' | 'problem' | 'point' | 'outro'
   motif: Motif
   /** small label, e.g. NEW / THE PROBLEM / a call to action */
   pill?: string
