@@ -31,7 +31,8 @@ export interface BeatPlan {
 /** how long a line takes to read aloud at a calm pace */
 export const readSec = (text: string): number => Math.max(2, text.split(/\s+/).filter(Boolean).length / 2.5)
 
-interface View { z: number; cx: number; cy: number }
+/** the camera: zoom and the centre of its view (0..1), plus the true centre of what it looks at across the page when that differs (a view near an edge is kept inside the page) */
+interface View { z: number; cx: number; cy: number; tx?: number }
 
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v))
 const num = (n: number) => (Math.round(n * 10000) / 10000).toString()
@@ -42,7 +43,8 @@ export function viewFor(rect: Rect | undefined, vp: { width: number; height: num
   const z = clamp(Math.min(vp.width / (rect.w * 1.9), vp.height / (rect.h * 2.6)), 1, maxZoom)
   const cx = clamp((rect.x + rect.w / 2) / vp.width, 0.5 / z, 1 - 0.5 / z)
   const cy = clamp((rect.y + rect.h / 2) / vp.height, 0.5 / z, 1 - 0.5 / z)
-  return { z, cx, cy }
+  const tx = clamp((rect.x + rect.w / 2) / vp.width, 0, 1)
+  return Math.abs(tx - cx) > 1e-9 ? { z, cx, cy, tx } : { z, cx, cy }
 }
 
 /** smooth camera keyframes from the beats' focus areas (times are on the video's clock) */
@@ -64,14 +66,24 @@ export function cameraKeys(take: Take, offsetSec: number, totalSec: number): Arr
   return out
 }
 
-/** an ffmpeg expression in `on` (output frame number at 30 fps) that eases between keyframes */
-function track(keys: Array<{ t: number; v: number }>): string {
+/**
+ * For a frame narrower than the recording: where, across the camera's view
+ * (0 = left edge, 1 = right edge), the thing it looks at sits, so a narrow
+ * crop of that view can stay on it.
+ */
+export function panAt(k: View): number {
+  const left = clamp(k.cx - 0.5 / k.z, 0, 1 - 1 / k.z)
+  return clamp(((k.tx ?? k.cx) - left) * k.z, 0, 1)
+}
+
+/** an ffmpeg expression that eases between keyframes; `clock` is the time in seconds (zoompan: on/30, crop: t) */
+function track(keys: Array<{ t: number; v: number }>, clock = 'on/30'): string {
   let expr = num(keys.at(-1)!.v)
   for (let i = keys.length - 2; i >= 0; i--) {
     const a = keys[i]
     const b = keys[i + 1]
-    const u = `((on/30-${num(a.t)})/${num(b.t - a.t)})`
-    expr = `if(lt(on/30,${num(b.t)}),${num(a.v)}+(${num(b.v - a.v)})*${u}*${u}*(3-2*${u}),${expr})`
+    const u = `((${clock}-${num(a.t)})/${num(b.t - a.t)})`
+    expr = `if(lt(${clock},${num(b.t)}),${num(a.v)}+(${num(b.v - a.v)})*${u}*${u}*(3-2*${u}),${expr})`
   }
   return expr
 }
@@ -85,6 +97,8 @@ const assSafe = (s: string) => s.replace(/[{}]/g, '').replace(/\\/g, '/').trim()
 
 /** captions spread across the spoken part, 2–6 words at a time, plus a step marker for each beat */
 export function buildCaptions(beats: Array<{ start: number; end: number; voiceStart: number; voiceSec: number; text: string; chapter: string; index: number }>, W = 1920, H = 1080, extras: Array<{ start: number; end: number; voiceStart: number; voiceSec: number; text: string }> = []): string {
+  const WIN = filmLayout({ width: W, height: H }).win
+  const cap = filmLayout({ width: W, height: H }).cap
   const events: string[] = []
   for (const b of [...beats, ...extras.map((e) => ({ ...e, chapter: '', index: 0 }))]) {
     const words = b.text.split(/\s+/).filter(Boolean)
@@ -109,37 +123,76 @@ export function buildCaptions(beats: Array<{ start: number; end: number; voiceSt
     '[Script Info]', 'ScriptType: v4.00+', `PlayResX: ${W}`, `PlayResY: ${H}`, 'WrapStyle: 0', 'ScaledBorderAndShadow: yes', '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    'Style: Cap,Arial,54,&H00FFFFFF,&H000000FF,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,1,4,1,2,140,140,64,1',
+    `Style: Cap,Arial,${cap.size},&H00FFFFFF,&H000000FF,&H00000000,&H90000000,-1,0,0,0,100,100,0,0,1,4,1,2,${cap.side},${cap.side},${cap.bottom},1`,
     'Style: Chip,Arial,26,&H00FFFFFF,&H000000FF,&H00B4642D,&H00B4642D,-1,0,0,0,100,100,1,0,3,8,0,6,0,0,0,1',
     '', '[Events]', 'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text', ...events, ''
   ].join('\n')
 }
 
 
-/** the browser window the page is shown in (canvas 1920×1080) */
-const WIN = { x: 110, y: 40, w: 1700, bar: 46, h: 1002 }
-const PAGE = { x: WIN.x, y: WIN.y + WIN.bar, w: WIN.w, h: WIN.h - WIN.bar }
+/** where things go in a film of a given frame: the browser window the page is shown in, and the captions */
+export interface FilmLayout {
+  W: number
+  H: number
+  win: { x: number; y: number; w: number; bar: number; h: number }
+  page: { x: number; y: number; w: number; h: number }
+  /** caption font size, side margins and distance from the bottom */
+  cap: { size: number; side: number; bottom: number }
+  /** width of the address pill */
+  pillW: number
+}
+
+const even = (n: number) => 2 * Math.round(n / 2)
+
+/**
+ * Wide films keep the window they always had. Tall and square films give the
+ * window the full width; a tall film keeps it clear of the bands where phone
+ * apps draw their buttons, and the captions sit over its lower part.
+ */
+export function filmLayout(size?: { width: number; height: number }): FilmLayout {
+  const W = size?.width ?? 1920
+  const H = size?.height ?? 1080
+  const bar = 46
+  let win: FilmLayout['win']
+  let cap: FilmLayout['cap']
+  if (W / H >= 1.5) {
+    const sx = W / 1920
+    const sy = H / 1080
+    win = { x: Math.round(110 * sx), y: Math.round(40 * sy), w: even(1700 * sx), bar, h: even(1002 * sy) }
+    cap = { size: 54, side: 140, bottom: 64 }
+  } else if (H / W >= 1.5) {
+    const top = Math.round(H * 0.105)
+    const bottom = Math.round(H * 0.75)
+    win = { x: 30, y: top, w: even(W - 60), bar, h: even(bottom - top) }
+    cap = { size: 58, side: 70, bottom: H - bottom + 70 }
+  } else {
+    win = { x: 30, y: 36, w: even(W - 60), bar, h: even(H - 72) }
+    cap = { size: 56, side: 70, bottom: Math.round(H * 0.11) }
+  }
+  return { W, H, win, page: { x: win.x, y: win.y + bar, w: win.w, h: win.h - bar }, cap, pillW: Math.min(800, win.w - 156) }
+}
 const DEFAULT_BACKDROP: [string, string] = ['#22325a', '#0a0f1e']
 const FONT = ['C:/Windows/Fonts/segoeui.ttf', '/System/Library/Fonts/Supplemental/Arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'].find(existsSync)
 
 /** backdrop, window and address bar as one still picture, and the mask that rounds the page's lower corners */
-async function drawFrame(dir: string, secure: boolean, backdrop: [string, string] = DEFAULT_BACKDROP): Promise<{ bg: string; mask: string }> {
+async function drawFrame(dir: string, secure: boolean, backdrop: [string, string] = DEFAULT_BACKDROP, L: FilmLayout = filmLayout()): Promise<{ bg: string; mask: string }> {
+  const { win: WIN, page: PAGE, W, H } = L
   const bg = join(dir, 'frame-bg.png')
   const mask = join(dir, 'frame-mask.png')
   // drawn inside the address pill (30 px tall); a padlock for https, a warning ring otherwise
   const lock = secure
     ? `<path d="M14.5 14v-3a5.5 5.5 0 0 1 11 0v3" fill="none" stroke="#2e7d32" stroke-width="2.4"/><rect x="11.5" y="13.5" width="17" height="12" rx="3" fill="#2e7d32"/>`
     : `<circle cx="20" cy="15" r="9" fill="none" stroke="#b26a00" stroke-width="2.4"/><rect x="18.8" y="9.5" width="2.4" height="7" fill="#b26a00"/><circle cx="20" cy="20" r="1.5" fill="#b26a00"/>`
-  const svg = `<svg width="1920" height="1080" xmlns="http://www.w3.org/2000/svg">
+  const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${backdrop[0]}"/><stop offset="1" stop-color="${backdrop[1]}"/></linearGradient>
     <filter id="s" x="-10%" y="-10%" width="120%" height="130%"><feGaussianBlur stdDeviation="24"/></filter>
   </defs>
-  <rect width="1920" height="1080" fill="url(#g)"/>
+  <rect width="${W}" height="${H}" fill="url(#g)"/>
   <rect x="${WIN.x + 18}" y="${WIN.y + 34}" width="${WIN.w}" height="${WIN.h}" rx="16" fill="#000" opacity=".6" filter="url(#s)"/>
   <rect x="${WIN.x}" y="${WIN.y}" width="${WIN.w}" height="${WIN.h}" rx="16" fill="#e9edf2"/>
   <circle cx="${WIN.x + 30}" cy="${WIN.y + 23}" r="7" fill="#ff5f57"/><circle cx="${WIN.x + 54}" cy="${WIN.y + 23}" r="7" fill="#febc2e"/><circle cx="${WIN.x + 78}" cy="${WIN.y + 23}" r="7" fill="#28c840"/>
-  <rect x="${WIN.x + 116}" y="${WIN.y + 8}" width="800" height="30" rx="15" fill="#ffffff"/>
+  <rect x="${WIN.x + 116}" y="${WIN.y + 8}" width="${L.pillW}" height="30" rx="15" fill="#ffffff"/>
   <g transform="translate(${WIN.x + 116} ${WIN.y + 8})">${lock}</g>
 </svg>`
   await sharp(Buffer.from(svg)).png().toFile(bg)
@@ -183,36 +236,41 @@ export interface CardPlan {
 }
 
 /** the card's still picture: the same backdrop as the browser scene, a soft glow, and the label pill */
-async function drawCard(dir: string, name: string, card: CardPlan, glowX: number, backdrop: [string, string] = DEFAULT_BACKDROP): Promise<string> {
+async function drawCard(dir: string, name: string, card: CardPlan, glowX: number, backdrop: [string, string] = DEFAULT_BACKDROP, L: FilmLayout = filmLayout()): Promise<string> {
+  const { W, H } = L
+  const dy = Math.round((H - 1080) / 2)
   const file = join(dir, `${name}.png`)
   const accent = '#' + (card.accent ?? '4f8cff')
   const pillW = card.pill ? Math.max(150, card.pill.length * 21 + 70) : 0
-  const pill = card.pill ? `<rect x="${(1920 - pillW) / 2}" y="318" width="${pillW}" height="56" rx="28" fill="${accent}"/>` : ''
-  const svg = `<svg width="1920" height="1080" xmlns="http://www.w3.org/2000/svg">
+  const pill = card.pill ? `<rect x="${(W - pillW) / 2}" y="${318 + dy}" width="${pillW}" height="56" rx="28" fill="${accent}"/>` : ''
+  const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${backdrop[0]}"/><stop offset="1" stop-color="${backdrop[1]}"/></linearGradient>
     <radialGradient id="r" cx="${glowX}" cy="0.5" r="0.55"><stop offset="0" stop-color="${accent}" stop-opacity=".34"/><stop offset="1" stop-color="${accent}" stop-opacity="0"/></radialGradient>
   </defs>
-  <rect width="1920" height="1080" fill="url(#g)"/><rect width="1920" height="1080" fill="url(#r)"/>${pill}
+  <rect width="${W}" height="${H}" fill="url(#g)"/><rect width="${W}" height="${H}" fill="url(#r)"/>${pill}
 </svg>`
   const base = sharp(Buffer.from(svg))
   if (card.logo && existsSync(card.logo)) {
     const logo = await sharp(card.logo).resize({ width: 380, height: 110, fit: 'inside' }).png().toBuffer({ resolveWithObject: true })
-    base.composite([{ input: logo.data, left: Math.round((1920 - logo.info.width) / 2), top: 190 + Math.round((110 - logo.info.height) / 2) }])
+    base.composite([{ input: logo.data, left: Math.round((W - logo.info.width) / 2), top: 190 + dy + Math.round((110 - logo.info.height) / 2) }])
   }
   await base.png().toFile(file)
   return file
 }
 
 /** drawtext chain for a card: each line rises into place and fades in, one after another */
-function cardText(card: CardPlan): string {
+function cardText(card: CardPlan, L: FilmLayout = filmLayout()): string {
   if (!FONT) return ''
+  const dy = Math.round((L.H - 1080) / 2)
+  // drawtext does not wrap: a line too long for the frame is set smaller
+  const fits = (text: string, max: number, min: number) => Math.max(min, Math.min(max, Math.floor((L.W - 120) / (0.56 * Math.max(1, text.length)))))
   const font = (f: string | undefined) => `fontfile='${filterPath(f ?? FONT!)}'`
   const rise = (d: number, base: number) => `alpha='min(1,max(0,(t-${d})/0.5))':y='${base}+36*pow(1-min(1,max(0,(t-${d})/0.65)),3)'`
   const parts: string[] = []
-  if (card.pill) parts.push(`drawtext=${font(FONT_BOLD)}:text='${dt(card.pill.toUpperCase())}':x=(w-text_w)/2:fontsize=27:fontcolor=white:${rise(0.1, 331)}`)
-  parts.push(`drawtext=${font(FONT_BOLD)}:text='${dt(card.headline)}':x=(w-text_w)/2:fontsize=132:fontcolor=white:${rise(0.3, 440)}`)
-  if (card.sub) parts.push(`drawtext=${font(FONT)}:text='${dt(card.sub)}':x=(w-text_w)/2:fontsize=48:fontcolor=0xb9c6e4:${rise(0.65, 640)}`)
+  if (card.pill) parts.push(`drawtext=${font(FONT_BOLD)}:text='${dt(card.pill.toUpperCase())}':x=(w-text_w)/2:fontsize=27:fontcolor=white:${rise(0.1, 331 + dy)}`)
+  parts.push(`drawtext=${font(FONT_BOLD)}:text='${dt(card.headline)}':x=(w-text_w)/2:fontsize=${fits(card.headline, 132, 56)}:fontcolor=white:${rise(0.3, 440 + dy)}`)
+  if (card.sub) parts.push(`drawtext=${font(FONT)}:text='${dt(card.sub)}':x=(w-text_w)/2:fontsize=${fits(card.sub, 48, 30)}:fontcolor=0xb9c6e4:${rise(0.65, 640 + dy)}`)
   return parts.join(',')
 }
 
@@ -262,6 +320,8 @@ export interface ProduceInput {
   look?: { backdrop: [string, string]; accent: string }
   /** AI-made clips that cut in between the pages */
   inserts?: InsertPlan[]
+  /** the finished film's frame (default 1920×1080). The page is always recorded wide; a narrower frame pans across it to what is happening */
+  size?: { width: number; height: number }
   /** a track made by AI for this film (decoded); null or a failure keeps the built-in score */
   aiMusic?: (info: { cuts: number[]; total: number }) => Promise<Stereo | null>
   log?: (message: string) => void
@@ -280,6 +340,8 @@ export interface ProduceResult {
 
 export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   mkdirSync(inp.dir, { recursive: true })
+  const L = filmLayout(inp.size)
+  const { W, H, win: WIN, page: PAGE } = L
   const raw = join(inp.dir, 'raw.mp4')
   ffmpeg(['-f', 'concat', '-safe', '0', '-i', inp.framesList, '-vf', 'fps=30,format=yuv420p', '-c:v', 'libx264', '-crf', '14', '-preset', 'veryfast', raw], 'raw video')
 
@@ -418,19 +480,26 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
 
   // ---- picture: camera + captions
   const insertCaptions = items.flatMap((it, i) => (it.kind === 'ins' && it.p.text ? [{ start: starts[i], end: starts[i] + durs[i], voiceStart: starts[i] + 0.5, voiceSec: spoken(it.p), text: it.p.text }] : []))
-  const ass = buildCaptions(filmBeats.map((t) => ({ start: t.fStart, end: t.fStart + (t.end - t.start), voiceStart: t.fVoice, voiceSec: t.voiceSec, text: t.plan?.text ?? '', chapter: t.plan?.chapter ?? '', index: t.index })), 1920, 1080, insertCaptions)
+  const ass = buildCaptions(filmBeats.map((t) => ({ start: t.fStart, end: t.fStart + (t.end - t.start), voiceStart: t.fVoice, voiceSec: t.voiceSec, text: t.plan?.text ?? '', chapter: t.plan?.chapter ?? '', index: t.index })), W, H, insertCaptions)
   const captionsFile = join(inp.dir, 'captions.ass')
   writeFileSync(captionsFile, ass)
   const x = `min(max((${CX})*iw-iw/zoom/2,0),iw-iw/zoom)`
   const y = `min(max((${CY})*ih-ih/zoom/2,0),ih-ih/zoom)`
   const secure = inp.take.navigations.some((n) => n.url.startsWith('https:'))
-  const { bg, mask } = await drawFrame(inp.dir, secure, inp.look?.backdrop)
+  const { bg, mask } = await drawFrame(inp.dir, secure, inp.look?.backdrop, L)
   const addr = addressTimeline(inp.take, inp.offsetSec, demo)
     .map((a) => (FONT ? `,drawtext=fontfile='${filterPath(FONT)}':text='${dt(a.text)}':x=${WIN.x + 116 + 44}:y=${WIN.y + 12}:fontsize=21:fontcolor=0x3c4043:enable='between(t,${num(a.from)},${num(a.to)})'` : ''))
     .join('')
   const norm = 'fps=30,format=yuv420p,setsar=1'
+  // the recording is wide; a page area narrower than that shows the part of the camera's view around what it is looking at
+  const recAspect = inp.take.viewport.width / inp.take.viewport.height
+  const narrow = PAGE.w / PAGE.h < recAspect - 0.01
+  const zoomW = narrow ? even(PAGE.h * recAspect) : PAGE.w
+  const pan = narrow ? track(keys.map((k) => ({ t: k.t, v: panAt(k) })), 't') : ''
   const graph = [
-    `[0:v]zoompan=z='${Z}':x='${x}':y='${y}':d=1:s=${PAGE.w}x${PAGE.h}:fps=30,format=yuv420p[pg]`,
+    narrow
+      ? `[0:v]zoompan=z='${Z}':x='${x}':y='${y}':d=1:s=${zoomW}x${PAGE.h}:fps=30,crop=${PAGE.w}:${PAGE.h}:x='clip((${pan})*in_w-out_w/2,0,in_w-out_w)':y=0,format=yuv420p[pg]`
+      : `[0:v]zoompan=z='${Z}':x='${x}':y='${y}':d=1:s=${PAGE.w}x${PAGE.h}:fps=30,format=yuv420p[pg]`,
     `[2:v]format=gray[mk]`,
     `[pg][mk]alphamerge[pa]`,
     `[1:v][pa]overlay=${PAGE.x}:${PAGE.y}:shortest=1:format=auto${addr},${norm},trim=duration=${num(demo)},setpts=PTS-STARTPTS[demo]`
@@ -450,7 +519,7 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
     if (!inp.motif) return null
     try {
       const want = Math.min(8, sec)
-      const r = await renderScene({ kind, motif: inp.motif, pill: card.pill, headline: card.headline, sub: card.sub, accent: card.accent, backdrop: inp.look?.backdrop, logo: card.logo && existsSync(card.logo) ? card.logo : undefined, durationSec: want }, join(inp.dir, `scene-${kind}.mp4`))
+      const r = await renderScene({ kind, motif: inp.motif, pill: card.pill, headline: card.headline, sub: card.sub, accent: card.accent, backdrop: inp.look?.backdrop, logo: card.logo && existsSync(card.logo) ? card.logo : undefined, durationSec: want, size: { width: W, height: H } }, join(inp.dir, `scene-${kind}.mp4`))
       sceneCount++
       return { file: r.file, sec: r.durationSec }
     } catch (err) {
@@ -459,7 +528,7 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
     }
   }
   const sceneChain = (n: number, sc: { sec: number }, dur: number, label: string, fadeOut: boolean): string =>
-    `[${n}:v]scale=1920:1080,${norm},tpad=stop_mode=clone:stop_duration=${num(Math.max(0, dur - sc.sec) + 0.3)},trim=duration=${num(dur)},setpts=PTS-STARTPTS${fadeOut ? `,fade=t=out:st=${num(dur - 0.8)}:d=0.8` : ''}[${label}]`
+    `[${n}:v]scale=${W}:${H},${norm},tpad=stop_mode=clone:stop_duration=${num(Math.max(0, dur - sc.sec) + 0.3)},trim=duration=${num(dur)},setpts=PTS-STARTPTS${fadeOut ? `,fade=t=out:st=${num(dur - 0.8)}:d=0.8` : ''}[${label}]`
   for (let i = 0; i < items.length; i++) {
     const it = items[i]
     const sc = it.kind === 'intro' ? await scene('title', inp.intro!, durs[i]) : it.kind === 'problem' ? await scene('problem', inp.problem!, durs[i]) : it.kind === 'outro' ? await scene('outro', inp.outro!, durs[i]) : null
@@ -470,14 +539,14 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
       labels.push(label)
       n++
     } else if (it.kind === 'intro') {
-      inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-intro', inp.intro!, 0.3, inp.look?.backdrop))
-      const t = cardText(inp.intro!)
+      inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-intro', inp.intro!, 0.3, inp.look?.backdrop, L))
+      const t = cardText(inp.intro!, L)
       graph.push(`[${n}:v]${norm}${t ? ',' + t : ''},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[intro]`)
       labels.push('intro')
       n++
     } else if (it.kind === 'problem') {
-      inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-problem', inp.problem!, 0.5, inp.look?.backdrop))
-      const t = cardText(inp.problem!)
+      inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-problem', inp.problem!, 0.5, inp.look?.backdrop, L))
+      const t = cardText(inp.problem!, L)
       graph.push(`[${n}:v]${norm}${t ? ',' + t : ''},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[problem]`)
       labels.push('problem')
       n++
@@ -487,12 +556,12 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
       inputs.push('-i', it.p.file)
       const tag = FONT_BOLD && it.p.tag ? `,drawtext=fontfile='${filterPath(FONT_BOLD)}':text='${dt(it.p.tag)}':x=44:y=38:fontsize=24:fontcolor=white@0.92:box=1:boxcolor=black@0.4:boxborderw=11:enable='between(t,0.5,${num(Math.max(1, durs[i] - 0.5))})'` : ''
       const hold = Math.max(0, durs[i] - it.p.clipSec) + 0.2
-      graph.push(`[${n}:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,${norm},tpad=stop_mode=clone:stop_duration=${num(hold)},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS${tag}[in${i}]`)
+      graph.push(`[${n}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},${norm},tpad=stop_mode=clone:stop_duration=${num(hold)},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS${tag}[in${i}]`)
       labels.push(`in${i}`)
       n++
     } else {
-      inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-outro', inp.outro!, 0.7, inp.look?.backdrop))
-      const t = cardText(inp.outro!)
+      inputs.push('-loop', '1', '-framerate', '30', '-i', await drawCard(inp.dir, 'card-outro', inp.outro!, 0.7, inp.look?.backdrop, L))
+      const t = cardText(inp.outro!, L)
       graph.push(`[${n}:v]${norm}${t ? ',' + t : ''},fade=t=out:st=${num(durs[i] - 0.8)}:d=0.8,trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[outro]`)
       labels.push('outro')
       n++

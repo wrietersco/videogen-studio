@@ -174,6 +174,7 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
       checks: app.checks,
       depth: app.depth,
       targetSec: app.targetSec,
+      platform: app.platform,
       reviewFirst: app.reviewFirst,
       brand: brandSourceOf(app.brandSource, !!app.brandId) === 'kit' && app.brandId ? (d.brand?.(app.brandId) ?? undefined) : undefined,
       siteBrand: brandSourceOf(app.brandSource, !!app.brandId) === 'site',

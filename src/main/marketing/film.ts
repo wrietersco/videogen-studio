@@ -12,6 +12,7 @@ import type { VideoSpec } from '@shared/spec'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import type { BusinessProfile, MarketStage, VideoCard } from '@shared/marketing'
 import { assemble, type FilmPiece } from './assemble'
+import { filmFrame } from '@shared/shapes'
 
 /**
  * One card's film, made with the record-an-app engine minus the recording:
@@ -210,12 +211,12 @@ async function writeClipPrompts(beats: Beat[], kinds: Array<'scene' | 'still' | 
 }
 
 /** a still made and checked before it is used; null = fall back to an animated point */
-async function checkedStill(tools: MediaTools, prompt: string, runDir: string, i: number, notes: string[], signal?: AbortSignal): Promise<string | null> {
+async function checkedStill(tools: MediaTools, prompt: string, runDir: string, i: number, notes: string[], signal?: AbortSignal, portrait = false): Promise<string | null> {
   if (!tools.still) return null
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (signal?.aborted) throw new FilmCancelled()
-      const still = await tools.still(`A still photograph for a brand film. ${prompt}`)
+      const still = await tools.still(`A still photograph for a brand film. ${prompt}`, { portrait })
       const verdict = tools.reviewStill ? await tools.reviewStill(still.file).catch(() => null) : null
       if (!verdict || verdict.ok) return still.file
     }
@@ -233,6 +234,9 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
     if (inp.signal?.aborted) throw new FilmCancelled()
   }
   const { card, profile: p } = inp
+  // the card's frame: where it will be posted (wide when none is chosen)
+  const frame = filmFrame(card.platform)
+  const portrait = frame.height > frame.width
   mkdirSync(inp.runDir, { recursive: true })
   const brand = { accent: p.brand.accent, backdrop: p.brand.backdrop }
   const motif = pickMotif(`${card.solution} ${p.about}`)
@@ -286,11 +290,11 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
         // the clip's first frame is made and checked before any video is paid for
         let imageFile: string | undefined
         if (inp.tools.still) {
-          const still = await inp.tools.still(`First frame of this shot, a still photograph: ${prompt}`)
+          const still = await inp.tools.still(`First frame of this shot, a still photograph: ${prompt}`, { portrait })
           const verdict = inp.tools.reviewStill ? await inp.tools.reviewStill(still.file).catch(() => null) : null
           if (!verdict || verdict.ok) imageFile = still.file
         }
-        const clip = await inp.tools.clip(prompt, clipSec, { imageFile })
+        const clip = await inp.tools.clip(prompt, clipSec, { imageFile, portrait })
         pieces.push({ kind: 'clip', file: clip.file, text: b.line, chapter: b.chapter, pcm, sec: Math.max(clipSec, spoken + 1.0), clipSec: clip.durationSec ?? clipSec })
         elements.push('AI video clip')
         notes.push('AI clip: ' + clean(b.headline, 60))
@@ -302,7 +306,7 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
       }
     }
     if (kinds[i] === 'still' && inp.tools) {
-      const file = await checkedStill(inp.tools, stockClipPrompt(b, brand, motif), inp.runDir, i, notes, inp.signal)
+      const file = await checkedStill(inp.tools, stockClipPrompt(b, brand, motif), inp.runDir, i, notes, inp.signal, portrait)
       if (file) {
         pieces.push({ kind: 'still', file, text: b.line, chapter: b.chapter, pcm, sec: Math.max(4.2, spoken + 1.4) })
         elements.push('AI image')
@@ -311,7 +315,7 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
     }
     // the animated point: the beat as its own moving card
     const want = Math.min(8, Math.max(4.2, spoken + 1.5))
-    const scene = await renderScene({ kind: 'point', motif, pill: b.chapter, headline: b.headline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: want }, join(inp.runDir, `scene-beat-${i + 1}.mp4`))
+    const scene = await renderScene({ kind: 'point', motif, pill: b.chapter, headline: b.headline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: want, size: frame }, join(inp.runDir, `scene-beat-${i + 1}.mp4`))
     pieces.push({ kind: 'scene', file: scene.file, text: b.line, chapter: b.chapter, pcm, sec: Math.max(want, spoken + 1.5), srcSec: scene.durationSec })
   }
   check()
@@ -332,15 +336,16 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
   const outroSpoken = spokenSec(closePcm, closeText)
   const outroSec = Math.max(4.2, outroSpoken + 2.3)
   const problemSec = Math.max(4.2, spokenSec(problemPcm, script.problemLine) + 1.9)
-  const problemScene = await renderScene({ kind: 'problem', motif, headline: script.problemHeadline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: Math.min(8, problemSec) }, join(inp.runDir, 'scene-problem.mp4'))
+  const problemScene = await renderScene({ kind: 'problem', motif, headline: script.problemHeadline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: Math.min(8, problemSec), size: frame }, join(inp.runDir, 'scene-problem.mp4'))
   pieces[0] = { ...pieces[0], file: problemScene.file, sec: problemSec, srcSec: problemScene.durationSec }
-  const outroScene = await renderScene({ kind: 'outro', motif, pill: clean(card.cta.toUpperCase(), 24), headline: p.name, sub: p.tagline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: Math.min(8, outroSec) }, join(inp.runDir, 'scene-outro.mp4'))
+  const outroScene = await renderScene({ kind: 'outro', motif, pill: clean(card.cta.toUpperCase(), 24), headline: p.name, sub: p.tagline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: Math.min(8, outroSec), size: frame }, join(inp.runDir, 'scene-outro.mp4'))
   pieces.push({ kind: 'scene', file: outroScene.file, text: closeText, pcm: closePcm, sec: outroSec, srcSec: outroScene.durationSec, chapter: '', fadeOut: true })
   elements.push('Animated scenes (HTML/canvas)')
 
   const wantAiMusic = inp.aiMusic && !!inp.tools?.music
   const out = await assemble({
     dir: inp.runDir,
+    size: frame,
     pieces,
     title: card.title,
     musicMood: choice?.mood,

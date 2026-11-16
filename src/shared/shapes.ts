@@ -40,3 +40,25 @@ export function shapeById(id: ShapeId): VideoShape {
 export function platformForShape(shape: ShapeId, current?: PlatformId): PlatformId {
   return current && shapeOf(current) === shape ? current : shapeById(shape).defaultPlatform
 }
+
+/** the apps people know, in the order the pickers show them; each one implies a shape */
+export const POST_APPS: Array<{ id: PlatformId; label: string; emoji: string }> = [
+  { id: 'tiktok', label: 'TikTok', emoji: '🎵' },
+  { id: 'instagram-reels', label: 'Reels / Stories', emoji: '📸' },
+  { id: 'youtube-shorts', label: 'YT Shorts', emoji: '▶️' },
+  { id: 'youtube', label: 'YouTube', emoji: '📺' },
+  { id: 'instagram-feed', label: 'Insta post', emoji: '🖼️' },
+  { id: 'facebook-feed', label: 'Facebook', emoji: '👍' },
+  { id: 'square', label: 'X · LinkedIn · WhatsApp', emoji: '💬' }
+]
+
+/** a saved value that names a platform (anything else, e.g. from an older save, is not one) */
+export function isPlatformId(v: unknown): v is PlatformId {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(PLATFORM_PRESETS, v)
+}
+
+/** the finished film's frame for a platform; wide 1920×1080 when none is chosen (how the app films were always made) */
+export function filmFrame(platform?: PlatformId | null): { width: number; height: number } {
+  const p = platform && isPlatformId(platform) ? PLATFORM_PRESETS[platform] : PLATFORM_PRESETS.youtube
+  return { width: p.width, height: p.height }
+}

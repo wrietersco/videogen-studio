@@ -268,12 +268,13 @@ export class MediaRouter {
   }
 
   /** one landscape 16:9 still from the configured image model (never stock, never a second candidate); metered by the provider */
-  async keyframe(prompt: string): Promise<{ jpeg: Buffer }> {
+  async keyframe(prompt: string, portrait = false): Promise<{ jpeg: Buffer }> {
     const p = this.painter()
     if (!p?.provider.generateImage) throw new Error('no image model configured')
-    const buffer = await p.provider.generateImage({ prompt, width: 1280, height: 720, model: p.model })
+    const [width, height] = portrait ? [720, 1280] : [1280, 720]
+    const buffer = await p.provider.generateImage({ prompt, width, height, model: p.model })
     const sharp = (await import('sharp')).default
-    return { jpeg: await sharp(buffer).resize({ width: 1280, height: 720, fit: 'cover' }).jpeg({ quality: 90 }).toBuffer() }
+    return { jpeg: await sharp(buffer).resize({ width, height, fit: 'cover' }).jpeg({ quality: 90 }).toBuffer() }
   }
 
   /** is this still a coherent, concrete picture with no readable text? null = no review model available (the caller skips the check) */

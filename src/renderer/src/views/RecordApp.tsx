@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type AppInput, type ReviewBeat, type RunEvent, type RunRecord, type SavedApp } from '../api'
 import { Section, fmtDur } from '../components/ui'
 import { CostToggle } from '../components/CostReceipt'
+import { ShapePicker } from '../components/PromptTools'
+import { POST_APPS } from '@shared/shapes'
+import type { PlatformId } from '@shared/spec'
 import { MAX_STYLE_LINKS, parseYouTubeUrl } from '@shared/youtube'
 import { brandSourceOf, DEFAULT_CHECKS, DEPTH_LABELS, type AppChecks, type BrandSource, type Depth } from '@shared/appRecording'
 
@@ -32,6 +35,7 @@ interface Form {
   closing: string
   cta: string
   targetSec: number
+  platform: PlatformId
   useAi: boolean
   aiMedia: boolean
   aiMusic: boolean
@@ -46,19 +50,19 @@ interface Form {
 
 const blank = (): Form => ({
   name: '', url: '', context: '', document: null, signIn: 'saved', username: '', password: '', hasPassword: false, guardrailText: '', checks: { ...DEFAULT_CHECKS }, depth: 'standard',
-  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, useAi: true, aiMedia: false, aiMusic: false, reviewFirst: false, brandId: '', brandSource: 'none', styleImages: [], styleVideo: '', styleLinks: [], styleNotes: ''
+  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, platform: 'youtube', useAi: true, aiMedia: false, aiMusic: false, reviewFirst: false, brandId: '', brandSource: 'none', styleImages: [], styleVideo: '', styleLinks: [], styleNotes: ''
 })
 
 const fromApp = (a: SavedApp): Form => ({
   id: a.id, name: a.name, url: a.url, context: a.context, document: a.document ?? null, signIn: a.signIn, username: a.username ?? '', password: '', hasPassword: a.hasPassword, guardrailText: a.guardrailText,
   checks: a.checks, depth: a.depth, revealUsername: a.revealUsername, mode: a.mode, feature: a.launch?.feature ?? '', tagline: a.launch?.tagline ?? 'Simple. Fast. Safe.', closing: a.launch?.closing ?? 'Try it today',
-  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, useAi: a.useAi, aiMedia: a.aiMedia === true, aiMusic: a.aiMusic === true, reviewFirst: a.reviewFirst, brandId: a.brandId ?? '', brandSource: brandSourceOf(a.brandSource, !!a.brandId), styleImages: a.styleImages ?? [], styleVideo: a.styleVideo ?? '', styleLinks: a.styleLinks ?? [], styleNotes: a.styleNotes ?? ''
+  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, platform: a.platform ?? 'youtube', useAi: a.useAi, aiMedia: a.aiMedia === true, aiMusic: a.aiMusic === true, reviewFirst: a.reviewFirst, brandId: a.brandId ?? '', brandSource: brandSourceOf(a.brandSource, !!a.brandId), styleImages: a.styleImages ?? [], styleVideo: a.styleVideo ?? '', styleLinks: a.styleLinks ?? [], styleNotes: a.styleNotes ?? ''
 })
 
 const toInput = (f: Form): AppInput => ({
   id: f.id, name: f.name, url: f.url, context: f.context, document: f.document, signIn: f.signIn, username: f.username || undefined, password: f.password || undefined, guardrailText: f.guardrailText,
   checks: f.checks, depth: f.depth, revealUsername: f.revealUsername, mode: f.mode,
-  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, useAi: f.useAi, aiMedia: f.aiMedia, aiMusic: f.aiMusic, reviewFirst: f.reviewFirst, brandId: f.brandSource === 'kit' ? f.brandId || undefined : undefined, brandSource: f.brandSource === 'kit' && !f.brandId ? 'none' : f.brandSource, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined, styleLinks: f.styleLinks, styleNotes: f.styleNotes
+  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, platform: f.platform, useAi: f.useAi, aiMedia: f.aiMedia, aiMusic: f.aiMusic, reviewFirst: f.reviewFirst, brandId: f.brandSource === 'kit' ? f.brandId || undefined : undefined, brandSource: f.brandSource === 'kit' && !f.brandId ? 'none' : f.brandSource, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined, styleLinks: f.styleLinks, styleNotes: f.styleNotes
 })
 
 const STAGES: Array<{ id: string; label: string }> = [
@@ -285,6 +289,10 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
                 <input aria-label="Call to action" value={form.cta} onChange={(e) => set('cta', e.target.value)} placeholder="Label, e.g. Available now" className="field px-4 py-2.5 text-sm" />
               </div>
             )}
+          </Section>
+
+          <Section icon="📐" title="Where will you post it?" hint="Sets the video's shape. The app is always recorded on a wide screen; for a tall or square video the camera follows what is being clicked, so the page stays easy to read on a phone.">
+            <ShapePicker platform={form.platform} apps={POST_APPS} onPlatform={(p) => set('platform', p)} />
           </Section>
 
           <Section icon="🏷️" title="Branding" hint="Whose logo and colours the video wears: the cards of a launch film and the backdrop around the app.">

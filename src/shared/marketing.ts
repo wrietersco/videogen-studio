@@ -4,6 +4,9 @@
  * saved as JSON.
  */
 
+import type { PlatformId } from './spec'
+import { isPlatformId } from './shapes'
+
 /** one service the business sells, as read from its website */
 export interface ServiceInfo {
   name: string
@@ -29,6 +32,8 @@ export interface VideoCard {
   serviceIdx?: number
   /** length to aim for */
   targetSec: number
+  /** where the film will be posted, which sets its shape (absent = wide YouTube 1920×1080) */
+  platform?: PlatformId
   /** the video this card last made, and how it ended */
   runId?: string
   video?: string
@@ -140,5 +145,6 @@ export function cardPatchOf(raw: unknown): Partial<VideoCard> {
   if (cta) out.cta = cta
   if (typeof p.serviceIdx === 'number' && Number.isInteger(p.serviceIdx) && p.serviceIdx >= 0) out.serviceIdx = p.serviceIdx
   if (typeof p.targetSec === 'number' && p.targetSec >= 15 && p.targetSec <= 90) out.targetSec = Math.round(p.targetSec)
+  if (isPlatformId(p.platform)) out.platform = p.platform
   return out
 }

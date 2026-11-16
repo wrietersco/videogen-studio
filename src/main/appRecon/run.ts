@@ -25,6 +25,8 @@ import type { RedactionConfig } from './redact'
 import { buildAppMap, scoutPage } from './scout'
 import { captureSiteBrand, type SiteBrand } from './siteBrand'
 import { lookFromPalette } from './style'
+import { filmFrame } from '@shared/shapes'
+import type { PlatformId } from '@shared/spec'
 
 /**
  * One recording, start to finish:
@@ -40,9 +42,9 @@ import { lookFromPalette } from './style'
 /** what the AI media models can do for this run (supplied by the app; absent = the free engine only) */
 export interface MediaTools {
   /** one clip of this many whole seconds (3 to 10); resolves to the file. `imageFile` is a still used as the clip's first frame (image-to-video) */
-  clip(prompt: string, seconds: number, opts?: { imageFile?: string }): Promise<{ file: string; durationSec?: number }>
-  /** a cheap landscape 16:9 still (the user's image model) saved to a file; absent = clips start from text only */
-  still?(prompt: string): Promise<{ file: string; costUsd?: number }>
+  clip(prompt: string, seconds: number, opts?: { imageFile?: string; /** a tall 9:16 clip for a tall film (default wide 16:9) */ portrait?: boolean }): Promise<{ file: string; durationSec?: number }>
+  /** a cheap still (the user's image model) saved to a file, wide 16:9 or tall 9:16; absent = clips start from text only */
+  still?(prompt: string, opts?: { portrait?: boolean }): Promise<{ file: string; costUsd?: number }>
   /** checks a still is a coherent, concrete picture with no readable text; null/absent = no review available (the still is used unchecked) */
   reviewStill?(file: string): Promise<{ ok: boolean; reason?: string } | null>
   /** one finished track (an audio file's bytes) for this brief */
@@ -59,12 +61,12 @@ export const clipLength = (planned: number, clipCount: number, targetSec: number
  * the opening picture for one AI clip: a still made and checked before any video is paid for.
  * `skip` = the picture failed the check twice, so no clip is to be made; no `imageFile` and no `skip` = the clip starts from text only.
  */
-export async function openingPicture(tools: MediaTools, clipPrompt: string, index: number, notes: string[], signal?: AbortSignal): Promise<{ imageFile?: string; skip?: boolean }> {
+export async function openingPicture(tools: MediaTools, clipPrompt: string, index: number, notes: string[], signal?: AbortSignal, portrait = false): Promise<{ imageFile?: string; skip?: boolean }> {
   if (!tools.still) return {}
   let imageFile: string | undefined
   try {
     for (let attempt = 0; attempt < 2 && !imageFile; attempt++) {
-      const still = await tools.still(keyframePrompt(clipPrompt))
+      const still = await tools.still(keyframePrompt(clipPrompt), { portrait })
       const verdict = tools.reviewStill ? await tools.reviewStill(still.file).catch(() => null) : null
       if (!verdict || verdict.ok) {
         imageFile = still.file
@@ -128,6 +130,8 @@ export interface RunInput {
    * `music`: the person ticked "AI music". Sentences in the typed words that ask for an AI video are carried out whenever `tools` exist.
    */
   media?: { tools: MediaTools | null; clips: boolean; music: boolean }
+  /** where the film will be posted; sets its frame (default: wide YouTube 1920×1080). The app is always recorded wide */
+  platform?: PlatformId
 }
 
 export interface RunHooks {
@@ -168,6 +172,8 @@ export class RunCancelled extends Error {
 }
 
 export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<RunOutput> {
+  const frame = filmFrame(inp.platform)
+  const portrait = frame.height > frame.width
   const say = (m: string) => hooks.log?.(m)
   mkdirSync(inp.runDir, { recursive: true })
   const check = () => {
@@ -467,10 +473,10 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
         check()
         say(`AI clip ${n + 1} of ${planned.length} (${clipLength(sec, planned.length, lengthSec)}s): ${c.said.slice(0, 100)}`)
         try {
-          const start = await openingPicture(tools, c.prompt, n, mediaNotes, inp.signal)
+          const start = await openingPicture(tools, c.prompt, n, mediaNotes, inp.signal, portrait)
           if (start.skip) continue
           const imageFile = start.imageFile
-          const made = await tools.clip(c.prompt, clipSec1, imageFile ? { imageFile } : undefined)
+          const made = await tools.clip(c.prompt, clipSec1, { ...(imageFile ? { imageFile } : {}), portrait })
           const clipSec = made.durationSec ?? probe(made.file).durationSec ?? sec
           mkdirSync(join(inp.runDir, 'final'), { recursive: true })
           const pcm = await voiceLine(narration.plans.some((p) => p.pcm.length) ? inp.speech : null, join(inp.runDir, 'final'), `voice-clip-${n}`, c.line, tone).catch((err) => {
@@ -503,6 +509,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     hooks.progress('produce', inserts.length || musicChoice ? 'Making the video, with AI media' : 'Making the video')
     const res = await produce({
       dir: join(inp.runDir, 'final'),
+      size: frame,
       framesList: framed.listFile,
       offsetSec: rec.offsetSec(),
       take,

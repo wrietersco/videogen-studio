@@ -10,7 +10,7 @@ import { launch } from './browser'
  * mid-film points and the outro. Each is one self-contained page (inline
  * CSS + canvas + JS, no network) whose every frame is a pure function of
  * time through window.__seek(t), so the output is deterministic. renderScene
- * steps through it frame by frame and encodes a silent 1920x1080, 30 fps
+ * steps through it frame by frame and encodes a silent 30 fps (1920x1080 unless another size is asked for)
  * H.264 file.
  */
 
@@ -42,6 +42,8 @@ export interface SceneInput {
   logo?: string
   durationSec: number
   seed?: number
+  /** the film's frame (default 1920×1080); the motif is laid out on a 1920×1080 stage that covers it */
+  size?: { width: number; height: number }
 }
 
 const FPS = 30
@@ -83,7 +85,13 @@ export function sceneHtml(inp: SceneInput): string {
   const b0 = safeColor(inp.backdrop?.[0], dark0)
   const b1 = safeColor(inp.backdrop?.[1], dark1)
   const T = Math.max(0.5, inp.durationSec)
+  const W = inp.size?.width ?? 1920
+  const H = inp.size?.height ?? 1080
+  const k = (n: number, of: number, total: number) => Math.round((n / of) * total)
   const cfg = {
+    vw: W,
+    vh: H,
+    headLines: W < H ? 3 : 2,
     kind: inp.kind,
     motif: inp.motif,
     t: T,
@@ -103,19 +111,19 @@ export function sceneHtml(inp: SceneInput): string {
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>scene</title>
 <style>
-html,body{margin:0;padding:0;width:1920px;height:1080px;overflow:hidden;background:${b0}}
-#bg{position:absolute;left:0;top:0;width:1920px;height:1080px;background:linear-gradient(135deg,${b0},${b1})}
-canvas{position:absolute;left:0;top:0;width:1920px;height:1080px}
-#blur{position:absolute;left:210px;top:170px;width:1500px;height:740px;backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);-webkit-mask-image:radial-gradient(ellipse at center,#000 30%,rgba(0,0,0,0) 70%);mask-image:radial-gradient(ellipse at center,#000 30%,rgba(0,0,0,0) 70%)}
-#scrim{position:absolute;left:150px;top:130px;width:1620px;height:820px;background:radial-gradient(ellipse at center,rgba(0,0,0,.58) 0%,rgba(0,0,0,.4) 38%,rgba(0,0,0,0) 72%)}
-#blk{position:absolute;left:0;top:0;width:1920px;height:1080px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;font-family:'Segoe UI','Segoe UI Variable','Noto Sans','Helvetica Neue',Arial,'Segoe UI Historic','Segoe UI Symbol',Tahoma,sans-serif;color:#fff;text-shadow:0 2px 26px rgba(0,0,0,.5)}
+html,body{margin:0;padding:0;width:${W}px;height:${H}px;overflow:hidden;background:${b0}}
+#bg{position:absolute;left:0;top:0;width:${W}px;height:${H}px;background:linear-gradient(135deg,${b0},${b1})}
+canvas{position:absolute;left:0;top:0;width:${W}px;height:${H}px}
+#blur{position:absolute;left:${k(210, 1920, W)}px;top:${k(170, 1080, H)}px;width:${k(1500, 1920, W)}px;height:${k(740, 1080, H)}px;backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);-webkit-mask-image:radial-gradient(ellipse at center,#000 30%,rgba(0,0,0,0) 70%);mask-image:radial-gradient(ellipse at center,#000 30%,rgba(0,0,0,0) 70%)}
+#scrim{position:absolute;left:${k(150, 1920, W)}px;top:${k(130, 1080, H)}px;width:${k(1620, 1920, W)}px;height:${k(820, 1080, H)}px;background:radial-gradient(ellipse at center,rgba(0,0,0,.58) 0%,rgba(0,0,0,.4) 38%,rgba(0,0,0,0) 72%)}
+#blk{position:absolute;left:0;top:0;width:${W}px;height:${H}px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;font-family:'Segoe UI','Segoe UI Variable','Noto Sans','Helvetica Neue',Arial,'Segoe UI Historic','Segoe UI Symbol',Tahoma,sans-serif;color:#fff;text-shadow:0 2px 26px rgba(0,0,0,.5)}
 #blk>*{will-change:transform,opacity}
 #logo{max-width:380px;max-height:96px;object-fit:contain;margin-bottom:34px}
 #pill{font-size:22px;font-weight:700;letter-spacing:.24em;text-transform:uppercase;padding:11px 28px 11px 32px;border-radius:999px;border:1.5px solid ${a(0.7)};background:${a(0.16)};color:${cssRgb(light)};margin-bottom:34px;text-shadow:none}
-#head{font-weight:700;line-height:1.1;letter-spacing:-.01em;max-width:1500px;text-wrap:balance;overflow-wrap:break-word}
-#sub{font-weight:400;line-height:1.3;color:rgba(255,255,255,.8);max-width:1300px;margin-top:30px;text-wrap:balance;overflow-wrap:break-word}
+#head{font-weight:700;line-height:1.1;letter-spacing:-.01em;max-width:${Math.min(1500, W - 140)}px;text-wrap:balance;overflow-wrap:break-word}
+#sub{font-weight:400;line-height:1.3;color:rgba(255,255,255,.8);max-width:${Math.min(1300, W - 180)}px;margin-top:30px;text-wrap:balance;overflow-wrap:break-word}
 </style></head><body>
-<div id="bg"></div><canvas id="c" width="1920" height="1080"></canvas>
+<div id="bg"></div><canvas id="c" width="${W}" height="${H}"></canvas>
 <div id="blur"></div><div id="scrim"></div>
 <div id="blk">${els}</div>
 <script>
@@ -127,6 +135,9 @@ ${PAGE_JS}
 const PAGE_JS = String.raw`
 (function(){
 var W=1920,H=1080,T=CFG.t,KIND=CFG.kind,MOTIF=CFG.motif;
+/* the motif is drawn on a 1920x1080 stage scaled to cover the film's frame (identity for a wide film) */
+var VW=CFG.vw||W,VH=CFG.vh||H,S=Math.max(VW/W,VH/H),OX=(VW-W*S)/2,OY=(VH-H*S)/2;
+function base(){ctx.setTransform(S,0,0,S,OX,OY)}
 var cv=document.getElementById('c'),ctx=cv.getContext('2d');
 function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
 var R=mulberry(CFG.seed*7919+13);
@@ -151,10 +162,10 @@ function fit(el,maxLines,from,to,step){
     if(el.getBoundingClientRect().height<=lh*maxLines+2&&el.scrollWidth<=el.clientWidth+1)return;
   }
 }
-fit(elHead,2,108,38,2);
+fit(elHead,CFG.headLines||2,108,38,2);
 fit(elSub,2,38,24,1);
 var LOGO={x:960,y:540};
-(function(){var e=elLogo||elPill||elHead;if(e){LOGO={x:e.offsetLeft+e.offsetWidth/2,y:e.offsetTop+e.offsetHeight/2}}})();
+(function(){var e=elLogo||elPill||elHead;if(e){LOGO={x:(e.offsetLeft+e.offsetWidth/2-OX)/S,y:(e.offsetTop+e.offsetHeight/2-OY)/S}}})();
 var TK=Math.min(1,T/4);
 var items=[[elLogo,.30],[elPill,.50],[elHead,.72],[elSub,1.02]];
 function textAt(t){
@@ -513,7 +524,7 @@ function cardsProblem(t){
 function frame(t){
   t=cl(t,0,T);
   NOW=t;
-  ctx.setTransform(1,0,0,1,0,0);ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
+  base();ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';
   ctx.clearRect(0,0,W,H);
   background(t);
   ctx.save();
@@ -525,7 +536,7 @@ function frame(t){
     /* halo around the logo, in the picture's own space */
     var hl=sg(t,.3,1.4);
     var hx=960+(LOGO.x-960)/ (1) ,hy=LOGO.y;
-    ctx.save();ctx.setTransform(1,0,0,1,0,0);
+    ctx.save();base();
     var g=ctx.createRadialGradient(LOGO.x,LOGO.y,0,LOGO.x,LOGO.y,340);g.addColorStop(0,ac(.2*hl));g.addColorStop(1,ac(0));ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
     for(var r=0;r<2;r++){var ph=((t*.12+r*.5)%1);ctx.globalAlpha=(1-ph)*.18*hl;ctx.strokeStyle=lc(1);ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(LOGO.x,LOGO.y,70+ph*260,0,6.2832);ctx.stroke()}
     ctx.restore();ctx.globalAlpha=1;
@@ -552,9 +563,11 @@ export async function renderScene(inp: SceneInput, outFile: string): Promise<{ f
   const tmp = mkdtempSync(join(tmpdir(), 'vg-scene-'))
   let browser: Awaited<ReturnType<typeof launch>> | null = null
   try {
-    browser = await launch({ width: 1920, height: 1080, scale: 1, userDataDir: join(tmp, 'profile') })
+    const width = inp.size?.width ?? 1920
+    const height = inp.size?.height ?? 1080
+    browser = await launch({ width, height, scale: 1, userDataDir: join(tmp, 'profile') })
     const page = await browser.newPage()
-    await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 })
+    await page.setViewport({ width, height, deviceScaleFactor: 1 })
     await page.setContent(sceneHtml(inp), { waitUntil: 'load' })
     await page.evaluate('document.fonts && document.fonts.ready')
 

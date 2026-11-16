@@ -947,10 +947,10 @@ if (headlessFile) {
         return {
           // a cheap 16:9 still of the clip's first frame (the user's image model, metered by the provider under the "ai keyframe" stage), checked by the vision model
           still: media.imageAvailable() && !['none', 'stock'].includes(effective.media.image || 'auto')
-            ? async (prompt: string) => {
+            ? async (prompt: string, o?: { portrait?: boolean }) => {
                 meter.setStage('ai keyframe')
                 try {
-                  const { jpeg } = await media.keyframe(prompt)
+                  const { jpeg } = await media.keyframe(prompt, o?.portrait)
                   const dir = join(appReconStore.runDir(runId), 'keyframes')
                   mkdirSync(dir, { recursive: true })
                   const file = join(dir, `keyframe-${Date.now()}.jpg`)
@@ -963,7 +963,7 @@ if (headlessFile) {
           reviewStill: async (file: string) => media.reviewKeyframe(readFileSync(file)),
           clip: async (prompt, seconds, opts) => {
             if (opts?.imageFile) meter.setStage('ai clip')
-            const asset = await media.clipToLibrary(prompt, 'landscape', { fresh: true, projectId: `ar-${runId}`, durationSec: seconds, ...(opts?.imageFile ? { image: readFileSync(opts.imageFile) } : {}) })
+            const asset = await media.clipToLibrary(prompt, opts?.portrait ? 'portrait' : 'landscape', { fresh: true, projectId: `ar-${runId}`, durationSec: seconds, ...(opts?.imageFile ? { image: readFileSync(opts.imageFile) } : {}) })
             const file = library.path(asset.id)
             if (!file) throw new Error('The AI clip was made but could not be found in the library')
             return { file, durationSec: asset.durationSec }
@@ -1029,10 +1029,10 @@ if (headlessFile) {
         if (!ready) return null
         return {
           still: media.imageAvailable() && !['none', 'stock'].includes(effective.media.image || 'auto')
-            ? async (prompt: string) => {
+            ? async (prompt: string, o?: { portrait?: boolean }) => {
                 meter.setStage('ai keyframe')
                 try {
-                  const { jpeg } = await media.keyframe(prompt)
+                  const { jpeg } = await media.keyframe(prompt, o?.portrait)
                   const dir = join(marketingStore.runDir(runId), 'keyframes')
                   mkdirSync(dir, { recursive: true })
                   const file = join(dir, `keyframe-${Date.now()}.jpg`)
@@ -1044,7 +1044,7 @@ if (headlessFile) {
           reviewStill: async (file: string) => media.reviewKeyframe(readFileSync(file)),
           clip: async (prompt, seconds, opts) => {
             if (opts?.imageFile) meter.setStage('ai clip')
-            const asset = await media.clipToLibrary(prompt, 'landscape', { fresh: true, projectId: `mk-${runId}`, durationSec: seconds, ...(opts?.imageFile ? { image: readFileSync(opts.imageFile) } : {}) })
+            const asset = await media.clipToLibrary(prompt, opts?.portrait ? 'portrait' : 'landscape', { fresh: true, projectId: `mk-${runId}`, durationSec: seconds, ...(opts?.imageFile ? { image: readFileSync(opts.imageFile) } : {}) })
             const file = library.path(asset.id)
             if (!file) throw new Error('The AI clip was made but could not be found in the library')
             return { file, durationSec: asset.durationSec }

@@ -4,6 +4,8 @@
  */
 
 import { MAX_STYLE_LINKS, parseYouTubeUrl } from './youtube'
+import { isPlatformId } from './shapes'
+import type { PlatformId } from './spec'
 
 export type SignInMode = 'saved' | 'self' | 'none'
 export type Depth = 'quick' | 'standard' | 'thorough'
@@ -49,6 +51,8 @@ export interface AppInput {
   mode: VideoMode
   launch?: LaunchText
   targetSec: number
+  /** where the film will be posted, which sets its shape (absent = wide YouTube 1920×1080); the app itself is always recorded wide */
+  platform?: PlatformId
   /** use the AI writer and voice when the plan allows; off = the free engine */
   useAi: boolean
   /** allow AI-made video clips (a cutaway illustrating the idea). Sentences in "What should the video show?" that ask for an AI video are carried out whether or not this is ticked. Off by default: clips cost money. */
@@ -195,6 +199,7 @@ export function validateApp(raw: unknown): { ok: true; value: AppInput } | { ok:
       mode,
       launch,
       targetSec: Number.isFinite(target) ? Math.max(20, Math.min(120, Math.round(target))) : 44,
+      platform: isPlatformId(r.platform) ? r.platform : undefined,
       useAi: r.useAi !== false,
       aiMedia: r.aiMedia === true,
       aiMusic: r.aiMusic === true,

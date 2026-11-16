@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type BusinessProfile, type MarketEvent, type MarketJob, type MarketRunRecord, type MarketStage, type VideoCard } from '../api'
 import { Section } from '../components/ui'
+import { POST_APPS, shapeById, shapeOf } from '@shared/shapes'
+import type { PlatformId } from '@shared/spec'
 
 /**
  * Market your business: type the website address, and the engine reads the
@@ -125,6 +127,13 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
     return true
   }
 
+  /** where a card's film will be posted (its shape); saved at once */
+  const setPlatform = async (card: VideoCard, platform: PlatformId) => {
+    const r = await api.market.updateCard(sel, card.id, { platform })
+    if (!r.ok) return setError(r.error)
+    setBusinesses((bs) => bs.map((b) => (b.id === sel ? r.profile : b)))
+  }
+
   const field = (card: VideoCard, k: keyof Draft, value: string) => setDrafts((ds) => ({ ...ds, [card.id]: { ...ds[card.id], [k]: value } }))
   const valueOf = (card: VideoCard, k: keyof Draft): string => drafts[card.id]?.[k] ?? card[k]
 
@@ -239,6 +248,16 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
                         <div className="flex items-center gap-2">
                           <span className="text-[11px] font-bold uppercase tracking-wide text-ink/40">Call to action</span>
                           <input aria-label="Call to action" value={valueOf(card, 'cta')} onChange={(e) => field(card, 'cta', e.target.value)} onBlur={() => void commit(card, 'save')} maxLength={60} className="field flex-1 px-3 py-1 text-sm" />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="whitespace-nowrap text-[11px] font-bold uppercase tracking-wide text-ink/40">Post to</span>
+                          <select aria-label="Where it will be posted" value={card.platform ?? 'youtube'} onChange={(e) => void setPlatform(card, e.target.value as PlatformId)} className="field flex-1 px-3 py-1 text-sm">
+                            {POST_APPS.map((a) => (
+                              <option key={a.id} value={a.id}>
+                                {a.emoji} {a.label} · {shapeById(shapeOf(a.id)).label} {shapeOf(a.id)}
+                              </option>
+                            ))}
+                          </select>
                         </div>
                       </div>
                       <div className="mt-3 flex items-center justify-between gap-2">

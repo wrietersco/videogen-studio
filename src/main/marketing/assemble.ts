@@ -43,6 +43,8 @@ export interface AssembleInput {
   aiMusic?: (info: { cuts: number[]; total: number }) => Promise<Stereo | null>
   keep?: boolean
   log?: (message: string) => void
+  /** the film's frame (default 1920×1080) */
+  size?: { width: number; height: number }
 }
 
 export interface AssembleResult {
@@ -121,7 +123,9 @@ export async function assemble(inp: AssembleInput): Promise<AssembleResult> {
 
   // ---- captions: the spoken words of every piece, in reading-sized chunks
   const beats = inp.pieces.map((p, i) => ({ start: starts[i], end: starts[i] + durs[i], voiceStart: starts[i] + (i === 0 ? 0.5 : X + 0.15), voiceSec: spoken(p), text: p.text, chapter: p.chapter ?? '', index: p.chapter ? i + 1 : 0 }))
-  const ass = buildCaptions(beats, 1920, 1080)
+  const W = inp.size?.width ?? 1920
+  const H = inp.size?.height ?? 1080
+  const ass = buildCaptions(beats, W, H)
   const captionsFile = join(inp.dir, 'captions.ass')
   writeFileSync(captionsFile, ass)
 
@@ -135,15 +139,15 @@ export async function assemble(inp: AssembleInput): Promise<AssembleResult> {
       // one picture, pushed slowly into: the zoom grows frame by frame over the whole piece
       const frames = Math.max(1, Math.round(durs[i] * 30))
       inputs.push('-loop', '1', '-framerate', '30', '-i', p.file)
-      graph.push(`[${i}:v]scale=2400:1350:force_original_aspect_ratio=increase,crop=2400:1350,zoompan=z='1+0.10*on/${frames}':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s=1920x1080:fps=30,${norm},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[${label}]`)
+      graph.push(`[${i}:v]scale=${Math.round(W * 1.25)}:${Math.round(H * 1.25)}:force_original_aspect_ratio=increase,crop=${Math.round(W * 1.25)}:${Math.round(H * 1.25)},zoompan=z='1+0.10*on/${frames}':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s=${W}x${H}:fps=30,${norm},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[${label}]`)
     } else if (p.kind === 'clip') {
       const hold = Math.max(0, durs[i] - (p.clipSec ?? durs[i])) + 0.2
       inputs.push('-i', p.file)
-      graph.push(`[${i}:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,${norm},tpad=stop_mode=clone:stop_duration=${num(hold)},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[${label}]`)
+      graph.push(`[${i}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},${norm},tpad=stop_mode=clone:stop_duration=${num(hold)},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[${label}]`)
     } else {
       const hold = Math.max(0, durs[i] - (p.srcSec ?? durs[i])) + 0.3
       inputs.push('-i', p.file)
-      graph.push(`[${i}:v]scale=1920:1080,${norm},tpad=stop_mode=clone:stop_duration=${num(hold)},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS${p.fadeOut ? `,fade=t=out:st=${num(durs[i] - 0.8)}:d=0.8` : ''}[${label}]`)
+      graph.push(`[${i}:v]scale=${W}:${H},${norm},tpad=stop_mode=clone:stop_duration=${num(hold)},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS${p.fadeOut ? `,fade=t=out:st=${num(durs[i] - 0.8)}:d=0.8` : ''}[${label}]`)
     }
     labels.push(label)
   })
