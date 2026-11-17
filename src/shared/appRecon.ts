@@ -48,7 +48,23 @@ export const AppPage = z.object({
   /** the visible message on the page, if any (flash banners, errors) */
   notices: z.array(z.string()),
   /** the start of what the page says, and the labels drawn in its charts or graphs: what a writer may describe */
-  text: z.string().optional()
+  text: z.string().optional(),
+  /** the parts of the page a person would scroll through or step through, in page order (headings, stepper stages, tabs, cards) */
+  sections: z
+    .array(
+      z.object({
+        label: z.string(),
+        selector: z.string(),
+        kind: z.enum(['section', 'stage', 'tab', 'card']),
+        /** top of the part, in CSS px from the top of the page */
+        y: z.number().optional(),
+        /** the start of what it says */
+        text: z.string().optional(),
+        /** it opens and closes (summary, aria-expanded): clicking it only shows more */
+        expandable: z.boolean().optional()
+      })
+    )
+    .optional()
 })
 export type AppPage = z.infer<typeof AppPage>
 
@@ -107,7 +123,7 @@ export const FindSpec = z.object({
 })
 export type FindSpec = z.infer<typeof FindSpec>
 
-export const StepKind = z.enum(['goto', 'type', 'click', 'press', 'wait', 'expect', 'handoff', 'scroll'])
+export const StepKind = z.enum(['goto', 'type', 'click', 'press', 'wait', 'expect', 'handoff', 'scroll', 'reveal'])
 export const Step = z.object({
   id: z.string(),
   /** which narrated beat of the video this step belongs to */
@@ -131,7 +147,9 @@ export const Step = z.object({
   /** a step the person wrote: the control is found again by this description each time, so a moved page still works */
   find: FindSpec.optional(),
   /** the part of the screen the viewer should look at once this step is done */
-  focus: z.enum(['target', 'form', 'banner', 'page']).optional()
+  focus: z.enum(['target', 'form', 'banner', 'page']).optional(),
+  /** how long to stay on this step once done, in ms (scaled by the recording's pace) */
+  holdMs: z.number().optional()
 })
 export type Step = z.infer<typeof Step>
 
