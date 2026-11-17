@@ -291,7 +291,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
             )}
           </Section>
 
-          <Section icon="📐" title="Where will you post it?" hint="Sets the video's shape. The app is always recorded on a wide screen; for a tall or square video the camera follows what is being clicked, so the page stays easy to read on a phone.">
+          <Section icon="📐" title="Where will you post it?" hint="Sets the video's shape. For TikTok, Reels, Shorts and other tall videos the app is recorded as it looks on a phone; for wide and square videos it is recorded on a computer screen.">
             <ShapePicker platform={form.platform} apps={POST_APPS} onPlatform={(p) => set('platform', p)} />
           </Section>
 

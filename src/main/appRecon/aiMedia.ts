@@ -27,12 +27,23 @@ export interface MediaRequest {
   placement: Placement
   /** the sentence only says where the clip goes ("use ai video intro"); the subject is then the film itself */
   generic: boolean
+  /** how long this part of the film should last ("the problem takes 20s"); several short clips are chained to fill it */
+  seconds?: number
+  /** which half of a problem-and-solution opening this is */
+  part?: 'problem' | 'solution'
 }
+
+/** how the person wants the AI pictures to look */
+export type ClipStyle = 'infographic'
 
 export interface MediaAsk {
   requests: MediaRequest[]
   /** the person said they do NOT want AI video */
   declined: boolean
+  /** a look the person named ("infographic styled video"); null = the engine's cinematic default */
+  style: ClipStyle | null
+  /** "do not show abstract graphics": only concrete, recognisable things */
+  noAbstract: boolean
 }
 
 const MEDIA_NOUN = /\b(?:videos?|clips?|animations?|animated|motion\s+(?:graphics?|diagrams?|visuals?|design)|footage|b-?rolls?|cutaways?|illustrations?)\b/i
@@ -48,16 +59,17 @@ const END = /\b(?:outro|closing|at\s+the\s+end|to\s+end|ending|finish(?:es)?\s+w
 const MIDDLE = /\b(?:in\s+the\s+middle|midway|halfway|mid-?video|between|in\s+the\s+middle\s+of)\b/i
 
 /** sentences, but a number like 3.5 or an address like example.com stays whole */
+const SENTENCE_BREAK = /(?<=[.!?])\s+(?=[A-Z"“(])|(?<=[A-Za-z0-9)]{3}[.!?])\s+(?=[a-z])/
 function sentences(text: string): string[] {
   return text
-    .split(/(?<=[.!?])\s+(?=[A-Z"“(])|\n+/)
+    .split(new RegExp(SENTENCE_BREAK.source + '|\\n+'))
     .map((s) => s.replace(/\s+/g, ' ').trim())
     .filter(Boolean)
 }
 
 /** the sentences of one line, each keeping a list number it started with (the number stays with the first sentence) */
 function sentencesOfLine(line: string): string[] {
-  const parts = line.split(/(?<=[.!?])\s+(?=[A-Z"“(])/).map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean)
+  const parts = line.split(SENTENCE_BREAK).map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean)
   return parts.length ? parts : [line.trim()]
 }
 
@@ -69,6 +81,47 @@ const LIST_LINE = /^\s*(?:(?:step\s*)?\d{1,2}\s*[.):-]|[-*•▪●])\s+/i
 const STEP_VERB = /^\s*(?:(?:step\s*)?\d{1,2}\s*[.):-]|[-*•▪●])?\s*(?:(?:and|then|now|next|please|from|in|on)\b[^,]{0,40},?\s*)?(?:click|press|tap|select|choose|open|go\s+to|navigate|type|enter|scroll|log|sign)\b/i
 
 const PLACE_WORD = /\b(?:intro|outro|opening|closing|ending)\b/i
+
+const INFOGRAPHIC = /\binfo-?graph\w*|\bflat\s+(?:design|vector|2d)\b|\b2d\s+(?:animation|vector|motion)\b|\bvector\s+(?:animation|style|art)\b|\bmotion\s+graphics?[-\s]+styled?\b|\bexplainer[-\s]+styled?\b/i
+const STYLE_CONTEXT = /\b(?:videos?|clips?|animations?|illustrations?|visuals?|graphics?|styled?|looks?)\b/i
+const NO_ABSTRACT = /\b(?:no|not|don'?t|do\s+not|without|never|avoid|stay\s+away\s+from)\b[^.!?\n]{0,25}\babstract\w*/i
+const PART_SECONDS = /\b(problem|solution)\b(?:\s+statement)?[^.!?\n]{0,40}?\b(\d{1,3})\s*(?:s|secs?|seconds?)\b/gi
+
+/** a sentence that is about how the pictures should look */
+export function isStyleSentence(s: string): boolean {
+  if (LIST_LINE.test(s) && STEP_VERB.test(s)) return false
+  return (INFOGRAPHIC.test(s) && STYLE_CONTEXT.test(s)) || NO_ABSTRACT.test(s)
+}
+
+/** a sentence that says how long the problem or the solution should take */
+export function isDurationSentence(s: string): boolean {
+  if (LIST_LINE.test(s) && STEP_VERB.test(s)) return false
+  PART_SECONDS.lastIndex = 0
+  return PART_SECONDS.test(s)
+}
+
+/** "the problem takes 20s and the solution 20s" */
+export function partSeconds(text: string): { problem?: number; solution?: number } {
+  const out: { problem?: number; solution?: number } = {}
+  for (const said of sentences(typedPart(text))) {
+    if (!isDurationSentence(said)) continue
+    PART_SECONDS.lastIndex = 0
+    for (const m of said.matchAll(PART_SECONDS)) out[m[1].toLowerCase() as 'problem' | 'solution'] = Math.max(3, Math.min(40, Number(m[2])))
+  }
+  return out
+}
+
+/** the look and the don'ts the person wrote down for the AI pictures */
+export function parseClipStyle(context: string): { style: ClipStyle | null; noAbstract: boolean } {
+  let style: ClipStyle | null = null
+  let noAbstract = false
+  for (const said of sentences(typedPart(context))) {
+    if (LIST_LINE.test(said) && STEP_VERB.test(said)) continue
+    if (INFOGRAPHIC.test(said) && STYLE_CONTEXT.test(said)) style = 'infographic'
+    if (NO_ABSTRACT.test(said)) noAbstract = true
+  }
+  return { style, noAbstract }
+}
 
 export function isMediaSentence(s: string): boolean {
   if (NEGATIVE.test(s)) return false
@@ -86,12 +139,29 @@ export function parseMediaAsk(context: string): MediaAsk {
   for (const said of sentences(typed)) {
     if (!isMediaSentence(said)) continue
     const placement: Placement = START.test(said) ? 'start' : END.test(said) ? 'end' : MIDDLE.test(said) ? 'middle' : 'start'
-    let subject = said.replace(LEAD, '').replace(KIND, '').replace(/^(?:to|that|which|of|for|about|showing|showcasing|illustrating)\s+/i, '').replace(/[.!?]+$/, '').trim()
+    let subject = said.replace(/^for\s+(?:the\s+)?(?:intro|opening|outro|closing|ending)\s*(?:->|→|=>|:|-|,)?\s*/i, '').replace(LEAD, '').replace(KIND, '').replace(/^(?:to|that|which|of|for|about|showing|showcasing|illustrating)\s+/i, '').replace(/[.!?]+$/, '').trim()
     if (subject.length < 6) subject = said.replace(/[.!?]+$/, '')
     const content = subject.toLowerCase().replace(/\b(?:intro|outro|opening|closing|ending|based|use|ai|a\.i\.|video|videos|clip|clips|a|an|the|for|my|our|please|and|with|at|start|end|generated|short)\b/g, ' ').replace(/[^a-z]+/g, ' ').trim()
     requests.push({ said: said.slice(0, 400), subject: subject.slice(0, 300), placement, generic: content.length < 6 })
   }
-  return { requests: requests.slice(0, MAX_CLIPS), declined }
+  // "the problem takes 20s and the solution 20s": the first opening request becomes those two parts
+  const parts = partSeconds(typed)
+  let list = requests.slice(0, MAX_CLIPS)
+  if ((parts.problem || parts.solution) && list.length) {
+    const at = Math.max(0, list.findIndex((r) => r.placement === 'start'))
+    const base = list[at]
+    const part = (which: 'problem' | 'solution', seconds: number): MediaRequest => ({
+      said: base.said,
+      subject: which === 'problem' ? 'the problem people face, which this product solves' : 'the solution this product gives, and how it fixes that problem',
+      placement: base.placement,
+      generic: false,
+      seconds,
+      part: which
+    })
+    const made = [parts.problem ? part('problem', parts.problem) : null, parts.solution ? part('solution', parts.solution) : null].filter((x): x is MediaRequest => !!x)
+    list = [...list.slice(0, at), ...made, ...list.slice(at + 1)]
+  }
+  return { requests: list, declined, ...parseClipStyle(typed) }
 }
 
 /** the typed context with the sentences that ask for AI media taken out (so they are never read as steps to perform on the app) */
@@ -114,6 +184,8 @@ export interface PlannedClip {
   /** what the person asked for, shown in the review notes */
   said: string
   auto: boolean
+  /** how long this clip lasts, when the person set the length of its part */
+  seconds?: number
 }
 
 const NO_TEXT = 'No text, no letters, no logos, no watermarks, no faces. Smooth, slow, continuous motion.'
@@ -231,6 +303,7 @@ const ACTION_CUE = /\b(?:opens?|opening|rises?|rising|rolls?|rolling|slides?|sli
 const CAMERA_CUE = /\b(?:camera|dolly|pan|panning|tilt|tilts|zoom\w*|crane|tracking|orbit\w*|push-?in|pull-?back|pulls?\s+back|close-?up|macro|overhead|aerial|wide\s+shot|top-?down|rack\s+focus|handheld|lens)\b/i
 const LIGHT_CUE = /\b(?:light|lit|lamplight|lamp\s?light|candlelight|glow\w*|sunrise|sunset|dusk|dawn|golden\s+hour|moonlight|daylight|twilight|shadows?|illuminat\w*|backlit|lantern\w*|candle\w*)\b/i
 const BANNED_CONTENT = /\b(?:text|texts|typography|letters?|numbers?|digits?|logos?|watermarks?|captions?|subtitles?|writing|calligraphy|interface|screenshots?|screens?\s+showing|ui|faces?|people|persons?|crowds?|worshippers?|prophets?|silhouettes? of (?:a )?(?:man|woman|person))\b/i
+const INFO_BANNED = /\b(?:text|texts|typography|letters?|numbers?|digits?|logos?|watermarks?|captions?|subtitles?|writing|calligraphy|screenshots?|faces?)\b/i
 const FIGURES = /\b(?:figures?|humans?|men|women|man|woman|child|children|prayer|praying)\b/i
 
 /** the prompt without the "no text, no letters" style sentences that only forbid things */
@@ -254,12 +327,25 @@ function concreteNouns(prompt: string): string[] {
 }
 
 /** what is wrong with a picture description for a text-to-video model; an empty list means it is good to send */
-export function promptIssues(prompt: string, opts?: { sacred?: boolean }): string[] {
+export function promptIssues(prompt: string, opts?: { sacred?: boolean; style?: ClipStyle | null }): string[] {
   const issues: string[] = []
   const text = (prompt ?? '').trim()
   const n = wordsOf(text).length
   if (n < 40) issues.push(`too short (${n} words; 60 to 110 wanted)`)
   if (n > 140) issues.push(`too long (${n} words; 60 to 110 wanted)`)
+  if (opts?.style === 'infographic') {
+    // a flat infographic is judged on its own terms: icons and charts, no photographs, no readable words
+    const flat = withoutNegations(text)
+    const bannedFlat = INFO_BANNED.exec(flat)
+    if (bannedFlat) issues.push(`banned content: "${bannedFlat[0]}" (no text, letters, numbers, logos or faces)`)
+    const look = /\b(?:photograph\w*|cinematic|realistic|film\s+grain|dolly|lens|lantern\w*|candle\w*|lamplight)\b/i.exec(flat)
+    if (look) issues.push(`wrong look: "${look[0]}" (the person asked for a flat 2D infographic, not a photographed scene)`)
+    if (opts.sacred) {
+      const fig = FIGURES.exec(flat)
+      if (fig) issues.push(`banned content: "${fig[0]}" (religious subject: no people or figures)`)
+    }
+    return issues
+  }
   const nouns = concreteNouns(text)
   for (const [re, name] of ABSTRACT_ALWAYS) if (re.test(text)) issues.push(`abstract language: "${name}"; name a physical object instead`)
   if (nouns.length < 3) for (const [re, name] of ABSTRACT_UNLESS_CONCRETE) if (re.test(text)) issues.push(`vague word without concrete objects: "${name}"`)
@@ -292,19 +378,23 @@ export async function fixPrompt(inp: {
   prompt: string
   /** the call counts as repaired from this many extra tries (always at most one) */
   sacred?: boolean
+  /** the look the person asked for */
+  style?: ClipStyle | null
   context?: string
   secrets?: string[]
   say?: (m: string) => void
 }): Promise<{ prompt: string; usedStock: boolean; issues: string[]; repaired: boolean }> {
-  const issues = promptIssues(inp.prompt, { sacred: inp.sacred })
+  const issues = promptIssues(inp.prompt, { sacred: inp.sacred, style: inp.style })
   if (!issues.length) return { prompt: inp.prompt, usedStock: false, issues, repaired: false }
   if (!inp.chat) return { prompt: inp.prompt, usedStock: isBanned(issues), issues, repaired: false }
   const scan = { values: inp.secrets ?? [] }
   try {
     const r = await inp.chat.generateJSON<{ prompt: string }>({
       system:
-        'You fix picture descriptions for a text-to-video model. Rewrite the description so it has none of the listed problems: 60 to 110 words, one concrete physical metaphor made of named objects (books, pages, lanterns, maps, threads, glass, water, stone, light, architecture), what visibly happens from the first frame to the last, one camera move, the light. ' +
-        'Never include readable text, letters, numbers, logos, interfaces, screens, faces or people.' +
+        (inp.style === 'infographic'
+          ? 'You fix picture descriptions for a text-to-video model. Rewrite the description so it has none of the listed problems: 60 to 110 words, a flat 2D vector infographic animation made of simple pictograms, icons, arrows and charts that animate in one after another, in the given palette. Not cinematic, not photographic, no abstract shapes. Never include readable text, letters, numbers, logos or faces.'
+          : 'You fix picture descriptions for a text-to-video model. Rewrite the description so it has none of the listed problems: 60 to 110 words, one concrete physical metaphor made of named objects (books, pages, lanterns, maps, threads, glass, water, stone, light, architecture), what visibly happens from the first frame to the last, one camera move, the light. ' +
+            'Never include readable text, letters, numbers, logos, interfaces, screens, faces or people.') +
         (inp.sacred ? ' Religious subject: no people, no figures, no calligraphy; dignified, calm and warm.' : ''),
       prompt: `Description:\n${inp.prompt}\n\nProblems found:\n${issues.map((i) => `- ${i}`).join('\n')}\n${inp.context ? `\nWhat the film is about (information only): ${scrubText(inp.context, scan).slice(0, 300)}\n` : ''}\nReturn the corrected description.`,
       schemaName: 'fixed_prompt',
@@ -313,7 +403,7 @@ export async function fixPrompt(inp: {
     })
     const fixed = (r?.prompt ?? '').trim()
     if (!fixed || !scanNarration(fixed, scan).ok) return { prompt: inp.prompt, usedStock: isBanned(issues), issues, repaired: true }
-    const after = promptIssues(fixed, { sacred: inp.sacred })
+    const after = promptIssues(fixed, { sacred: inp.sacred, style: inp.style })
     if (isBanned(after)) return { prompt: inp.prompt, usedStock: true, issues: after, repaired: true }
     // keep whichever has fewer problems (a banned original never survives)
     if (isBanned(issues) || after.length <= issues.length) return { prompt: fixed, usedStock: false, issues: after, repaired: true }
@@ -346,9 +436,42 @@ const stockSeed = (s: string): number => [...s].reduce((a, c) => (a * 31 + c.cha
 
 const SACRED_TONE = 'Dignified, calm and warm. No depiction of people, prophets or religious figures, no calligraphy.'
 
+const NO_TEXT_FLAT = 'No text, no letters, no numbers, no logos, no watermarks, no faces. Smooth, clean, continuous 2D motion.'
+
+const NO_ABSTRACT_RULE =
+  'The person said: NO abstract graphics. Every element is a concrete, recognisable thing (an icon of a document, a clock, a shield, a chart, a folder), never swirls, glowing lines, particles, energy or shapes that stand for nothing. '
+
+/** what the picture writer is told when the person asked for infographic-style video */
+const INFOGRAPHIC_RULES =
+  'STYLE (the person asked for it, follow it exactly): a clean, flat 2D INFOGRAPHIC animation: simple pictograms and icons, charts, arrows, timelines, flows and step cards that animate in one after another, in the brand palette. NOT cinematic, NOT photographic, no real-world camera work, no lanterns, books or candles. ' +
+  'Every icon stands for something real in the story (documents, a clock, a magnifying glass, a tangled pile of files, a checklist, a shield, a bar chart, a folder). ' +
+  'FORBIDDEN, always: readable words, letters, numbers or logos (use icons and shapes only, charts with bars and lines but no figures), watermarks, photographs, faces. '
+
+/** flat infographic shots for when there is no writer: two per part, chosen by the shot number */
+const INFOGRAPHIC_SHOTS: Record<'problem' | 'solution' | 'general', string[]> = {
+  problem: [
+    'A flat 2D vector infographic animation on a clean canvas. A tangled stack of paper-document icons slides in from the left, a clock icon starts ticking beside it, and a magnifying-glass icon searches back and forth over the pile. Thin dashed arrows loop between the icons, then a red warning-triangle icon pops in, showing wasted time and confusion. Simple pictograms only, smooth animated motion graphics, locked frame, even flat light.',
+    'A flat 2D vector infographic animation on a clean canvas. A row of folder icons fills up with document icons until a stack of them tips over; a stopwatch icon spins and a downward line chart slides in beside it, then a question-mark badge and a warning-triangle icon pop onto the stack. Simple pictograms only, smooth animated motion graphics, locked frame, even flat light.'
+  ],
+  solution: [
+    'A flat 2D vector infographic animation on a clean canvas. A neat row of icons slides into place one after another: a checklist, a gear, a shield and a rising bar chart. Straight arrows connect them into one tidy left-to-right flow, the loose documents fold into a single folder icon, and a green check-mark badge pops on at the end. Simple pictograms only, smooth animated motion graphics, locked frame, even flat light.',
+    'A flat 2D vector infographic animation on a clean canvas. A single search-bar icon slides in at the top, a magnifying glass sweeps across it and three clean result cards stack neatly below, each with a small pictogram. A line chart climbs steadily to the right and a green check-mark badge pops onto the last card. Simple pictograms only, smooth animated motion graphics, locked frame, even flat light.'
+  ],
+  general: [
+    'A flat 2D vector infographic animation on a clean canvas. Three connected step cards slide in one after another, each with a simple pictogram: a browser window, a gear and a bar chart. Arrows draw between the cards, small progress bars fill, and a check-mark badge pops onto the last card. Smooth animated motion graphics, locked frame, even flat light.',
+    'A flat 2D vector infographic animation on a clean canvas. A timeline line draws from left to right with four round markers; as each marker lights up, a pictogram pops above it: a document, a magnifying glass, a shield and a trophy. Smooth animated motion graphics, locked frame, even flat light.'
+  ]
+}
+
 /** the shot description used when there is no writer (or the writer failed): deterministic from motif, placement and subject */
-function fallbackPrompt(subject: string, placement: Placement, careful: boolean, brand?: ClipBrand, motif?: ClipMotif): string {
+function fallbackPrompt(subject: string, placement: Placement, careful: boolean, brand?: ClipBrand, motif?: ClipMotif, opts: { style?: ClipStyle | null; edge?: boolean; part?: 'problem' | 'solution'; shot?: number } = {}): string {
   const s = subject.replace(/[.!?]+$/, '')
+  if (opts.style === 'infographic') {
+    const set = INFOGRAPHIC_SHOTS[opts.part ?? 'general']
+    const shot = set[(opts.shot ?? 0) % set.length]
+    const k = clipLook(placement, brand, motif)
+    return [opts.part ? '' : `An infographic about ${s}.`, shot, careful ? SACRED_TONE : '', k.palette, opts.edge === false ? '' : k.continuity, NO_TEXT_FLAT].filter(Boolean).join(' ')
+  }
   const frame =
     placement === 'start' ? `An elegant, welcoming opening sequence that introduces ${s}.`
     : placement === 'end' ? `A calm, uplifting closing sequence that leaves a lasting impression of ${s}.`
@@ -382,6 +505,10 @@ export interface PlanMediaInput {
   facts?: string[]
   /** a few words on the kind of product or idea (for example "a knowledge graph of Quran topics"), to help the writer choose the metaphor */
   subjectHint?: string
+  /** the look the person asked for ("infographic styled video") */
+  style?: ClipStyle | null
+  /** the person said no abstract graphics */
+  noAbstract?: boolean
   say: (m: string) => void
 }
 
@@ -393,44 +520,120 @@ const WRITER_RULES =
 const SACRED_RULES =
   'This film is about a religious subject: no people, no figures, no calligraphy or script, no religious sites\' interiors with worshippers. Dignified, calm, warm. Concrete objects such as an open book of blank pages, lamps, a geometric lattice, light through a window, a growing constellation are good. '
 
+/** the longest single clip: a part that should last longer is chained from several clips */
+export const SEGMENT_MAX_SEC = 8
+/** most clips one film may have (each second costs money) */
+export const MAX_SEGMENTS = 8
+
+interface Want {
+  subject: string
+  placement: Placement
+  said: string
+  auto: boolean
+  part?: 'problem' | 'solution'
+  /** how long this clip lasts (absent = the engine's default for the film) */
+  seconds?: number
+  /** which clip of a chained part this is (0-based) and how many there are */
+  shot?: number
+  shots?: number
+}
+
+/** one request is one clip, or several chained clips when it is asked to last longer than a single clip can */
+export function expandRequests(requests: MediaRequest[], topic: string, scrub: (t: string) => string): Want[] {
+  const out: Want[] = []
+  let plain = 0
+  for (const r of requests) {
+    const subject = r.part ? `${r.subject}${topic ? ` (the film is about: ${topic})` : ''}` : r.generic ? topic : scrub(r.subject)
+    if (!r.seconds) {
+      if (plain++ >= MAX_CLIPS) continue
+      out.push({ subject, placement: r.placement, said: r.said, auto: false, ...(r.part ? { part: r.part } : {}) })
+      continue
+    }
+    const shots = Math.max(1, Math.ceil(r.seconds / SEGMENT_MAX_SEC))
+    const each = Math.max(3, Math.min(10, Math.round(r.seconds / shots)))
+    for (let i = 0; i < shots; i++) {
+      out.push({
+        subject: shots > 1 ? `${subject} - shot ${i + 1} of ${shots}${i ? ', continuing the same sequence with the same icons and look' : ''}` : subject,
+        placement: r.placement,
+        said: r.said,
+        auto: false,
+        seconds: each,
+        shot: i,
+        shots,
+        ...(r.part ? { part: r.part } : {})
+      })
+    }
+  }
+  return out.slice(0, MAX_SEGMENTS)
+}
+
 /** decides what each clip shows and says; the person's own sentences come first */
 export async function planMedia(inp: PlanMediaInput): Promise<PlannedClip[]> {
   const scan = { values: inp.secrets }
   const topic = scrubText(inp.topic ?? '', scan).slice(0, 240).trim() || inp.appName
-  const wants: Array<{ subject: string; placement: Placement; said: string; auto: boolean }> = inp.requests.map((r) => ({ subject: r.generic ? topic : scrubText(r.subject, scan), placement: r.placement, said: r.said, auto: false }))
+  const style = inp.style ?? null
+  const wants: Want[] = expandRequests(inp.requests, topic, (t) => scrubText(t, scan))
   if (!wants.length && inp.auto) {
     const goal = scrubText(inp.context, scan).slice(0, 300).trim()
     wants.push({ subject: goal ? `the idea behind ${goal}` : `what ${inp.appName} does, in a simple flow`, placement: 'start', said: 'Automatic opening clip (AI clips are switched on)', auto: true })
   }
-  const stockLine = (w: { auto: boolean; placement: Placement }) => (w.auto ? 'Here is how it works, at a glance.' : w.placement === 'end' ? 'And that is the whole journey, in a moment.' : 'Here is the idea, in motion.')
+  const stockLine = (w: Want) =>
+    w.shot ? ''
+    : w.part === 'problem' ? 'Here is the problem so many people run into.'
+    : w.part === 'solution' ? 'And here is how it gets solved.'
+    : w.auto ? 'Here is how it works, at a glance.'
+    : w.placement === 'end' ? 'And that is the whole journey, in a moment.'
+    : 'Here is the idea, in motion.'
   const given = (pl: Placement): string | undefined => {
     const t = inp.lines?.[pl]?.trim()
     return t && t.length >= 8 && scanNarration(t, scan).ok ? t : undefined
   }
   const careful = SACRED.test(`${topic} ${inp.context}`)
-  const picked = wants.slice(0, MAX_CLIPS)
-  const base: PlannedClip[] = picked.map((w) => ({ prompt: fallbackPrompt(w.subject, w.placement, careful, inp.brand, inp.motif), line: given(w.placement) ?? stockLine(w), placement: w.placement, said: w.said, auto: w.auto }))
+  const picked = wants
+  // where a clip meets the title scene (the last opening clip, the first closing one) it settles into / builds from a calm empty field; the others carry straight on
+  const places = picked.map((w) => w.placement)
+  const edge = (i: number): boolean => (picked[i].placement === 'start' ? i === places.lastIndexOf('start') : picked[i].placement === 'end' ? i === places.indexOf('end') : true)
+  // the written opening line goes to the first clip of its place only
+  const givenFor = (i: number): string | undefined => (places.indexOf(picked[i].placement) === i ? given(picked[i].placement) : undefined)
+  const base: PlannedClip[] = picked.map((w, i) => ({
+    prompt: fallbackPrompt(w.subject, w.placement, careful, inp.brand, inp.motif, { style, edge: edge(i), part: w.part, shot: w.shot ?? 0 }),
+    line: givenFor(i) ?? stockLine(w),
+    placement: w.placement,
+    said: w.said,
+    auto: w.auto,
+    ...(w.seconds ? { seconds: w.seconds } : {})
+  }))
   if (!inp.chat || !base.length) return base
   try {
     const palette = clipLook('middle', inp.brand, inp.motif).palette
     const facts = scrubText((inp.facts ?? []).map((f) => `- ${f.replace(/\s+/g, ' ').trim()}`).filter((f) => f.length > 2).join('\n'), scan).slice(0, 900).trim()
     const hint = scrubText(inp.subjectHint ?? '', scan).slice(0, 200).trim()
-    const example = STOCK_SHOTS[inp.motif ?? 'graph'][0]
+    const example = style === 'infographic' ? INFOGRAPHIC_SHOTS.general[0] : STOCK_SHOTS[inp.motif ?? 'graph'][0]
+    const noAbstract = inp.noAbstract || style === 'infographic' ? NO_ABSTRACT_RULE : ''
     const r = await inp.chat.generateJSON<{ clips: Array<{ n: number; metaphor?: string; action?: string; camera?: string; light?: string; prompt: string; line?: string }> }>({
       system:
         'You direct short AI-generated cutaway clips for a product video. For each clip you write a small storyboard for a text-to-video model, and (unless it is already written) one line of narration to be spoken over it. ' +
-        WRITER_RULES +
-        'Per clip return: "metaphor" (one specific physical, filmable metaphor for the idea, with named objects), "action" (what visibly happens from the first frame to the last), "camera" (one move), "light" (time of day or light quality), and "prompt": 60 to 110 words weaving those into ONE shot description in this order: the subject and setting, the action over time, the camera, the lighting, the palette, the style. ' +
+        (style === 'infographic' ? INFOGRAPHIC_RULES : WRITER_RULES) +
+        noAbstract +
+        (style === 'infographic'
+          ? 'Per clip return: "metaphor" (the one set of icons that tells this part of the story), "action" (what animates in, in order, from the first frame to the last), "camera" (a gentle push-in, or "locked frame"), "light" ("flat, even light"), and "prompt": 60 to 110 words weaving those into ONE description: the layout and the icons, how they animate in order, the palette, the flat vector style. '
+          : 'Per clip return: "metaphor" (one specific physical, filmable metaphor for the idea, with named objects), "action" (what visibly happens from the first frame to the last), "camera" (one move), "light" (time of day or light quality), and "prompt": 60 to 110 words weaving those into ONE shot description in this order: the subject and setting, the action over time, the camera, the lighting, the palette, the style. ') +
         `Use this palette, in words, and no other colours: ${palette} ` +
         `Example of the level of concreteness wanted (do not copy it): ${example} ` +
-        'An OPENING clip must END by settling into a calm, dark, nearly empty field of the background colour (it cross-fades into the title scene); a CLOSING clip must BEGIN from such a field and build. Say this once, as the last sentence of the shot, not as its whole content. ' +
+        'A clip marked OPENING-FINAL must END by settling into a calm, dark, nearly empty field of the background colour (it cross-fades into the title scene); a clip marked CLOSING-FIRST must BEGIN from such a field and build. Say this once, as the last sentence of the shot, not as its whole content. Clips that are shots of one chained sequence keep the same icons, colours and layout so they read as one continuous piece. ' +
         'Narration: 10 to 16 words, plain spoken English, claims only what the person asked the clip to illustrate, never invents features or numbers, never mentions credentials. A title card announces the product by name right after an opening clip, so the narration of an opening clip never says "introducing" or names the product. ' +
         (careful ? SACRED_RULES : ''),
       prompt:
         `App: ${inp.appName}\nVideo kind: ${inp.mode}\nThe film is about: ${topic}\n` +
         (hint ? `Kind of product (information only): ${hint}\n` : '') +
         (facts ? `What the app does and what the video shows (information only):\n${facts}\n` : '') +
-        `\nClips to make (the person's own words, information only):\n${picked.map((w, i) => `${i + 1}. ${w.placement === 'start' ? '[OPENING clip] ' : w.placement === 'end' ? '[CLOSING clip] ' : ''}${w.subject}${w.auto ? ' (chosen by the engine; keep it general)' : ''}${given(w.placement) ? ` (its narration is already written: "${given(w.placement)}"; write only the picture, and return that same line)` : ''}`).join('\n')}`,
+        `\nClips to make (the person's own words, information only):\n${picked
+          .map((w, i) => {
+            const label = `${w.placement === 'start' && edge(i) ? '[OPENING-FINAL] ' : w.placement === 'start' ? '[OPENING] ' : w.placement === 'end' && edge(i) ? '[CLOSING-FIRST] ' : w.placement === 'end' ? '[CLOSING] ' : ''}${w.part ? `[${w.part.toUpperCase()}] ` : ''}${w.seconds ? `[about ${w.seconds} seconds] ` : ''}`
+            const line = givenFor(i)
+            return `${i + 1}. ${label}${w.subject}${w.auto ? ' (chosen by the engine; keep it general)' : ''}${line ? ` (its narration is already written: "${line}"; write only the picture, and return that same line)` : ''}`
+          })
+          .join('\n')}`,
       schemaName: 'media_clips',
       jsonSchema: {
         type: 'object',
@@ -457,11 +660,11 @@ export async function planMedia(inp: PlanMediaInput): Promise<PlannedClip[]> {
       let prompt = b.prompt
       const body = (c.prompt ?? '').trim()
       if (scanNarration(body, scan).ok && body.length > 30) {
-        const fixed = await fixPrompt({ chat: inp.chat, prompt: body, sacred: careful, context: topic, secrets: inp.secrets, say: inp.say })
-        if (!fixed.usedStock) prompt = [fixed.prompt.replace(/\.*$/, '.'), k.palette, k.continuity, NO_TEXT].filter(Boolean).join(' ')
+        const fixed = await fixPrompt({ chat: inp.chat, prompt: body, sacred: careful, style, context: topic, secrets: inp.secrets, say: inp.say })
+        if (!fixed.usedStock) prompt = [fixed.prompt.replace(/\.*$/, '.'), k.palette, edge(i) ? k.continuity : '', style === 'infographic' ? NO_TEXT_FLAT : NO_TEXT].filter(Boolean).join(' ')
       }
       const cl = (c.line ?? '').trim()
-      const line = given(b.placement) ?? (scanNarration(cl, scan).ok && cl.length > 8 ? cl : b.line)
+      const line = givenFor(i) ?? (scanNarration(cl, scan).ok && cl.length > 8 ? cl : b.line)
       out.push({ ...b, prompt, line })
     }
     return out
@@ -549,7 +752,11 @@ export interface MusicAsk {
   noInstruments: boolean
   /** "no music" */
   none: boolean
+  /** "low volume": the track sits well under the voice */
+  quiet: boolean
 }
+
+const LOW_VOLUME = /\b(?:low[-\s]?volum\w*|low[-\s]?level|quiet(?:ly|er)?|soft(?:ly|er)?|subtle|faint(?:ly)?|barely\s+audible|in\s+the\s+background|very\s+low)\b/i
 
 const MUSIC_WORD = /\b(?:music|soundtrack|background\s+(?:sounds?|audio|noise)|sound\s*scape|ambien(?:ce|t)|score)\b/i
 const NO_MUSIC = /\b(?:no|without|skip)\s+(?:any\s+)?(?:background\s+)?music\b/i
@@ -577,12 +784,13 @@ export function parseMusicAsk(context: string): MusicAsk | null {
       const sounds = SOUNDS.filter(([re]) => re.test(said)).map(([, s]) => s)
       const none = NO_MUSIC.test(said)
       const noInstruments = NO_INSTRUMENTS.test(said)
+      const quiet = LOW_VOLUME.test(said)
       if (!sounds.length && !noInstruments && !none) continue
       const prev: MusicAsk | null = found
       const all: string[] = [...new Set([...(prev?.sounds ?? []), ...sounds])]
       // "natural" alone is only a hint; specific sounds replace it
       const specific: string[] = all.filter((x) => x !== 'natural ambience')
-      found = { said: said.slice(0, 300), sounds: specific.length ? specific : all, noInstruments: (prev?.noInstruments ?? false) || noInstruments, none: (prev?.none ?? false) || none }
+      found = { said: said.slice(0, 300), sounds: specific.length ? specific : all, noInstruments: (prev?.noInstruments ?? false) || noInstruments, none: (prev?.none ?? false) || none, quiet: (prev?.quiet ?? false) || quiet }
     }
   }
   return found
@@ -633,6 +841,7 @@ export function parseStructure(context: string): StructureAsk {
 
 function isProductionSentence(s: string): boolean {
   if (MUSIC_WORD.test(s) && (SOUNDS.some(([re]) => re.test(s)) || NO_INSTRUMENTS.test(s) || NO_MUSIC.test(s))) return true
+  if (isStyleSentence(s) || isDurationSentence(s)) return true
   return isProblemSentence(s)
 }
 

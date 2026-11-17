@@ -72,6 +72,39 @@ export interface LaunchOptions {
   userDataDir: string
   /** false opens a normal window (a person has to sign in, or type a code) */
   headless?: boolean
+  /** show pages as a phone does: mobile layout, touch, and a phone's user agent (tall films) */
+  mobile?: boolean
+}
+
+/** phone user agent per browser, built from the browser's own version so it matches what the site sees elsewhere */
+const phoneAgents = new WeakMap<Browser, string>()
+
+/** the browser's own user agent, as an Android phone running the same Chrome would send it */
+export function phoneAgent(desktop: string): string {
+  return desktop
+    .replace(/HeadlessChrome/g, 'Chrome')
+    .replace(/\([^)]*\)/, '(Linux; Android 10; K)')
+    .replace(/ Safari\//, ' Mobile Safari/')
+}
+
+/** makes a page of a phone browser present itself as a phone (call before it opens anything) */
+export async function asPhone(page: Page): Promise<void> {
+  const ua = phoneAgents.get(page.browser())
+  if (!ua) return
+  const version = /Chrome\/([\d.]+)/.exec(ua)?.[1] ?? '130.0.0.0'
+  const major = version.split('.')[0]
+  await page.setUserAgent({
+    userAgent: ua,
+    userAgentMetadata: {
+      brands: [{ brand: 'Chromium', version: major }, { brand: 'Google Chrome', version: major }, { brand: 'Not?A_Brand', version: '99' }],
+      fullVersion: version,
+      platform: 'Android',
+      platformVersion: '10.0.0',
+      architecture: '',
+      model: 'K',
+      mobile: true
+    }
+  })
 }
 
 export async function launch(opts: LaunchOptions): Promise<Browser> {
@@ -88,9 +121,10 @@ export async function launch(opts: LaunchOptions): Promise<Browser> {
     // the downloaded headless-only browser uses the classic headless mode
     headless: wantsWindow ? false : /headless-shell/i.test(executablePath) ? 'shell' : true,
     userDataDir: opts.userDataDir,
-    defaultViewport: { width, height, deviceScaleFactor: opts.scale ?? REC_SCALE },
+    defaultViewport: { width, height, deviceScaleFactor: opts.scale ?? REC_SCALE, ...(opts.mobile ? { isMobile: true, hasTouch: true } : {}) },
     args
   })
+  if (opts.mobile) phoneAgents.set(browser, phoneAgent(await browser.userAgent()))
   if (wantsWindow) await fitWindow(browser, width, height)
   return browser
 }

@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import sharp from 'sharp'
-import { buildCaptions, filmLayout, panAt, produce } from '../src/main/appRecon/produce'
+import { buildCaptions, filmLayout, fitPill, panAt, produce, recordingScreen } from '../src/main/appRecon/produce'
+import { phoneAgent } from '../src/main/appRecon/browser'
 import { sceneHtml } from '../src/main/appRecon/scenes'
 import { ffmpegBin, SR } from '../src/main/audio/pcm'
 import { filmFrame, isPlatformId, POST_APPS } from '../src/shared/shapes'
@@ -35,7 +36,48 @@ describe('video sizes for app films and marketing films', () => {
     // a tall film leaves room at the top and bottom for the app's own buttons
     const t = filmLayout(filmFrame('tiktok'))
     expect(t.win.y).toBeGreaterThanOrEqual(180)
-    expect(1920 - (t.win.y + t.win.h)).toBeGreaterThanOrEqual(420)
+    expect(1920 - (t.win.y + t.win.h)).toBeGreaterThanOrEqual(360)
+    expect(t.phone).toBe(true)
+    // a drawn phone: about half as wide as tall, centred, with its page inside the body and a status bar and address bar above it
+    expect(t.win.w / t.win.h).toBeCloseTo(0.5, 1)
+    expect(t.win.x * 2 + t.win.w).toBe(1080)
+    expect(t.page.x).toBeGreaterThan(t.win.x)
+    expect(t.page.x + t.page.w).toBeLessThan(t.win.x + t.win.w)
+    expect(t.page.y).toBe(t.win.y + t.win.bar)
+    expect(t.page.y + t.page.h).toBeLessThan(t.win.y + t.win.h)
+    // the address pill sits inside the phone's screen, above the page
+    expect(t.pillX).toBeGreaterThan(t.win.x)
+    expect(t.pillX + t.pillW).toBeLessThan(t.win.x + t.win.w)
+    expect(t.pillY + t.pillH).toBeLessThanOrEqual(t.page.y)
+    // the step marker sits centred above the phone, clear of it
+    expect(t.chip).toEqual({ an: 2, x: 540, y: t.win.y - 22 })
+    expect(filmLayout().chip.an).toBe(6)
+    expect(filmLayout().phone).toBe(false)
+    expect(filmLayout(filmFrame('square')).phone).toBe(false)
+  })
+
+  it('a tall or portrait film records the app on a phone screen that fits its page area exactly', () => {
+    expect(recordingScreen()).toEqual({ width: 1920, height: 1080, scale: 4 / 3, mobile: false })
+    expect(recordingScreen(filmFrame('square')).mobile).toBe(false)
+    for (const p of ['tiktok', 'instagram-reels', 'youtube-shorts', 'instagram-feed'] as const) {
+      const size = filmFrame(p)
+      const s = recordingScreen(size)
+      const L = filmLayout(size)
+      expect(s.mobile).toBe(true)
+      expect(s.width).toBe(390)
+      // same shape as the page area, so nothing is cropped or squeezed
+      expect(Math.abs(s.width / s.height - L.page.w / L.page.h)).toBeLessThan(0.005)
+      // recorded at least as sharp as it is shown
+      expect(s.width * s.scale).toBeGreaterThanOrEqual(L.page.w)
+    }
+    expect(recordingScreen(filmFrame('tiktok')).height).toBeGreaterThan(480)
+  })
+
+  it('a phone browser keeps the real Chrome version and says it is a phone', () => {
+    const ua = phoneAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/131.0.6778.85 Safari/537.36')
+    expect(ua).toBe('Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.85 Mobile Safari/537.36')
+    expect(fitPill('a'.repeat(80), 600)).toHaveLength(51)
+    expect(fitPill('acme.test/reports', 600)).toBe('acme.test/reports')
   })
 
   it('a narrow frame pans to what the camera is looking at', () => {

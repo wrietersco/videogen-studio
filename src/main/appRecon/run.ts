@@ -1,16 +1,16 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Browser, Cookie, Page } from 'puppeteer-core'
-import { FILM, REC_SCALE, type AppMap, type AppPage, type Playbook, type Step, type Take } from '@shared/appRecon'
+import { type AppMap, type AppPage, type Playbook, type Step, type Take } from '@shared/appRecon'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
-import { enforcePolicy, launch } from './browser'
+import { asPhone, enforcePolicy, launch } from './browser'
 import { scrubMap } from './detect'
 import { parseDirectives, readUseCase } from './directives'
 import { checkCompatibility, explore, openPage, passInterstitial, settle, type Depth, type Exploration } from './explore'
 import { narrate, voiceLine, type LaunchInfo } from './narrate'
 import { planBeats, type Plan } from './planner'
 import { interpretGuardrails, PolicyGate, type RestrictionChecks } from './policy'
-import { produce, type InsertPlan } from './produce'
+import { produce, recordingScreen, type InsertPlan } from './produce'
 import { performScript, scriptPlan, type ScriptOutcome } from './script'
 import { parseStepScript } from './stepScript'
 import { ambientBrief, chooseMusic, clipSeconds, parseMediaAsk, parseMusicAsk, parseStructure, planMedia, withStyle, withoutProductionSentences, type Placement } from './aiMedia'
@@ -52,7 +52,8 @@ export interface MediaTools {
 }
 
 /** the still's prompt: the clip prompt, asking for the shot's first frame */
-export const keyframePrompt = (clipPrompt: string): string => `First frame of this shot, a still photograph: ${clipPrompt}`
+export const keyframePrompt = (clipPrompt: string, style?: 'infographic' | null): string =>
+  style === 'infographic' ? `First frame of this animation, a clean flat 2D vector infographic illustration (not a photograph, no readable text): ${clipPrompt}` : `First frame of this shot, a still photograph: ${clipPrompt}`
 
 /** one clip in a long film gets up to 5 seconds, otherwise the planner's length stands */
 export const clipLength = (planned: number, clipCount: number, targetSec: number): number => (clipCount === 1 && targetSec > 25 ? Math.max(planned, 5) : planned)
@@ -61,12 +62,12 @@ export const clipLength = (planned: number, clipCount: number, targetSec: number
  * the opening picture for one AI clip: a still made and checked before any video is paid for.
  * `skip` = the picture failed the check twice, so no clip is to be made; no `imageFile` and no `skip` = the clip starts from text only.
  */
-export async function openingPicture(tools: MediaTools, clipPrompt: string, index: number, notes: string[], signal?: AbortSignal, portrait = false): Promise<{ imageFile?: string; skip?: boolean }> {
+export async function openingPicture(tools: MediaTools, clipPrompt: string, index: number, notes: string[], signal?: AbortSignal, portrait = false, style: 'infographic' | null = null): Promise<{ imageFile?: string; skip?: boolean }> {
   if (!tools.still) return {}
   let imageFile: string | undefined
   try {
     for (let attempt = 0; attempt < 2 && !imageFile; attempt++) {
-      const still = await tools.still(keyframePrompt(clipPrompt), { portrait })
+      const still = await tools.still(keyframePrompt(clipPrompt, style), { portrait })
       const verdict = tools.reviewStill ? await tools.reviewStill(still.file).catch(() => null) : null
       if (!verdict || verdict.ok) {
         imageFile = still.file
@@ -130,7 +131,7 @@ export interface RunInput {
    * `music`: the person ticked "AI music". Sentences in the typed words that ask for an AI video are carried out whenever `tools` exist.
    */
   media?: { tools: MediaTools | null; clips: boolean; music: boolean }
-  /** where the film will be posted; sets its frame (default: wide YouTube 1920×1080). The app is always recorded wide */
+  /** where the film will be posted; sets its frame (default: wide YouTube 1920×1080). A tall or portrait film records the app on a phone screen */
   platform?: PlatformId
 }
 
@@ -174,7 +175,11 @@ export class RunCancelled extends Error {
 export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<RunOutput> {
   const frame = filmFrame(inp.platform)
   const portrait = frame.height > frame.width
+  // a portrait film records the app as a phone shows it (mobile layout, touch); a wide one records a desktop page
+  const screen = recordingScreen(frame)
+  const device = { width: screen.width, height: screen.height, scale: screen.scale, mobile: screen.mobile }
   const say = (m: string) => hooks.log?.(m)
+  if (screen.mobile) say(`Recording the app on a phone screen (${screen.width}×${screen.height}), for a ${frame.width}×${frame.height} film.`)
   mkdirSync(inp.runDir, { recursive: true })
   const check = () => {
     if (inp.signal?.aborted) throw new RunCancelled()
@@ -195,7 +200,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
   const ctxClean = withoutProductionSentences(inp.context)
   const reveal = !!inp.revealUsername
 
-  const browser = await launch({ userDataDir: join(inp.runDir, 'profile'), headless: inp.signIn !== 'self' })
+  const browser = await launch({ ...device, userDataDir: join(inp.runDir, 'profile'), headless: inp.signIn !== 'self' })
   const onAbort = () => void browser.close().catch(() => undefined)
   inp.signal?.addEventListener('abort', onAbort)
   try {
@@ -216,9 +221,10 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       const toParam = (c: Cookie) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path, expires: c.expires, httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite })
       let win: Browser | null = null
       try {
-        win = await launch({ userDataDir: join(inp.runDir, 'profile-takeover'), headless: false })
+        win = await launch({ ...device, userDataDir: join(inp.runDir, 'profile-takeover'), headless: false })
         const wctx = await win.createBrowserContext()
         const wp = await wctx.newPage()
+        if (screen.mobile) await asPhone(wp)
         const mine = await ctx.cookies()
         if (mine.length) await wp.setCookie(...mine.map(toParam))
         await wp.goto(page.url(), { waitUntil: 'load', timeout: 30000 }).catch(() => undefined)
@@ -435,11 +441,11 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     if (!(await openPage(rpage, plan.playbook.startUrl, 30000))) throw new Error(BROWSER_CHECK)
     await new Promise((r) => setTimeout(r, 400))
     const rec = new FrameRecorder(rpage, join(inp.runDir, 'frames'))
-    await rec.start(FILM.width * REC_SCALE, FILM.height * REC_SCALE)
+    await rec.start(Math.round(screen.width * screen.scale), Math.round(screen.height * screen.scale), { sharp: screen.mobile })
     const run = await runPlaybook(rpage, plan.playbook, { vault: { username: vault.username, password: vault.password }, gate, redaction: recRedaction, recorder: rec, beatMinSec: narration.minSec, pace: 1, log: say })
     await new Promise((r) => setTimeout(r, 1300))
     const framed = await rec.stop()
-    const take: Take = { fps: 30, viewport: { ...FILM }, durationSec: framed.durationSec, beats: run.beats, navigations: run.navigations, log: run.log, redactionMisses: run.redactionMisses }
+    const take: Take = { fps: 30, viewport: { width: screen.width, height: screen.height }, durationSec: framed.durationSec, beats: run.beats, navigations: run.navigations, log: run.log, redactionMisses: run.redactionMisses }
     writeFileSync(join(inp.runDir, 'take.json'), JSON.stringify({ ...take, frames: framed.frameCount }, null, 2))
     writeFileSync(join(inp.runDir, 'policy-audit.json'), JSON.stringify(gate.audit.filter((a) => !a.allow || a.kind === 'click'), null, 2))
     if (!run.ok) throw new Error(`Recording stopped: ${run.failure}`)
@@ -463,7 +469,9 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       const topic = inp.launch ? `${inp.launch.feature}${inp.launch.tagline ? ` - ${inp.launch.tagline}` : ''}` : (ctxClean.split('\n').map((l) => l.trim()).find((l) => l.length > 12 && !/^(?:(?:step\s*)?\d{1,2}\s*[.):-]|[-*])\s/i.test(l) && !/:$/.test(l)) ?? '').slice(0, 200)
       // what the app does, from the beats of the film itself: the writer builds its visual metaphor from these
       const clipFacts = [...new Set(plan.beats.flatMap((b) => b.facts))].filter((f) => f.length > 8).slice(0, 14)
-      const planned = await planMedia({ chat: inp.chat, requests: ask.requests, auto: !!inp.media?.clips, appName: displayHost(inp.startUrl), topic, brand: look ? { accent: look.accent.replace('#', ''), backdrop: look.backdrop } : brand?.accent ? { accent: brand.accent } : undefined, motif, lines: narration.clipLines, facts: clipFacts, subjectHint: inp.launch ? `${inp.launch.feature}: ${inp.launch.tagline}` : undefined, context: ctxClean, mode: inp.mode, secrets, say })
+      const planned = await planMedia({ chat: inp.chat, requests: ask.requests, auto: !!inp.media?.clips, appName: displayHost(inp.startUrl), topic, brand: look ? { accent: look.accent.replace('#', ''), backdrop: look.backdrop } : brand?.accent ? { accent: brand.accent } : undefined, motif, lines: narration.clipLines, facts: clipFacts, subjectHint: inp.launch ? `${inp.launch.feature}: ${inp.launch.tagline}` : undefined, style: ask.style, noAbstract: ask.noAbstract, context: ctxClean, mode: inp.mode, secrets, say })
+      const totalClipSec = planned.reduce((a, c) => a + (c.seconds ?? clipLength(sec, planned.length, lengthSec)), 0)
+      say(`AI video: ${planned.length} clip${planned.length === 1 ? '' : 's'}, about ${totalClipSec} seconds in all (roughly $${(totalClipSec * 0.1).toFixed(2)})${ask.style ? `, in the ${ask.style} look you asked for` : ''}.`)
       const tone = inp.mode === 'launch' ? 'Confident, upbeat product-launch announcer. Warm, energetic, with a clear sense of occasion, at a brisk but natural pace.' : 'Calm, clear, friendly product-demo narrator at an unhurried pace.'
       const middle = (): number => plan.beats[Math.max(0, Math.ceil(plan.beats.length / 2) - 1)]?.beat ?? 0
       const where = (p: Placement): InsertPlan['at'] => (p === 'start' ? { kind: 'start' } : p === 'end' ? { kind: 'end' } : { kind: 'afterBeat', beat: middle() })
@@ -471,12 +479,13 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       let n = 0
       for (const c of planned) {
         check()
-        say(`AI clip ${n + 1} of ${planned.length} (${clipLength(sec, planned.length, lengthSec)}s): ${c.said.slice(0, 100)}`)
+        const secs = c.seconds ?? clipSec1
+        say(`AI clip ${n + 1} of ${planned.length} (${secs}s): ${c.said.slice(0, 100)}`)
         try {
-          const start = await openingPicture(tools, c.prompt, n, mediaNotes, inp.signal, portrait)
+          const start = await openingPicture(tools, c.prompt, n, mediaNotes, inp.signal, portrait, ask.style)
           if (start.skip) continue
           const imageFile = start.imageFile
-          const made = await tools.clip(c.prompt, clipSec1, { ...(imageFile ? { imageFile } : {}), portrait })
+          const made = await tools.clip(c.prompt, secs, { ...(imageFile ? { imageFile } : {}), portrait })
           const clipSec = made.durationSec ?? probe(made.file).durationSec ?? sec
           mkdirSync(join(inp.runDir, 'final'), { recursive: true })
           const pcm = await voiceLine(narration.plans.some((p) => p.pcm.length) ? inp.speech : null, join(inp.runDir, 'final'), `voice-clip-${n}`, c.line, tone).catch((err) => {
@@ -536,6 +545,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       outro: narration.outro,
       noBuiltinMusic: !!musicAsk?.none,
       ambience,
+      musicLevel: musicAsk?.quiet ? 0.45 : undefined,
       motif,
       targetSec: inp.mode === 'launch' ? inp.launch?.targetSec : undefined,
       keep: false,

@@ -51,7 +51,7 @@ export interface AppInput {
   mode: VideoMode
   launch?: LaunchText
   targetSec: number
-  /** where the film will be posted, which sets its shape (absent = wide YouTube 1920×1080); the app itself is always recorded wide */
+  /** where the film will be posted, which sets its shape (absent = wide YouTube 1920×1080); a tall or portrait one records the app on a phone screen */
   platform?: PlatformId
   /** use the AI writer and voice when the plan allows; off = the free engine */
   useAi: boolean

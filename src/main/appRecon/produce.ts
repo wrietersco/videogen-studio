@@ -4,7 +4,7 @@ import { renderScene, type Motif } from './scenes'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import sharp from 'sharp'
-import type { Rect, Take } from '@shared/appRecon'
+import { FILM, REC_SCALE, type Rect, type Take } from '@shared/appRecon'
 import type { VideoSpec } from '@shared/spec'
 import { duck } from '../audio/mix'
 import { ffmpegBin, loudnorm, mixIn, SR, stereo, writeWav, type Stereo } from '../audio/pcm'
@@ -50,11 +50,13 @@ export function viewFor(rect: Rect | undefined, vp: { width: number; height: num
 /** smooth camera keyframes from the beats' focus areas (times are on the video's clock) */
 export function cameraKeys(take: Take, offsetSec: number, totalSec: number): Array<{ t: number } & View> {
   const keys: Array<{ t: number } & View> = [{ t: 0, z: 1, cx: 0.5, cy: 0.5 }]
+  // a phone screen already fills the frame and is one column wide: zooming far in would cut its text off
+  const phoneTake = take.viewport.height > take.viewport.width
   let cur: View = { z: 1, cx: 0.5, cy: 0.5 }
   for (const b of take.beats) {
     const start = Math.max(0, b.startSec - offsetSec)
     const end = Math.max(start + 0.5, b.endSec - offsetSec)
-    const next = viewFor(b.focus, take.viewport)
+    const next = viewFor(b.focus, take.viewport, phoneTake ? 1.15 : 1.5)
     const move = Math.min(1.1, (end - start) * 0.45)
     keys.push({ t: start + 0.15, ...cur }, { t: start + 0.15 + move, ...next })
     cur = next
@@ -97,8 +99,8 @@ const assSafe = (s: string) => s.replace(/[{}]/g, '').replace(/\\/g, '/').trim()
 
 /** captions spread across the spoken part, 2–6 words at a time, plus a step marker for each beat */
 export function buildCaptions(beats: Array<{ start: number; end: number; voiceStart: number; voiceSec: number; text: string; chapter: string; index: number }>, W = 1920, H = 1080, extras: Array<{ start: number; end: number; voiceStart: number; voiceSec: number; text: string }> = []): string {
-  const WIN = filmLayout({ width: W, height: H }).win
-  const cap = filmLayout({ width: W, height: H }).cap
+  const FL = filmLayout({ width: W, height: H })
+  const cap = FL.cap
   const events: string[] = []
   for (const b of [...beats, ...extras.map((e) => ({ ...e, chapter: '', index: 0 }))]) {
     const words = b.text.split(/\s+/).filter(Boolean)
@@ -117,7 +119,7 @@ export function buildCaptions(beats: Array<{ start: number; end: number; voiceSt
       events.push(`Dialogue: 0,${clock(at)},${clock(at + dur)},Cap,,0,0,0,,${assSafe(c)}`)
       at += dur
     })
-    if (b.index > 0) events.push(`Dialogue: 1,${clock(b.start + 0.2)},${clock(b.end - 0.1)},Chip,,0,0,0,,{\\an6\\pos(${WIN.x + WIN.w - 22},${WIN.y + 23})\\fad(250,200)}  ${b.index}  ${assSafe(b.chapter)}  `)
+    if (b.index > 0) events.push(`Dialogue: 1,${clock(b.start + 0.2)},${clock(b.end - 0.1)},Chip,,0,0,0,,{\\an${FL.chip.an}\\pos(${FL.chip.x},${FL.chip.y})\\fad(250,200)}  ${b.index}  ${assSafe(b.chapter)}  `)
   }
   return [
     '[Script Info]', 'ScriptType: v4.00+', `PlayResX: ${W}`, `PlayResY: ${H}`, 'WrapStyle: 0', 'ScaledBorderAndShadow: yes', '',
@@ -130,49 +132,141 @@ export function buildCaptions(beats: Array<{ start: number; end: number; voiceSt
 }
 
 
-/** where things go in a film of a given frame: the browser window the page is shown in, and the captions */
+/** where things go in a film of a given frame: the browser window (or phone) the page is shown in, and the captions */
 export interface FilmLayout {
   W: number
   H: number
+  /** the window, or the whole phone; `bar` is the height of everything above the page */
   win: { x: number; y: number; w: number; bar: number; h: number }
   page: { x: number; y: number; w: number; h: number }
   /** caption font size, side margins and distance from the bottom */
   cap: { size: number; side: number; bottom: number }
-  /** width of the address pill */
+  /** the address pill: where it starts, its width, its top, its height, its text size and where the text starts inside it */
+  pillX: number
   pillW: number
+  pillY: number
+  pillH: number
+  pillFont: number
+  pillTextDx: number
+  /** the step marker: its ASS alignment (2 = centred above, 6 = right) and position */
+  chip: { an: 2 | 6; x: number; y: number }
+  /** a portrait film shows the app as a phone shows it: a phone-sized page inside a drawn phone */
+  phone: boolean
+  /** corner radius of the window (or of the phone's body) */
+  radius: number
+  /** the phone's parts, when it is one */
+  device?: { bezel: number; statusH: number; footH: number; screenRx: number }
+}
+
+/** the CSS width of a phone screen the site is shown at (a common modern phone) */
+export const PHONE_CSS_WIDTH = 390
+
+/**
+ * The screen the app is recorded on for a film of this frame: a wide film
+ * records a 1920×1080 desktop page; a portrait film records a phone, as wide
+ * as a phone and exactly as tall as fits the film's page area, so the page is
+ * shown whole and never cropped.
+ */
+export function recordingScreen(size?: { width: number; height: number }): { width: number; height: number; scale: number; mobile: boolean } {
+  const L = filmLayout(size)
+  if (!L.phone) return { width: FILM.width, height: FILM.height, scale: REC_SCALE, mobile: false }
+  const width = PHONE_CSS_WIDTH
+  // an even height: the pictures are encoded to video, which needs even sizes
+  return { width, height: even((width * L.page.h) / L.page.w), scale: 3, mobile: true }
 }
 
 const even = (n: number) => 2 * Math.round(n / 2)
 
 /**
- * Wide films keep the window they always had. Tall and square films give the
- * window the full width; a tall film keeps it clear of the bands where phone
- * apps draw their buttons, and the captions sit over its lower part.
+ * Wide films keep the window they always had. A portrait film shows a drawn
+ * phone (body, status bar, browser address bar, home bar) with the page inside
+ * it at the shape of a real phone screen; it stays clear of the bands where
+ * phone apps draw their buttons, and the captions sit over its lower part.
  */
 export function filmLayout(size?: { width: number; height: number }): FilmLayout {
   const W = size?.width ?? 1920
   const H = size?.height ?? 1080
-  const bar = 46
+  let bar = 46
   let win: FilmLayout['win']
   let cap: FilmLayout['cap']
+  let top = 0
+  let bottom = 0
   if (W / H >= 1.5) {
     const sx = W / 1920
     const sy = H / 1080
     win = { x: Math.round(110 * sx), y: Math.round(40 * sy), w: even(1700 * sx), bar, h: even(1002 * sy) }
     cap = { size: 54, side: 140, bottom: 64 }
   } else if (H / W >= 1.5) {
-    const top = Math.round(H * 0.105)
-    const bottom = Math.round(H * 0.75)
+    // the phone runs from below the app's top buttons to just above its caption band
+    top = Math.round(H * 0.095)
+    bottom = Math.round(H * 0.81)
     win = { x: 30, y: top, w: even(W - 60), bar, h: even(bottom - top) }
-    cap = { size: 58, side: 70, bottom: H - bottom + 70 }
+    cap = { size: 58, side: 70, bottom: Math.round(H * 0.25) + 70 }
   } else {
-    win = { x: 30, y: 36, w: even(W - 60), bar, h: even(H - 72) }
+    top = 36
+    bottom = H - 36
+    win = { x: 30, y: top, w: even(W - 60), bar, h: even(H - 72) }
     cap = { size: 56, side: 70, bottom: Math.round(H * 0.11) }
   }
-  return { W, H, win, page: { x: win.x, y: win.y + bar, w: win.w, h: win.h - bar }, cap, pillW: Math.min(800, win.w - 156) }
+  const phone = H > W
+  if (!phone) {
+    return {
+      W, H, win, page: { x: win.x, y: win.y + bar, w: win.w, h: win.h - bar }, cap,
+      pillX: win.x + 116, pillW: Math.min(800, win.w - 156), pillY: win.y + 8, pillH: 30, pillFont: 21, pillTextDx: 44,
+      chip: { an: 6, x: win.x + win.w - 22, y: win.y + 23 }, phone, radius: 16
+    }
+  }
+  // a phone is about half as wide as it is tall
+  const bezel = 20
+  const statusH = 60
+  const addrH = 84
+  const footH = 48
+  const h = win.h
+  const w = even(Math.min(win.w, h * 0.5))
+  const x = Math.round((W - w) / 2)
+  const phoneWin = { x, y: win.y, w, bar: bezel + statusH + addrH, h }
+  const pageW = even(w - 2 * bezel)
+  const pageH = even(h - phoneWin.bar - bezel - footH)
+  const pillH = 58
+  const pillX = x + bezel + 22
+  return {
+    W, H, win: phoneWin, page: { x: x + bezel, y: win.y + phoneWin.bar, w: pageW, h: pageH }, cap,
+    pillX, pillW: w - 2 * bezel - 44, pillY: win.y + bezel + statusH + Math.round((addrH - pillH) / 2), pillH, pillFont: 27, pillTextDx: 78,
+    chip: { an: 2, x: Math.round(W / 2), y: win.y - 22 }, phone, radius: 92, device: { bezel, statusH, footH, screenRx: 72 }
+  }
 }
 const DEFAULT_BACKDROP: [string, string] = ['#22325a', '#0a0f1e']
 const FONT = ['C:/Windows/Fonts/segoeui.ttf', '/System/Library/Fonts/Supplemental/Arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'].find(existsSync)
+
+/** the phone's body, screen, status bar, address bar and home bar */
+function phoneSvg(L: FilmLayout, lock: string): string {
+  const { win: WIN } = L
+  const d = L.device!
+  const sx = WIN.x + d.bezel
+  const sy = WIN.y + d.bezel
+  const sw = WIN.w - 2 * d.bezel
+  const sh = WIN.h - 2 * d.bezel
+  // the status icons sit clear of the screen's rounded corner
+  const right = sx + sw - 26
+  const mid = WIN.x + WIN.w / 2
+  const iconY = sy + d.statusH / 2
+  // signal bars, wifi, battery on the right of the status bar
+  const bars = [0, 1, 2, 3].map((i) => `<rect x="${right - 150 + i * 11}" y="${iconY + 9 - (i + 1) * 5}" width="7" height="${(i + 1) * 5 + 1}" rx="1.6" fill="#111"/>`).join('')
+  const wifi = `<g fill="none" stroke="#111" stroke-width="3.4" stroke-linecap="round"><path d="M${right - 100} ${iconY - 3}a22 22 0 0 1 32 0"/><path d="M${right - 96} ${iconY + 3}a15 15 0 0 1 24 0"/></g><circle cx="${right - 84}" cy="${iconY + 11}" r="3.4" fill="#111"/>`
+  const battery = `<rect x="${right - 56}" y="${iconY - 10}" width="40" height="21" rx="6" fill="none" stroke="#111" stroke-width="2.6" opacity=".8"/><rect x="${right - 53}" y="${iconY - 7}" width="29" height="15" rx="3.5" fill="#111"/><rect x="${right - 14}" y="${iconY - 3}" width="4" height="9" rx="2" fill="#111" opacity=".8"/>`
+  return `
+  <rect x="${WIN.x - 5}" y="${WIN.y + 250}" width="6" height="86" rx="3" fill="#23252c"/>
+  <rect x="${WIN.x - 5}" y="${WIN.y + 360}" width="6" height="86" rx="3" fill="#23252c"/>
+  <rect x="${WIN.x + WIN.w - 1}" y="${WIN.y + 320}" width="6" height="130" rx="3" fill="#23252c"/>
+  <rect x="${WIN.x}" y="${WIN.y}" width="${WIN.w}" height="${WIN.h}" rx="${L.radius}" fill="#0c0d11"/>
+  <rect x="${WIN.x + 1.5}" y="${WIN.y + 1.5}" width="${WIN.w - 3}" height="${WIN.h - 3}" rx="${L.radius - 1.5}" fill="none" stroke="#3b3e48" stroke-width="3"/>
+  <rect x="${sx}" y="${sy}" width="${sw}" height="${sh}" rx="${d.screenRx}" fill="#f1f3f4"/>
+  <rect x="${mid - 76}" y="${sy + 14}" width="152" height="40" rx="20" fill="#000"/>
+  ${bars}${wifi}${battery}
+  <rect x="${L.pillX}" y="${L.pillY}" width="${L.pillW}" height="${L.pillH}" rx="${L.pillH / 2}" fill="#ffffff" stroke="#dadce0" stroke-width="2"/>
+  <g transform="translate(${L.pillX + 4} ${L.pillY + 2}) scale(${(L.pillH - 4) / 30})">${lock}</g>
+  <rect x="${mid - 96}" y="${sy + sh - 22}" width="192" height="8" rx="4" fill="#111" opacity=".85"/>`
+}
 
 /** backdrop, window and address bar as one still picture, and the mask that rounds the page's lower corners */
 async function drawFrame(dir: string, secure: boolean, backdrop: [string, string] = DEFAULT_BACKDROP, L: FilmLayout = filmLayout()): Promise<{ bg: string; mask: string }> {
@@ -183,23 +277,36 @@ async function drawFrame(dir: string, secure: boolean, backdrop: [string, string
   const lock = secure
     ? `<path d="M14.5 14v-3a5.5 5.5 0 0 1 11 0v3" fill="none" stroke="#2e7d32" stroke-width="2.4"/><rect x="11.5" y="13.5" width="17" height="12" rx="3" fill="#2e7d32"/>`
     : `<circle cx="20" cy="15" r="9" fill="none" stroke="#b26a00" stroke-width="2.4"/><rect x="18.8" y="9.5" width="2.4" height="7" fill="#b26a00"/><circle cx="20" cy="20" r="1.5" fill="#b26a00"/>`
+  const body = L.phone
+    ? phoneSvg(L, lock)
+    : `<rect x="${WIN.x}" y="${WIN.y}" width="${WIN.w}" height="${WIN.h}" rx="${L.radius}" fill="#e9edf2"/>
+  <circle cx="${WIN.x + 30}" cy="${WIN.y + 23}" r="7" fill="#ff5f57"/><circle cx="${WIN.x + 54}" cy="${WIN.y + 23}" r="7" fill="#febc2e"/><circle cx="${WIN.x + 78}" cy="${WIN.y + 23}" r="7" fill="#28c840"/>
+  <rect x="${L.pillX}" y="${L.pillY}" width="${L.pillW}" height="${L.pillH}" rx="${L.pillH / 2}" fill="#ffffff"/>
+  <g transform="translate(${L.pillX} ${L.pillY})">${lock}</g>`
   const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${backdrop[0]}"/><stop offset="1" stop-color="${backdrop[1]}"/></linearGradient>
     <filter id="s" x="-10%" y="-10%" width="120%" height="130%"><feGaussianBlur stdDeviation="24"/></filter>
   </defs>
   <rect width="${W}" height="${H}" fill="url(#g)"/>
-  <rect x="${WIN.x + 18}" y="${WIN.y + 34}" width="${WIN.w}" height="${WIN.h}" rx="16" fill="#000" opacity=".6" filter="url(#s)"/>
-  <rect x="${WIN.x}" y="${WIN.y}" width="${WIN.w}" height="${WIN.h}" rx="16" fill="#e9edf2"/>
-  <circle cx="${WIN.x + 30}" cy="${WIN.y + 23}" r="7" fill="#ff5f57"/><circle cx="${WIN.x + 54}" cy="${WIN.y + 23}" r="7" fill="#febc2e"/><circle cx="${WIN.x + 78}" cy="${WIN.y + 23}" r="7" fill="#28c840"/>
-  <rect x="${WIN.x + 116}" y="${WIN.y + 8}" width="${L.pillW}" height="30" rx="15" fill="#ffffff"/>
-  <g transform="translate(${WIN.x + 116} ${WIN.y + 8})">${lock}</g>
+  <rect x="${WIN.x + 18}" y="${WIN.y + 34}" width="${WIN.w}" height="${WIN.h}" rx="${L.radius}" fill="#000" opacity=".6" filter="url(#s)"/>
+  ${body}
 </svg>`
   await sharp(Buffer.from(svg)).png().toFile(bg)
-  const r = 16
-  const m = `<svg width="${PAGE.w}" height="${PAGE.h}" xmlns="http://www.w3.org/2000/svg"><rect width="${PAGE.w}" height="${PAGE.h}" fill="#000"/><path d="M0 0H${PAGE.w}V${PAGE.h - r}A${r} ${r} 0 0 1 ${PAGE.w - r} ${PAGE.h}H${r}A${r} ${r} 0 0 1 0 ${PAGE.h - r}Z" fill="#fff"/></svg>`
+  // a window's page has rounded lower corners; a phone's page is square (the phone's own footer is rounded)
+  const r = L.phone ? 0 : L.radius
+  const shape = r
+    ? `<path d="M0 0H${PAGE.w}V${PAGE.h - r}A${r} ${r} 0 0 1 ${PAGE.w - r} ${PAGE.h}H${r}A${r} ${r} 0 0 1 0 ${PAGE.h - r}Z" fill="#fff"/>`
+    : `<rect width="${PAGE.w}" height="${PAGE.h}" fill="#fff"/>`
+  const m = `<svg width="${PAGE.w}" height="${PAGE.h}" xmlns="http://www.w3.org/2000/svg"><rect width="${PAGE.w}" height="${PAGE.h}" fill="#000"/>${shape}</svg>`
   await sharp(Buffer.from(m)).greyscale().png().toFile(mask)
   return { bg, mask }
+}
+
+/** an address short enough for the pill (`charW` is about half the pill's font size) */
+export function fitPill(text: string, pillW: number, charW = 10.5, textDx = 44): string {
+  const max = Math.max(12, Math.floor((pillW - textDx - 16) / charW))
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`
 }
 
 /** the address shown for each stretch of the video */
@@ -320,8 +427,10 @@ export interface ProduceInput {
   look?: { backdrop: [string, string]; accent: string }
   /** AI-made clips that cut in between the pages */
   inserts?: InsertPlan[]
-  /** the finished film's frame (default 1920×1080). The page is always recorded wide; a narrower frame pans across it to what is happening */
+  /** the finished film's frame (default 1920×1080). A portrait film's page is recorded on a phone screen that fits it exactly; a wide recording in a narrower frame pans across it to what is happening */
   size?: { width: number; height: number }
+  /** how loud the music is, relative to its normal level (1 = normal; 0.45 = "low volume") */
+  musicLevel?: number
   /** a track made by AI for this film (decoded); null or a failure keeps the built-in score */
   aiMusic?: (info: { cuts: number[]; total: number }) => Promise<Stereo | null>
   log?: (message: string) => void
@@ -471,7 +580,7 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   if (music) duck(music, voice)
   const bus = stereo(total)
   mixIn(bus, voice, 0, 0.9)
-  const musicGain = musicSource === 'ambience' ? 1.3 : 0.55
+  const musicGain = (musicSource === 'ambience' ? 1.3 : 0.55) * (inp.musicLevel ?? 1)
   if (music) for (let i = 0; i < bus.l.length && i < music.l.length; i++) { bus.l[i] += music.l[i] * musicGain; bus.r[i] += music.r[i] * musicGain }
   const wav = join(inp.dir, 'mix-raw.wav')
   const mix = join(inp.dir, 'mix.m4a')
@@ -488,8 +597,8 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   const secure = inp.take.navigations.some((n) => n.url.startsWith('https:'))
   const { bg, mask } = await drawFrame(inp.dir, secure, inp.look?.backdrop, L)
   const addr = addressTimeline(inp.take, inp.offsetSec, demo)
-    .map((a) => (FONT ? `,drawtext=fontfile='${filterPath(FONT)}':text='${dt(a.text)}':x=${WIN.x + 116 + 44}:y=${WIN.y + 12}:fontsize=21:fontcolor=0x3c4043:enable='between(t,${num(a.from)},${num(a.to)})'` : ''))
-    .join('')
+    .map((a) => (FONT ? `,drawtext=fontfile='${filterPath(FONT)}':text='${dt(fitPill(a.text, L.pillW, L.pillFont / 2, L.pillTextDx))}':x=${L.pillX + L.pillTextDx}:y=${L.pillY + Math.round((L.pillH - L.pillFont) / 2 - 0.5)}:fontsize=${L.pillFont}:fontcolor=0x3c4043:enable='between(t,${num(a.from)},${num(a.to)})'` : ''))
+    .join('') + (L.phone && FONT_BOLD ? `,drawtext=fontfile='${filterPath(FONT_BOLD)}':text='9\\:41':x=${WIN.x + L.device!.bezel + 44}:y=${WIN.y + L.device!.bezel + Math.round((L.device!.statusH - 30) / 2) - 2}:fontsize=30:fontcolor=0x111111` : '')
   const norm = 'fps=30,format=yuv420p,setsar=1'
   // the recording is wide; a page area narrower than that shows the part of the camera's view around what it is looking at
   const recAspect = inp.take.viewport.width / inp.take.viewport.height

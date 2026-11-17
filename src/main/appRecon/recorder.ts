@@ -8,6 +8,7 @@ import { FILM, type Playbook, type Rect, type Step, type Take, type TimelineBeat
 import type { PolicyGate } from './policy'
 import { checkSecretFill } from './detect'
 import { classifyField } from './sensitivity'
+import { asPhone } from './browser'
 import { redactionInitScript, cursorInitScript, verifyScript, type RedactionConfig } from './redact'
 import { findElement, scrollArea } from './resolve'
 
@@ -76,9 +77,43 @@ export class FrameRecorder {
     return Date.now() / 1000 - this.t0
   }
 
-  async start(width: number, height: number): Promise<void> {
+  private stills: Promise<void> | null = null
+  private rolling = false
+
+  /**
+   * Starts recording. Chrome's screencast only ever sends pictures at the page's
+   * CSS size, which for a phone (390 px wide) is far too small for a 1080 px
+   * film; `sharp` takes full-density screenshots back to back instead (about as
+   * smooth, a little slower to record).
+   */
+  async start(width: number, height: number, o: { sharp?: boolean } = {}): Promise<void> {
     this.client = await this.page.createCDPSession()
     this.t0 = Date.now() / 1000
+    if (o.sharp) {
+      const client = this.client
+      const vp = this.page.viewport() ?? { width, height }
+      // the clip's scale is what makes the picture full size (the page's own pixel density is not applied to it)
+      const clip = { x: 0, y: 0, width: vp.width, height: vp.height, scale: width / vp.width }
+      this.rolling = true
+      // three pictures in flight at once keep the frame rate up while each one is being encoded
+      const worker = async () => {
+        while (this.rolling) {
+          const ts = Date.now() / 1000
+          const shot = await client.send('Page.captureScreenshot', { format: 'jpeg', quality: 90, optimizeForSpeed: true, clip }).catch(() => null)
+          if (!shot) {
+            await nap(30)
+            continue
+          }
+          const n = ++this.n
+          this.frames.push({ n, ts })
+          this.writes.push(writeFile(join(this.dir, `f${String(n).padStart(6, '0')}.jpg`), Buffer.from(shot.data, 'base64')))
+        }
+      }
+      this.stills = Promise.all([worker(), worker(), worker()]).then(() => {
+        this.frames.sort((p, q) => p.ts - q.ts)
+      })
+      return
+    }
     this.client.on('Page.screencastFrame', (f) => {
       const n = ++this.n
       this.frames.push({ n, ts: f.metadata.timestamp ?? Date.now() / 1000 })
@@ -91,6 +126,8 @@ export class FrameRecorder {
   /** stops, and writes the frame list ffmpeg needs (each picture is shown until the next arrives) */
   async stop(): Promise<{ listFile: string; durationSec: number; frameCount: number }> {
     this.endTs = Date.now() / 1000
+    this.rolling = false
+    await this.stills
     await this.client?.send('Page.stopScreencast').catch(() => undefined)
     await Promise.all(this.writes)
     const frames = this.frames
@@ -188,8 +225,10 @@ async function findByLabel(page: Page, step: Step): Promise<string | null> {
 
 /** installs the cursor and redaction on every page this tab will ever open */
 export async function prepare(page: Page, redaction: RedactionConfig): Promise<void> {
+  const phone = !!page.viewport()?.isMobile
+  if (phone) await asPhone(page)
   await page.evaluateOnNewDocument(redactionInitScript(redaction))
-  await page.evaluateOnNewDocument(cursorInitScript())
+  await page.evaluateOnNewDocument(cursorInitScript(phone))
 }
 
 export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions): Promise<RunResult> {
@@ -201,7 +240,8 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
   const navigations: Take['navigations'] = /^https?:/.test(page.url()) ? [{ t: 0, url: page.url() }] : []
   page.on('framenavigated', (f) => { if (f === page.mainFrame()) navigations.push({ t: t(), url: f.url() }) })
   let misses = 0
-  let mouse = { x: FILM.width / 2, y: FILM.height / 2 }
+  const vp = page.viewport() ?? FILM
+  let mouse = { x: vp.width / 2, y: vp.height / 2 }
   const say = (step: string, note: string) => {
     log.push({ t: t(), step, note })
     o.log?.(`  ${step}: ${note}`)

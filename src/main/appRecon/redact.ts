@@ -196,8 +196,13 @@ export function verifyScript(config: RedactionConfig): string {
 })()`
 }
 
-/** a visible mouse pointer and click ripple (headless Chrome draws neither) */
-export function cursorInitScript(): string {
+/** a visible mouse pointer and click ripple (headless Chrome draws neither); on a phone, a fingertip instead of an arrow */
+export function cursorInitScript(touch = false): string {
+  const pointer = touch
+    ? `c.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;z-index:2147483647;pointer-events:none;transform:translate(-120px,-120px)';
+    c.innerHTML = '<div style="position:absolute;left:-17px;top:-17px;width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.55);border:2px solid rgba(20,20,20,.55);box-shadow:0 2px 6px rgba(0,0,0,.35)"></div>';`
+    : `c.style.cssText = 'position:fixed;left:0;top:0;width:30px;height:30px;z-index:2147483647;pointer-events:none;transform:translate(-120px,-120px);filter:drop-shadow(0 2px 3px rgba(0,0,0,.45))';
+    c.innerHTML = '<svg width="30" height="30" viewBox="0 0 30 30"><path d="M3 2 L3 23 L8.6 18 L12.4 26.4 L16.2 24.7 L12.5 16.5 L20 16.5 Z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>';`
   return String.raw`(() => {
   const mount = () => {
     if (!document.documentElement) return false;
@@ -207,8 +212,7 @@ export function cursorInitScript(): string {
     document.documentElement.appendChild(st);
     const c = document.createElement('div');
     c.id = '__vg_cursor';
-    c.style.cssText = 'position:fixed;left:0;top:0;width:30px;height:30px;z-index:2147483647;pointer-events:none;transform:translate(-120px,-120px);filter:drop-shadow(0 2px 3px rgba(0,0,0,.45))';
-    c.innerHTML = '<svg width="30" height="30" viewBox="0 0 30 30"><path d="M3 2 L3 23 L8.6 18 L12.4 26.4 L16.2 24.7 L12.5 16.5 L20 16.5 Z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+    ${pointer}
     document.documentElement.appendChild(c);
     document.addEventListener('mousemove', (e) => { c.style.transform = 'translate(' + e.clientX + 'px,' + e.clientY + 'px)'; }, true);
     document.addEventListener('mousedown', (e) => {
