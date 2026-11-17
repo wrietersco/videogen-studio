@@ -18,6 +18,7 @@ import type { AccessMode } from '../../main/license/access'
 import type { EntitlementView, PlanId, Policy } from '@shared/plans'
 import type { BrandKitPatch, BrandKitView } from '@shared/brand'
 import type { AppInput, ReviewBeat, ReviewEdits, RunEvent, RunRecord, SavedApp } from '@shared/appRecording'
+import type { DecisionAnswer, PariEvent } from '@shared/agentBrief'
 export type { AppInput, ReviewBeat, ReviewEdits, RunEvent, RunRecord, SavedApp }
 import type { BusinessProfile, MarketEvent, MarketJob, MarketRunRecord, MarketStage, VideoCard } from '@shared/marketing'
 export type { BusinessProfile, MarketEvent, MarketJob, MarketRunRecord, MarketStage, VideoCard }
@@ -278,12 +279,13 @@ declare global {
         cancel: () => Promise<boolean>
         handoffDone: () => Promise<boolean>
         review: (edits: ReviewEdits | null) => Promise<boolean>
+        decide: (answers: DecisionAnswer[] | null) => Promise<boolean>
         play: (runId: string) => Promise<boolean>
         reveal: (runId: string) => Promise<boolean>
         revealRun: (runId: string) => Promise<boolean>
         runUsage: (runId: string) => Promise<ProjectUsage>
         removeRun: (runId: string) => Promise<{ ok: boolean; error?: string }>
-        onEvent: (cb: (event: RunEvent) => void) => () => void
+        onEvent: (cb: (event: RunEvent | PariEvent) => void) => () => void
       }
       market: {
         state: () => Promise<{ businesses: BusinessProfile[]; runs: MarketRunRecord[]; ai: { available: boolean; reason?: string }; current: { businessId: string; job: MarketJob; runId?: string } | null }>
