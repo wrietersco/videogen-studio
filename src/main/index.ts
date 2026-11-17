@@ -26,6 +26,7 @@ import { projectsDir, appRoot, libraryDir, builtinPackDir, footageDir, brandDir,
 import { AppReconStore } from './appRecon/store'
 import { MarketingStore } from './marketing/store'
 import type { GeminiProvider } from './providers/gemini'
+import { ElevenLabsClient } from './providers/elevenlabs'
 import { luminanceOf } from '@shared/brand'
 import { registerAppReconIpc } from './appRecon/ipc'
 import { registerMarketingIpc } from './marketing/ipc'
@@ -123,6 +124,25 @@ const account = new AccountSession({
   }
 })
 const planEnt = () => account.status().view?.entitlements ?? null
+
+/**
+ * One music track for the AI-music hooks. `model` is the assignment ("gemini:lyria-3.5", "elevenlabs:music_v2_5");
+ * without one, Settings decide, and Lyria is the fallback. ElevenLabs needs a length: read from the brief
+ * ("about 60 seconds" or the last [m:ss] mark), 60 s when neither is there.
+ */
+async function composeMusic(brief: string, model?: string): Promise<Buffer> {
+  const [p, m] = (model || effective.media.music || '').split(':')
+  if (p === 'elevenlabs' && m) {
+    const said = /about (\d+) seconds/i.exec(brief)
+    const marks = [...brief.matchAll(/(\d+):(\d{2})\]/g)]
+    const last = marks.at(-1)
+    const seconds = said ? Number(said[1]) : last ? Number(last[1]) * 60 + Number(last[2]) : 60
+    return new ElevenLabsClient(() => keyOf('elevenlabs')).music(brief, seconds, m)
+  }
+  const gemini = providerRegistry.get('gemini') as unknown as GeminiProvider
+  const { audio } = await gemini.music(brief, p === 'gemini' && m ? m : 'lyria-3.5')
+  return audio
+}
 
 /** recompute what runs: provider, model, keys, relay and clip cap all follow the account's plan */
 function applyAccess(): void {
@@ -968,12 +988,7 @@ if (headlessFile) {
             if (!file) throw new Error('The AI clip was made but could not be found in the library')
             return { file, durationSec: asset.durationSec }
           },
-          music: async (brief) => {
-            const gemini = providerRegistry.get('gemini') as unknown as GeminiProvider
-            const [p, m] = (effective.media.music || '').split(':')
-            const { audio } = await gemini.music(brief, p === 'gemini' && m ? m : 'lyria-3.5')
-            return audio
-          }
+          music: (brief, model?: string) => composeMusic(brief, model)
         }
       },
       // the free engine always works; the AI writer and voice follow the plan, like every other AI feature
@@ -1049,12 +1064,7 @@ if (headlessFile) {
             if (!file) throw new Error('The AI clip was made but could not be found in the library')
             return { file, durationSec: asset.durationSec }
           },
-          music: async (brief) => {
-            const gemini = providerRegistry.get('gemini') as unknown as GeminiProvider
-            const [p, m] = (effective.media.music || '').split(':')
-            const { audio } = await gemini.music(brief, p === 'gemini' && m ? m : 'lyria-3.5')
-            return audio
-          }
+          music: (brief, model?: string) => composeMusic(brief, model)
         }
       }
     })
