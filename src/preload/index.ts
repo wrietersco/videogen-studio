@@ -156,6 +156,7 @@ const api = {
     cancel: () => ipcRenderer.invoke('apprec:cancel'),
     handoffDone: () => ipcRenderer.invoke('apprec:handoffDone'),
     review: (edits: unknown) => ipcRenderer.invoke('apprec:review', edits),
+    decide: (answers: unknown) => ipcRenderer.invoke('apprec:decide', answers),
     play: (runId: string) => ipcRenderer.invoke('apprec:play', runId),
     reveal: (runId: string) => ipcRenderer.invoke('apprec:reveal', runId),
     revealRun: (runId: string) => ipcRenderer.invoke('apprec:revealRun', runId),

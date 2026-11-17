@@ -6,6 +6,7 @@
 import { MAX_STYLE_LINKS, parseYouTubeUrl } from './youtube'
 import { isPlatformId } from './shapes'
 import type { PlatformId } from './spec'
+import type { AgentMode } from './agentBrief'
 
 export type SignInMode = 'saved' | 'self' | 'none'
 export type Depth = 'quick' | 'standard' | 'thorough'
@@ -59,6 +60,8 @@ export interface AppInput {
   aiMedia?: boolean
   /** use Gemini's AI music; the engine chooses the style itself. Off by default. */
   aiMusic?: boolean
+  /** PARI agent: 'ask' (default when absent) pauses for the person on every model decision; 'autopilot' decides and reports */
+  agentMode?: AgentMode
   reviewFirst: boolean
   /** a brand kit whose logo and colour go on a launch film's cards ('' = none) */
   brandId?: string
@@ -203,6 +206,7 @@ export function validateApp(raw: unknown): { ok: true; value: AppInput } | { ok:
       useAi: r.useAi !== false,
       aiMedia: r.aiMedia === true,
       aiMusic: r.aiMusic === true,
+      agentMode: r.agentMode === 'autopilot' ? 'autopilot' : 'ask',
       reviewFirst: r.reviewFirst === true,
       brandId: typeof r.brandId === 'string' && /^[\w-]{1,60}$/.test(r.brandId) ? r.brandId : undefined,
       brandSource: brandSourceOf(r.brandSource, typeof r.brandId === 'string' && /^[\w-]{1,60}$/.test(r.brandId)),

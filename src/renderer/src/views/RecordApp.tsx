@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { PariEvent } from '@shared/agentBrief'
 import { api, type AppInput, type ReviewBeat, type RunEvent, type RunRecord, type SavedApp } from '../api'
 import { Section, fmtDur } from '../components/ui'
 import { CostToggle } from '../components/CostReceipt'
@@ -6,6 +7,8 @@ import { ShapePicker } from '../components/PromptTools'
 import { POST_APPS } from '@shared/shapes'
 import type { PlatformId } from '@shared/spec'
 import { MAX_STYLE_LINKS, parseYouTubeUrl } from '@shared/youtube'
+import type { AgentMode, CapabilityReport, DecisionRequest, FilmPlan, PariReport, SegmentCheck } from '@shared/agentBrief'
+import { DecisionPanel, PlanPanel, ReportPanel, autopilotLines } from './PariPanels'
 import { brandSourceOf, DEFAULT_CHECKS, DEPTH_LABELS, type AppChecks, type BrandSource, type Depth } from '@shared/appRecording'
 
 /**
@@ -40,6 +43,7 @@ interface Form {
   aiMedia: boolean
   aiMusic: boolean
   reviewFirst: boolean
+  agentMode: AgentMode
   brandId: string
   brandSource: BrandSource
   styleImages: string[]
@@ -50,19 +54,19 @@ interface Form {
 
 const blank = (): Form => ({
   name: '', url: '', context: '', document: null, signIn: 'saved', username: '', password: '', hasPassword: false, guardrailText: '', checks: { ...DEFAULT_CHECKS }, depth: 'standard',
-  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, platform: 'youtube', useAi: true, aiMedia: false, aiMusic: false, reviewFirst: false, brandId: '', brandSource: 'none', styleImages: [], styleVideo: '', styleLinks: [], styleNotes: ''
+  revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, platform: 'youtube', useAi: true, aiMedia: false, aiMusic: false, reviewFirst: false, agentMode: 'ask', brandId: '', brandSource: 'none', styleImages: [], styleVideo: '', styleLinks: [], styleNotes: ''
 })
 
 const fromApp = (a: SavedApp): Form => ({
   id: a.id, name: a.name, url: a.url, context: a.context, document: a.document ?? null, signIn: a.signIn, username: a.username ?? '', password: '', hasPassword: a.hasPassword, guardrailText: a.guardrailText,
   checks: a.checks, depth: a.depth, revealUsername: a.revealUsername, mode: a.mode, feature: a.launch?.feature ?? '', tagline: a.launch?.tagline ?? 'Simple. Fast. Safe.', closing: a.launch?.closing ?? 'Try it today',
-  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, platform: a.platform ?? 'youtube', useAi: a.useAi, aiMedia: a.aiMedia === true, aiMusic: a.aiMusic === true, reviewFirst: a.reviewFirst, brandId: a.brandId ?? '', brandSource: brandSourceOf(a.brandSource, !!a.brandId), styleImages: a.styleImages ?? [], styleVideo: a.styleVideo ?? '', styleLinks: a.styleLinks ?? [], styleNotes: a.styleNotes ?? ''
+  cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, platform: a.platform ?? 'youtube', useAi: a.useAi, aiMedia: a.aiMedia === true, aiMusic: a.aiMusic === true, reviewFirst: a.reviewFirst, agentMode: a.agentMode === 'autopilot' ? 'autopilot' : 'ask', brandId: a.brandId ?? '', brandSource: brandSourceOf(a.brandSource, !!a.brandId), styleImages: a.styleImages ?? [], styleVideo: a.styleVideo ?? '', styleLinks: a.styleLinks ?? [], styleNotes: a.styleNotes ?? ''
 })
 
 const toInput = (f: Form): AppInput => ({
   id: f.id, name: f.name, url: f.url, context: f.context, document: f.document, signIn: f.signIn, username: f.username || undefined, password: f.password || undefined, guardrailText: f.guardrailText,
   checks: f.checks, depth: f.depth, revealUsername: f.revealUsername, mode: f.mode,
-  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, platform: f.platform, useAi: f.useAi, aiMedia: f.aiMedia, aiMusic: f.aiMusic, reviewFirst: f.reviewFirst, brandId: f.brandSource === 'kit' ? f.brandId || undefined : undefined, brandSource: f.brandSource === 'kit' && !f.brandId ? 'none' : f.brandSource, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined, styleLinks: f.styleLinks, styleNotes: f.styleNotes
+  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, platform: f.platform, useAi: f.useAi, aiMedia: f.aiMedia, aiMusic: f.aiMusic, reviewFirst: f.reviewFirst, agentMode: f.agentMode, brandId: f.brandSource === 'kit' ? f.brandId || undefined : undefined, brandSource: f.brandSource === 'kit' && !f.brandId ? 'none' : f.brandSource, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined, styleLinks: f.styleLinks, styleNotes: f.styleNotes
 })
 
 const STAGES: Array<{ id: string; label: string }> = [
@@ -81,6 +85,10 @@ interface Live {
   handoff: string | null
   review: { beats: ReviewBeat[]; advisory: string[]; notes: string[] } | null
   result: RunRecord | null
+  plan: { plan: FilmPlan; capabilities: CapabilityReport | null } | null
+  checks: Record<string, SegmentCheck>
+  decide: DecisionRequest[] | null
+  report: PariReport | null
 }
 
 export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => void }) {
@@ -103,15 +111,22 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
     setRuns(s.runs)
     setAi(s.ai)
     setYoutube(s.youtube ?? { ready: true })
-    if (s.current) setLive((l) => l ?? { runId: s.current!.runId, stage: 'explore', message: 'Running…', logs: [], handoff: null, review: null, result: null })
+    if (s.current) setLive((l) => l ?? { runId: s.current!.runId, stage: 'explore', message: 'Running…', logs: [], handoff: null, review: null, result: null, plan: null, checks: {}, decide: null, report: null })
     return s
   }, [])
 
   useEffect(() => {
     void refresh()
     void api.brand.list().then((b) => setKits(b.kits.map((k) => ({ id: k.id, name: k.name })))).catch(() => undefined)
-    return api.appRec.onEvent((e: RunEvent) => {
-      if (e.kind === 'started') setLive({ runId: e.runId, stage: 'explore', message: 'Starting…', logs: [], handoff: null, review: null, result: null })
+    return api.appRec.onEvent((e: RunEvent | PariEvent) => {
+      if (e.kind === 'pari-plan') return setLive((l) => (l && l.runId === e.runId ? { ...l, plan: { plan: e.plan, capabilities: e.capabilities }, checks: {} } : l))
+      if (e.kind === 'pari-check') return setLive((l) => (l && l.runId === e.runId ? { ...l, checks: { ...l.checks, [e.check.segment]: e.check } } : l))
+      if (e.kind === 'pari-report') return setLive((l) => (l && l.runId === e.runId ? { ...l, report: e.report } : l))
+      if (e.kind === 'pari-decide') {
+        if (formRef.current.agentMode === 'autopilot') return setLive((l) => (l && l.runId === e.runId ? { ...l, logs: [...l.logs.slice(-40), ...autopilotLines(e.requests)] } : l))
+        return setLive((l) => (l && l.runId === e.runId ? { ...l, decide: e.requests } : l))
+      }
+      if (e.kind === 'started') setLive({ runId: e.runId, stage: 'explore', message: 'Starting…', logs: [], handoff: null, review: null, result: null, plan: null, checks: {}, decide: null, report: null })
       else if (e.kind === 'stage') setLive((l) => (l && l.runId === e.runId ? { ...l, stage: e.stage, message: e.message } : l))
       else if (e.kind === 'log') setLive((l) => (l && l.runId === e.runId ? { ...l, logs: [...l.logs.slice(-40), e.message.trim()] } : l))
       else if (e.kind === 'handoff') setLive((l) => (l && l.runId === e.runId ? { ...l, handoff: e.message } : l))
@@ -430,7 +445,18 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
                 Use Gemini AI music <span className="text-xs text-ink/50">(one track scored to this video, about $0.08; the engine picks the style, and the free built-in score plays if it fails)</span>
               </span>
             </label>
-            <label className="mt-2 flex items-center gap-2 text-sm">
+            <div className="mt-3 rounded-xl border-2 border-ink/5 bg-white px-3 py-2">
+              <div className="text-sm font-bold">When the video needs a choice of AI models</div>
+              <div className="mt-1.5 grid gap-2 md:grid-cols-2">
+                {([['ask', 'Ask me before choosing models (recommended)', 'You see a few plain choices, with the best one picked for you.'], ['autopilot', 'Autopilot: decide for me and tell me after', 'It picks the best option itself and lists what it chose in the log.']] as const).map(([id, label, hint]) => (
+                  <button key={id} onClick={() => set('agentMode', id)} aria-pressed={form.agentMode === id} className={`rounded-xl border-2 px-3 py-2 text-left ${form.agentMode === id ? 'border-grape bg-grape-soft' : 'border-ink/10 hover:border-grape/50'}`}>
+                    <div className="text-sm font-bold">{form.agentMode === id ? '●' : '○'} {label}</div>
+                    <div className="ml-5 text-xs text-ink/55">{hint}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="mt-3 flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.reviewFirst} onChange={(e) => set('reviewFirst', e.target.checked)} /> Let me review the steps before recording
             </label>
             {apps.find((a) => a.id === form.id)?.hasPlan && (
@@ -468,7 +494,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
           )}
         </div>
 
-        {live && <RunPanel live={live} onClose={() => setLive(null)} onReviewAnswered={() => setLive((l) => (l ? { ...l, review: null } : l))} onHandoffDone={() => setLive((l) => (l ? { ...l, handoff: null } : l))} />}
+        {live && <RunPanel live={live} onClose={() => setLive(null)} onReviewAnswered={() => setLive((l) => (l ? { ...l, review: null } : l))} onDecided={() => setLive((l) => (l ? { ...l, decide: null } : l))} onHandoffDone={() => setLive((l) => (l ? { ...l, handoff: null } : l))} />}
 
         {myRuns.length > 0 && (
           <div className="mt-8">
@@ -529,7 +555,7 @@ function TakeOver() {
   )
 }
 
-function RunPanel({ live, onClose, onReviewAnswered, onHandoffDone }: { live: Live; onClose: () => void; onReviewAnswered: () => void; onHandoffDone: () => void }) {
+function RunPanel({ live, onClose, onReviewAnswered, onDecided, onHandoffDone }: { live: Live; onClose: () => void; onReviewAnswered: () => void; onDecided: () => void; onHandoffDone: () => void }) {
   const idx = STAGES.findIndex((s) => s.id === live.stage)
   const done = live.result
   return (
@@ -562,6 +588,9 @@ function RunPanel({ live, onClose, onReviewAnswered, onHandoffDone }: { live: Li
         </div>
       )}
 
+      {live.plan && <PlanPanel plan={live.plan.plan} capabilities={live.plan.capabilities} checks={live.checks} />}
+      {live.decide && !done && <DecisionPanel key={live.decide.map((d) => d.id).join('|')} requests={live.decide} onAnswered={onDecided} />}
+
       {live.review && <ReviewPanel beats={live.review.beats} advisory={live.review.advisory} notes={live.review.notes} onAnswered={onReviewAnswered} />}
 
       {!done && live.logs.length > 0 && (
@@ -570,6 +599,8 @@ function RunPanel({ live, onClose, onReviewAnswered, onHandoffDone }: { live: Li
           <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap">{live.logs.join('\n')}</pre>
         </details>
       )}
+
+      {live.report && <ReportPanel report={live.report} />}
 
       {done && done.status === 'done' && (
         <div className="mt-3">
