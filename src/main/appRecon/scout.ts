@@ -20,6 +20,7 @@ interface RawPage {
   controls: AppControl[]
   notices: string[]
   text: string
+  sections: NonNullable<AppPage['sections']>
 }
 
 const EXTRACT = String.raw`(() => {
@@ -55,7 +56,24 @@ const EXTRACT = String.raw`(() => {
   const main = document.querySelector('main,[role=main]') || document.body;
   const said = ((main && main.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 1400);
   const drawn = [...new Set([...document.querySelectorAll('svg text')].filter(shown).map((t) => (t.textContent || '').replace(/\s+/g, ' ').trim()).filter((t) => t.length > 1 && t.length < 60))].slice(0, 60);
+  const around = (el) => { const box = el.closest('section,article,li,[class*=card],[class*=step]') || el.parentElement; return ((box && box.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 240); };
+  const top = (el) => el.getBoundingClientRect().y + window.scrollY;
+  const seen = new Set();
+  const mk = (el, kind, label, extra) => { const l = (label || '').replace(/\s+/g, ' ').trim().slice(0, 80); if (!l || seen.has(kind + l.toLowerCase())) return null; seen.add(kind + l.toLowerCase()); return Object.assign({ label: l, selector: path(el), kind, y: Math.round(top(el)), text: around(el), expandable: el.tagName === 'SUMMARY' || el.getAttribute('aria-expanded') === 'false' || undefined }, extra || {}); };
+  const sections = [];
+  for (const h of document.querySelectorAll('h1,h2,h3,[role=region][aria-label],section[aria-label]')) { if (!shown(h)) continue; const m = mk(h, 'section', h.getAttribute('aria-label') && !/^H/.test(h.tagName) ? h.getAttribute('aria-label') : text(h)); if (m) sections.push(m); }
+  for (const t of document.querySelectorAll('[role=tab]')) { if (!shown(t)) continue; const m = mk(t, 'tab', text(t)); if (m) sections.push(m); }
+  for (const c of document.querySelectorAll('[class*=card],article')) { if (!shown(c)) continue; const h = c.querySelector('h1,h2,h3,h4,h5,strong'); const m = h ? mk(c, 'card', text(h)) : null; if (m) sections.push(m); }
+  const stageGroups = [...document.querySelectorAll('ol, [class*=stepper], [class*=steps], [class*=timeline], [class*=stages], [class*=progress], [role=list]')];
+  for (const g of stageGroups) {
+    const items = [...g.children].filter(shown);
+    if (items.length < 2) continue;
+    const made = items.map((li) => { const h = li.querySelector('h1,h2,h3,h4,h5,strong,[class*=title],[class*=label]'); return mk(li, 'stage', text(h || li).split(/ - |: /)[0] || text(li)); }).filter(Boolean);
+    if (made.length >= 2) { sections.push(...made); break; }
+  }
+  for (const h of document.querySelectorAll('h2,h3')) { if (!shown(h)) continue; if (/^(step|stage|phase)\s*\d+|^\d+[.):]/i.test(text(h))) { const m = mk(h, 'stage', text(h)); if (m) sections.push(m); } }
   return {
+    sections: sections.slice(0, 40),
     text: said + (drawn.length ? ' | Labels drawn on the page: ' + drawn.join(', ') : ''),
     title: document.title,
     headings: [...document.querySelectorAll('h1,h2,h3')].filter(shown).map(text).filter(Boolean).slice(0, 8),
@@ -81,7 +99,7 @@ export async function scoutPage(page: Page, outDir: string, name: string, opts: 
   const file = `${name}.jpg`
   await page.screenshot({ path: join(outDir, file) as `${string}.jpg`, type: 'jpeg', quality: 85 })
   await style.evaluate((el) => el.remove())
-  return { url: page.url(), title: raw.title, screenshot: file, headings: raw.headings, fields, controls: raw.controls, notices: raw.notices, text: raw.text }
+  return { url: page.url(), title: raw.title, screenshot: file, headings: raw.headings, fields, controls: raw.controls, notices: raw.notices, text: raw.text, sections: raw.sections }
 }
 
 const LOGIN_WORDS = /\b(log\s?-?in|sign\s?-?in|submit|continue|next|enter)\b/i

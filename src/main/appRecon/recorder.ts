@@ -427,12 +427,23 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           const budget = pace === 0 ? 0 : Math.max(3500, need - (Date.now() - startMs) - 1800)
           const out = await scrollArea(page, step.find, step.text === 'up' ? 'up' : 'down', { near: lastSel, budgetMs: budget, instant: pace === 0, mouseTo: (x, y) => glide(x, y, 700) })
           say(step.id, `scrolled ${step.text === 'up' ? 'up' : 'down'}${out.moved ? '' : ' (nothing moved)'}`)
+        } else if (step.kind === 'reveal') {
+          // bring one part of the page into view and stay on it (a section of a tour, a stage of a process)
+          const r = step.selector ? await rectOf(step.selector) : null
+          if (r) {
+            await glide(r.x + Math.min(r.w * 0.5, 240), r.y + Math.min(r.h * 0.5, 80), 700)
+            await sleep((step.holdMs ?? 1500) * pace)
+            focusRect = r
+            focusKind = step.focus ?? 'target'
+            lastSel = step.selector
+            say(step.id, `showed "${step.label ?? step.selector}"`)
+          } else say(step.id, `could not find "${step.label ?? step.selector}", so it was not shown`)
         } else if (step.kind === 'wait' && step.intent === 'inspect') {
           // the result of what was just done: wait for it to finish drawing, then let the viewer see all of it
           await inspectView(page, pace)
           say(step.id, 'looked at the result')
         } else if (step.kind === 'wait') {
-          await sleep((step.expect ? 0 : 800) * pace)
+          await sleep(((step.expect ? 0 : 800) + (step.holdMs ?? 0)) * pace)
         } else if (step.kind === 'handoff') {
           say(step.id, 'waiting for a person')
           await o.onHandoff?.(step)
