@@ -29,6 +29,7 @@ import type { GeminiProvider } from './providers/gemini'
 import { ElevenLabsClient } from './providers/elevenlabs'
 import { luminanceOf } from '@shared/brand'
 import { registerAppReconIpc } from './appRecon/ipc'
+import { capabilitySourceFromApp, readCapabilities } from './appRecon/agent/capabilities'
 import { registerMarketingIpc } from './marketing/ipc'
 import { FootageStore } from './footage/store'
 import { FootageService } from './footage/service'
@@ -946,6 +947,7 @@ if (headlessFile) {
     appReconStore.markInterrupted()
     registerAppReconIpc({
       store: appReconStore,
+      capabilities: () => readCapabilities(capabilitySourceFromApp({ settings: effective, mode, ent: planEnt(), hasKey: (k) => keyOf(k).length > 0 })),
       gemini: () => (providerRegistry.hasKey('gemini') ? (providerRegistry.get('gemini') as unknown as GeminiProvider) : null),
       emit,
       window: () => win,

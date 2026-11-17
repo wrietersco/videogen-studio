@@ -123,7 +123,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
       if (e.kind === 'pari-check') return setLive((l) => (l && l.runId === e.runId ? { ...l, checks: { ...l.checks, [e.check.segment]: e.check } } : l))
       if (e.kind === 'pari-report') return setLive((l) => (l && l.runId === e.runId ? { ...l, report: e.report } : l))
       if (e.kind === 'pari-decide') {
-        if (formRef.current.agentMode === 'autopilot') return setLive((l) => (l && l.runId === e.runId ? { ...l, logs: [...l.logs.slice(-40), ...autopilotLines(e.requests)] } : l))
+        if (e.auto) return setLive((l) => (l && l.runId === e.runId ? { ...l, logs: [...l.logs.slice(-40), ...autopilotLines(e.requests)] } : l))
         return setLive((l) => (l && l.runId === e.runId ? { ...l, decide: e.requests } : l))
       }
       if (e.kind === 'started') setLive({ runId: e.runId, stage: 'explore', message: 'Starting…', logs: [], handoff: null, review: null, result: null, plan: null, checks: {}, decide: null, report: null })

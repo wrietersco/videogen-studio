@@ -25,6 +25,8 @@ export interface ActOptions {
   idPrefix: string
   /** used to decide whether an expander or tab may be clicked */
   gate?: PolicyGate
+  /** the most sections / stages / features this segment may show, so the whole film keeps to its length */
+  maxParts?: number
 }
 
 export interface ActPlan {
@@ -163,7 +165,7 @@ export function planSegment(seg: PageSegment, page: AppPage, opts: ActOptions): 
       let secs = ofKind(page, 'section')
       if (!secs.length) secs = fallbackSections(page)
       secs = secs.filter((s) => lower(s.label) !== lower(pageName))
-      const cap = MAX_TOUR[seg.emphasis]
+      const cap = Math.min(MAX_TOUR[seg.emphasis], opts.maxParts ?? Infinity)
       if (secs.length > cap) notes.push(`the page has ${secs.length} sections; ${cap} are shown`)
       // keep page order, but make sure what the person named is among those kept
       const keep = new Set(
@@ -191,6 +193,14 @@ export function planSegment(seg: PageSegment, page: AppPage, opts: ActOptions): 
         stages = ofKind(page, 'section').filter((s) => lower(s.label) !== lower(pageName)).slice(0, MAX_TOUR[seg.emphasis])
       }
       stages = stages.slice(0, 12)
+      // too many stages for the film's length: the first, the last and evenly spread ones between, in order
+      const room = Math.max(2, opts.maxParts ?? stages.length)
+      const all = stages.length
+      if (all > room) {
+        const pick = new Set(Array.from({ length: room }, (_, k) => Math.round((k * (all - 1)) / (room - 1))))
+        stages = stages.filter((_, i) => pick.has(i))
+        notes.push(`${room} of the ${all} stages are shown, so the film keeps to its length`)
+      }
       stages.forEach((s, i) => sectionBeat(s, 'stage', i, stages.length, clickFor(s)))
       break
     }
@@ -203,14 +213,15 @@ export function planSegment(seg: PageSegment, page: AppPage, opts: ActOptions): 
         seen.add(lower(s.label))
         return true
       })
-      const cap = MAX_FEATURES[seg.emphasis]
+      const cap = Math.min(MAX_FEATURES[seg.emphasis], Math.max(1, opts.maxParts ?? Infinity))
       const named = distinct.filter((s) => lookForHits(s, lookFor) > 0)
       const rest = distinct.filter((s) => lookForHits(s, lookFor) === 0)
       const missing = lookFor.filter((w) => !named.some((s) => lookForHits(s, [w]) > 0))
       if (missing.length) notes.push(`could not find on the page: ${missing.join(', ')}`)
       const chosen = [...named, ...rest].slice(0, cap)
       chosen.sort((a, b) => distinct.indexOf(a) - distinct.indexOf(b))
-      if (chosen.length < 3) notes.push(`only ${chosen.length} distinct feature${chosen.length === 1 ? '' : 's'} found on the page`)
+      if (distinct.length < 3) notes.push(`only ${distinct.length} distinct feature${distinct.length === 1 ? '' : 's'} found on the page`)
+      else if (distinct.length > chosen.length && opts.maxParts !== undefined && chosen.length >= opts.maxParts) notes.push(`${chosen.length} of the ${distinct.length} features are shown, so the film keeps to its length`)
       chosen.forEach((s, i) => sectionBeat(s, 'feature', i, chosen.length, clickFor(s)))
       break
     }

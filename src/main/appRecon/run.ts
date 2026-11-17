@@ -26,6 +26,9 @@ import { buildAppMap, scoutPage } from './scout'
 import { captureSiteBrand, type SiteBrand } from './siteBrand'
 import { lookFromPalette } from './style'
 import { filmFrame } from '@shared/shapes'
+import type { PariReport } from '@shared/agentBrief'
+import { actStage, agentFilmsPages, buildReport, clipRequests, narrationBrief, planStage, PariStopped, reviewStage, wantsProblemCard, type ActOutcome, type PariHooks, type PlanOutcome } from './agent/loop'
+import { musicPrompt } from './agent/musicBrief'
 import type { PlatformId } from '@shared/spec'
 
 /**
@@ -48,7 +51,7 @@ export interface MediaTools {
   /** checks a still is a coherent, concrete picture with no readable text; null/absent = no review available (the still is used unchecked) */
   reviewStill?(file: string): Promise<{ ok: boolean; reason?: string } | null>
   /** one finished track (an audio file's bytes) for this brief */
-  music(brief: string): Promise<Buffer>
+  music(brief: string, /** the model the plan assigned ("gemini:lyria-3.5", "elevenlabs:music_v2_5"); absent = Settings decide */ model?: string): Promise<Buffer>
 }
 
 /** the still's prompt: the clip prompt, asking for the shot's first frame */
@@ -133,6 +136,8 @@ export interface RunInput {
   media?: { tools: MediaTools | null; clips: boolean; music: boolean }
   /** where the film will be posted; sets its frame (default: wide YouTube 1920×1080). A tall or portrait film records the app on a phone screen */
   platform?: PlatformId
+  /** the PARI agent: the whole brief is read into a plan, models are chosen with the person (or on autopilot), and every part is checked */
+  pari?: PariHooks
 }
 
 export interface RunHooks {
@@ -164,6 +169,8 @@ export interface RunOutput {
   mediaNotes?: string[]
   aiClips?: number
   aiMusic?: boolean
+  /** what was asked, what was done, and what was not (PARI runs only) */
+  pari?: PariReport
 }
 
 export class RunCancelled extends Error {
@@ -184,6 +191,21 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
   const check = () => {
     if (inp.signal?.aborted) throw new RunCancelled()
   }
+  // ------------------------------------------------------------ PARI: plan (before anything is opened, recorded or paid for)
+  let pari: PlanOutcome | null = null
+  if (inp.pari && !inp.reuse) {
+    hooks.progress('plan', 'Reading your brief')
+    try {
+      pari = await planStage({ context: inp.context, startUrl: inp.startUrl, mode: inp.mode, launch: inp.launch, targetSec: inp.targetSec }, { chat: inp.chat, secrets: inp.vault ? [inp.vault.password, inp.vault.username] : [], say }, inp.pari)
+    } catch (err) {
+      if (err instanceof PariStopped && inp.signal?.aborted) throw new RunCancelled()
+      throw err
+    }
+    writeFileSync(join(inp.runDir, 'film-plan.json'), JSON.stringify(pari, null, 2))
+    check()
+  }
+  const fp = pari?.plan ?? null
+  const assigned = pari?.assignment ?? {}
 
   const { guardrails, enforced, advisory } = interpretGuardrails(inp.guardrailText, inp.startUrl, inp.checks)
   const gate = new PolicyGate(guardrails)
@@ -199,6 +221,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
   // the same goes for sentences about the music and the shape of the film
   const ctxClean = withoutProductionSentences(inp.context)
   const reveal = !!inp.revealUsername
+  const speech = assigned.voice === 'none' ? null : inp.speech
 
   const browser = await launch({ ...device, userDataDir: join(inp.runDir, 'profile'), headless: inp.signIn !== 'self' })
   const onAbort = () => void browser.close().catch(() => undefined)
@@ -329,14 +352,16 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     }
 
     // a numbered list of steps is a script: it is performed exactly, and nothing else is explored
-    const script = inp.reuse ? null : parseStepScript(ctxClean)
+    const agentPages = !!fp && !inp.reuse && agentFilmsPages(fp)
+    const script = inp.reuse || agentPages ? null : parseStepScript(ctxClean)
     let scriptOut: ScriptOutcome | null = null
     let beganAt = ''
-    const directives = inp.reuse || script ? [] : parseDirectives(ctxClean)
+    const directives = inp.reuse || script || agentPages ? [] : parseDirectives(ctxClean)
     const scripted = directives.some((d) => d.kind === 'type') || (directives.length > 0 && /->|→|=>|⇒|➜|>>/.test(ctxClean))
     if (directives.length) say(`Steps you asked for: ${directives.map((d) => (d.kind === 'open' ? `open "${d.target}"` : `type "${d.text}" into "${d.into || 'the search box'}"`)).join(', then ')}`)
 
     let exploration: Exploration = { visits: [], actions: 0, stoppedBy: 'done', elapsedMs: 0 }
+    let acted: ActOutcome | null = null
     let reused: Plan | null = null
     const reuseNotes: string[] = []
     const pause = async (): Promise<string | void> => {
@@ -367,6 +392,16 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       reuseNotes.push(...(rr.repairs?.length ? rr.repairs.map((r) => `Repaired: ${r}`) : ['The saved steps still work, so none were changed.']))
       hooks.progress('explore', rr.repairs?.length ? `${rr.repairs.length} saved step(s) needed repair` : 'All saved steps still work')
       await settle(page)
+    } else if (agentPages && fp && inp.pari) {
+      await pause()
+      // ACT: every page the plan names is opened behind the gate, in the person's order; a failure is retried, substituted or put to the person
+      hooks.progress('explore', `Opening the ${fp.segments.filter((s) => s.kind === 'page').length} pages your brief names`)
+      acted = await actStage({ page, plan: fp, gate, outDir: scoutDir, startUrl: inp.startUrl, known: [...pages], startBeat: signedIn && useVault ? 1 : 0, say, hooks: inp.pari, check, signedIn,
+        targetSec: inp.targetSec ?? inp.launch?.targetSec,
+        // a fresh, signed-out page behind the same gate: the recording signs in itself, so public pages are filmed before it
+        publicPage: useVault ? async () => { const c = await browser.createBrowserContext(); const p = await c.newPage(); await enforcePolicy(p, gate); await prepare(p, redaction); return p } : undefined })
+      for (const a of acted.acted.values()) pages.push(a.reached)
+      if (!acted.acted.size) throw new Error(`None of the pages in your brief could be opened, so no video was made: ${[...acted.skipped.values()].map((s) => s.why).join('; ')}.`)
     } else if (script) {
       await pause()
       hooks.progress('explore', `Doing your ${script.items.filter((i) => !i.login).length} steps, exactly as written`)
@@ -393,11 +428,13 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     const safeMap = scrubMap(map, { values: secrets, kinds: guardrails.privacyMode ? undefined : ['token', 'card', 'ssn', 'secret'] })
     writeFileSync(join(inp.runDir, 'app-map.json'), JSON.stringify(safeMap, null, 2))
     const cookies = inp.signIn === 'self' ? await ctx.cookies() : []
-    hooks.progress('explore', scriptOut ? `Did ${scriptOut.results.filter((r) => !r.item.login).length} step(s) with ${scriptOut.actions} action(s)` : `Explored ${exploration.visits.length} page(s) with ${exploration.actions} action(s)`)
+    hooks.progress('explore', acted ? `Planned ${acted.steps.length} step(s) across ${acted.acted.size} page(s)` : scriptOut ? `Did ${scriptOut.results.filter((r) => !r.item.login).length} step(s) with ${scriptOut.actions} action(s)` : `Explored ${exploration.visits.length} page(s) with ${exploration.actions} action(s)`)
 
     // ------------------------------------------------------------ plan
     hooks.progress('plan', 'Choosing what the video shows')
-    let plan: Plan = reused
+    let plan: Plan = acted
+      ? pariPlan(acted, { startUrl: inp.startUrl, login: signedIn && useVault ? L : null, title: fp?.product || displayHost(inp.startUrl) })
+      : reused
       ? { ...reused, notes: [...reused.notes.filter((n) => !n.startsWith('Repaired: ') && !n.startsWith('The saved steps') && !/explored page/.test(n)), ...reuseNotes] }
       : scriptOut && script
         ? scriptPlan({ script, outcome: scriptOut, map: safeMap, startUrl: inp.startUrl, beganAt, hasVault: useVault, secrets })
@@ -421,9 +458,17 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     // ------------------------------------------------------------ script
     hooks.progress('script', 'Writing and voicing the script')
     // which AI clips the film will have (so the story is written around them): only when they can really be made
+    // the plan's clips replace the keyword-matched ones; the person's model choice can switch them off
+    if (fp) {
+      ask.requests = clipRequests(fp)
+      ask.style = fp.look.style === 'infographic' || fp.segments.some((s) => s.kind === 'ai-clip' && s.style === 'infographic') ? 'infographic' : null
+      ask.noAbstract = fp.look.noAbstract
+      if (assigned.video === 'none' || assigned.video === 'skip') ask.requests = []
+    }
     const clipsPossible = !!inp.media?.tools && !ask.declined
-    const clipPlaces: Placement[] = !clipsPossible ? [] : ask.requests.length ? [...new Set(ask.requests.map((r) => r.placement))] : inp.media?.clips ? ['start'] : []
-    const narration = await narrate({ chat: inp.chat, speech: inp.speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: ctxClean, secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, problem: structure.problem, clips: clipPlaces, product: inp.launch?.feature.split(/\s+/)[0]?.replace(/['\u2019]s$/i, ''), dir: inp.runDir, say })
+    const clipPlaces: Placement[] = !clipsPossible ? [] : ask.requests.length ? [...new Set(ask.requests.map((r) => r.placement))] : inp.media?.clips && !fp ? ['start'] : []
+    const problemAsked = fp ? wantsProblemCard(fp, clipsPossible && ask.requests.some((r) => r.part === 'problem')) : structure.problem
+    const narration = await narrate({ chat: inp.chat, speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: fp ? narrationBrief(fp) : ctxClean, secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, problem: problemAsked, clips: clipPlaces, product: inp.launch?.feature.split(/\s+/)[0]?.replace(/['\u2019]s$/i, ''), dir: inp.runDir, say })
     // a result the person asked to see stays on screen long enough to be taken in, whatever the narration length
     for (const b of plan.beats) if ((b.kind === 'result' || b.kind === 'detail') && (narration.minSec.get(b.beat) ?? 0) < RESULT_HOLD_SEC) narration.minSec.set(b.beat, RESULT_HOLD_SEC)
     check()
@@ -463,7 +508,8 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     if (ask.declined) mediaNotes.push('You wrote that you do not want an AI video, so none was made.')
     else if (askedClips && !tools) mediaNotes.push('You asked for an AI video, but AI media is not available for this video (the AI option is off, the plan does not include it, or no Gemini key is set), so it was made without one.')
     else if (inp.media?.clips && !tools) mediaNotes.push('AI video clips were ticked, but AI media is not available for this video, so it was made without them.')
-    if (tools && !ask.declined && (askedClips || inp.media?.clips)) {
+    const clipsMade = new Map<string, number>()
+    if (tools && !ask.declined && (askedClips || (inp.media?.clips && !fp))) {
       hooks.progress('produce', 'Making AI video clips')
       const sec = clipSeconds(lengthSec)
       const topic = inp.launch ? `${inp.launch.feature}${inp.launch.tagline ? ` - ${inp.launch.tagline}` : ''}` : (ctxClean.split('\n').map((l) => l.trim()).find((l) => l.length > 12 && !/^(?:(?:step\s*)?\d{1,2}\s*[.):-]|[-*])\s/i.test(l) && !/:$/.test(l)) ?? '').slice(0, 200)
@@ -488,11 +534,12 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
           const made = await tools.clip(c.prompt, secs, { ...(imageFile ? { imageFile } : {}), portrait })
           const clipSec = made.durationSec ?? probe(made.file).durationSec ?? sec
           mkdirSync(join(inp.runDir, 'final'), { recursive: true })
-          const pcm = await voiceLine(narration.plans.some((p) => p.pcm.length) ? inp.speech : null, join(inp.runDir, 'final'), `voice-clip-${n}`, c.line, tone).catch((err) => {
+          const pcm = await voiceLine(narration.plans.some((p) => p.pcm.length) ? speech : null, join(inp.runDir, 'final'), `voice-clip-${n}`, c.line, tone).catch((err) => {
             mediaNotes.push(`The voice for an AI clip could not be made (${String((err as Error)?.message ?? err).slice(0, 120)}), so it shows only as subtitles.`)
             return new Float32Array(0)
           })
           inserts.push({ at: where(c.placement), file: made.file, clipSec, text: c.line, pcm, tag: 'AI-generated illustration' })
+          clipsMade.set(c.said.slice(0, 400), (clipsMade.get(c.said.slice(0, 400)) ?? 0) + clipSec)
           mediaNotes.push(`AI clip (${c.placement === 'start' ? 'at the start' : c.placement === 'end' ? 'at the end' : 'in the middle'}): ${c.said.slice(0, 120)}`)
           n++
         } catch (err) {
@@ -503,12 +550,19 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     }
     let musicChoice: Awaited<ReturnType<typeof chooseMusic>> | undefined
     // a written music wish (nature sounds, no instruments) is an instruction, like a written AI video request
-    const musicWish = !!musicAsk && !musicAsk.none && (musicAsk.sounds.length > 0 || musicAsk.noInstruments)
+    // PARI: the plan's music and the model the person approved win over the keyword rules
+    const planMusic = fp && !fp.music.none && fp.music.description ? fp.music : null
+    const aiMusicModel = assigned.music && !/^(?:none|builtin)/.test(assigned.music) ? assigned.music : undefined
+    const musicWish = !planMusic && !!musicAsk && !musicAsk.none && (musicAsk.sounds.length > 0 || musicAsk.noInstruments)
     // natural sounds are made on this PC: free, instrument-free, and they cannot fail the way a music model does
     const ambience = musicWish ? soundsFromWords(musicAsk!.sounds) : undefined
-    const wantAiMusic = inp.media?.music && !musicWish && !(musicAsk?.none)
-    if (musicAsk?.none) mediaNotes.push('You wrote that you do not want music, so the film has voice only.')
-    if (tools && wantAiMusic) {
+    const noMusic = fp ? fp.music.none || assigned.music === 'none' : !!musicAsk?.none
+    const wantAiMusic = fp ? !!aiMusicModel && !noMusic : inp.media?.music && !musicWish && !(musicAsk?.none)
+    if (noMusic) mediaNotes.push(fp && !fp.music.none ? 'You chose no music, so the film has voice only.' : 'You wrote that you do not want music, so the film has voice only.')
+    if (tools && wantAiMusic && planMusic) {
+      musicChoice = { mood: inp.mode === 'launch' ? 'upbeat' : 'cinematic', style: planMusic.description, why: `as your brief asks (${aiMusicModel})` }
+      say(`AI music (${aiMusicModel}): ${planMusic.description}`)
+    } else if (tools && wantAiMusic) {
       musicChoice = await chooseMusic({ ask: musicAsk, chat: inp.chat, context: inp.context, mode: inp.mode, targetSec: lengthSec, styleMood: inp.musicMood, styleDirection: inp.styleDirection, secrets, say })
       say(`AI music: ${musicChoice.mood}${musicChoice.style ? ` — ${musicChoice.style}` : ''} (${musicChoice.why})`)
     } else if (inp.media?.music && !musicAsk?.none && !musicWish) mediaNotes.push('AI music was ticked, but it is not available for this video (the AI option is off, the plan does not include it, or no Gemini key is set), so the built-in score plays.')
@@ -532,9 +586,9 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
           ? async ({ total, cuts }) => {
               const stub = { musicMood: musicChoice!.mood, style: 'social', design: { look: 'social' }, voiceover: narration.plans.some((p) => p.pcm.length) ? [1] : [], narration: [] } as unknown as VideoSpec
               const voiced = narration.plans.some((p) => p.pcm.length)
-              const brief = musicChoice!.ambient ? ambientBrief(musicChoice!, total, voiced) : musicBrief(stub, cuts, total)
+              const brief = planMusic ? musicPrompt(planMusic, total, voiced) : musicChoice!.ambient ? ambientBrief(musicChoice!, total, voiced) : musicBrief(stub, cuts, total)
               if (!brief) return null
-              const audio = await tools.music(musicChoice!.ambient ? brief : withStyle(brief, musicChoice!.style))
+              const audio = await tools.music(planMusic || musicChoice!.ambient ? brief : withStyle(brief, musicChoice!.style), aiMusicModel)
               const file = join(inp.runDir, 'final', 'ai-music.mp3')
               writeFileSync(file, audio)
               return decodeStereo(file)
@@ -543,7 +597,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       intro: narration.intro,
       problem: narration.problem,
       outro: narration.outro,
-      noBuiltinMusic: !!musicAsk?.none,
+      noBuiltinMusic: noMusic,
       ambience,
       musicLevel: musicAsk?.quiet ? 0.45 : undefined,
       motif,
@@ -555,7 +609,20 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     if (res.musicSource === 'ambience') mediaNotes.push(`Background sound: ${musicAsk!.sounds.length ? musicAsk!.sounds.join(', ') : 'natural ambience'}, made on this computer with no instruments, as you asked.`)
     if (res.scenes) mediaNotes.push(`The title${narration.problem ? ', problem' : ''} and closing scenes are animated around a "${motif}" motif chosen from what your video is about.`)
     if (narration.problem) mediaNotes.push('Problem statement added after the opening, as you asked (written by the engine from your words).')
-    return { ...base, plan, video: res.file, durationSec: res.durationSec, redactionMisses: take.redactionMisses, mediaNotes, aiClips: inserts.length, aiMusic: res.musicSource === 'ai' }
+    // ------------------------------------------------------------ PARI: review, and the honest report
+    let report: PariReport | undefined
+    if (fp && inp.pari) {
+      const lines = [...narration.lines.map((l) => l.text), narration.problem?.text ?? '', ...inserts.map((i) => i.text ?? '')].filter(Boolean)
+      const planClips = fp.segments.some((s) => s.kind === 'ai-clip')
+      const clipsSkipped = !planClips ? undefined : assigned.video === 'none' || assigned.video === 'skip' ? 'you chose not to make AI clips' : !tools ? 'AI clips are not available on this account' : undefined
+      const checks = reviewStage({ plan: fp, acted, take, clipsMade, clipsSkipped, lines, problemDrawn: !!narration.problem })
+      for (const c of checks) inp.pari.emit({ kind: 'pari-check', check: c })
+      report = buildReport(fp, pari, checks)
+      inp.pari.emit({ kind: 'pari-report', report })
+      writeFileSync(join(inp.runDir, 'pari-report.json'), JSON.stringify(report, null, 2))
+      mediaNotes.push(...(pari?.notes ?? []).map((n) => `Choice: ${n}`), ...report.shortfalls)
+    }
+    return { ...base, plan, video: res.file, durationSec: res.durationSec, redactionMisses: take.redactionMisses, mediaNotes, aiClips: inserts.length, aiMusic: res.musicSource === 'ai', pari: report }
   } finally {
     inp.signal?.removeEventListener('abort', onAbort)
     await browser.close().catch(() => undefined)
@@ -565,6 +632,59 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       await removeQuietly(join(inp.runDir, 'profile'))
     }
   }
+}
+
+/** the recorder's plan for a PARI run: the sign-in (when the recording signs in) then every page segment's steps, in order */
+function pariPlan(acted: ActOutcome, o: { startUrl: string; login: AppMap['login'] | null; title: string }): Plan {
+  const steps: Step[] = []
+  const beats: Plan['beats'] = []
+  const notes = [...acted.notes]
+  const L = o.login
+  const entries = [...acted.acted.values()]
+  const pub = L ? entries.filter((e) => e.public) : []
+  const priv = entries.filter((e) => !pub.includes(e))
+  // public pages (seen signed out) come first, then the sign-in, then the rest, each in the person's order
+  for (const e of pub) {
+    steps.push(...e.act.steps)
+    beats.push(...e.act.beats)
+  }
+  if (pub.length && entries.indexOf(pub[pub.length - 1]) > pub.length - 1) notes.push('Public pages are filmed before the sign-in, because the app sends a signed-in person away from them.')
+  if (L && L.usernameSelector && L.passwordSelector && L.submitSelector) {
+    steps.push(
+      { id: 'l1', beat: 0, kind: 'goto', url: L.pageUrl ?? o.startUrl, selector: L.usernameSelector, intent: 'navigate', focus: 'form' },
+      { id: 'l2', beat: 0, kind: 'type', selector: L.usernameSelector, label: 'username', text: '{{secret:username}}', focus: 'target' },
+      { id: 'l3', beat: 0, kind: 'type', selector: L.passwordSelector, label: 'password', text: '{{secret:password}}', focus: 'target' },
+      { id: 'l4', beat: 0, kind: 'click', selector: L.submitSelector, label: L.submitLabel, intent: 'login-submit', expect: { selectorGone: L.passwordSelector }, focus: 'banner' }
+    )
+    beats.push({ beat: 0, kind: 'login', chapter: 'Signing in', facts: ['The person signs in with a username and a blurred password'], fallback: 'First we sign in. The password stays hidden.', launchFallback: 'Sign in with your account to get started.' })
+  }
+  for (const e of priv) {
+    steps.push(...e.act.steps)
+    beats.push(...e.act.beats)
+  }
+  // beats numbered again in film order (the objects are shared with the review, so it sees the same numbers)
+  const loginBeats = new Set(beats.filter((b) => b.kind === 'login'))
+  const renumber = new Map<object, number>()
+  let k = 0
+  const seen = new Map<string, number>()
+  for (const st of steps) {
+    const key = st.id.startsWith('l') && /^l\d$/.test(st.id) ? 'login' : `${st.id.split('-')[0]}:${st.beat}`
+    if (!seen.has(key)) seen.set(key, k++)
+    renumber.set(st, seen.get(key)!)
+  }
+  for (const b of beats) {
+    const key = loginBeats.has(b) ? 'login' : `${prefixOfBeat(b, acted)}:${b.beat}`
+    b.beat = seen.get(key) ?? b.beat
+  }
+  for (const st of steps) st.beat = renumber.get(st)!
+  const first = steps[0]
+  return { playbook: { version: 1, title: o.title, startUrl: first?.kind === 'goto' && first.url ? first.url : o.startUrl, steps }, beats, loginFocus: false, notes }
+}
+
+/** which segment's step-id prefix a beat belongs to ("p2") */
+function prefixOfBeat(b: Plan['beats'][number], acted: ActOutcome): string {
+  for (const e of acted.acted.values()) if (e.act.beats.includes(b)) return e.act.steps[0]?.id.split('-')[0] ?? ''
+  return ''
 }
 
 const BROWSER_CHECK = 'The site kept showing its "checking your browser" page and never opened the app, so no video was made. Choose "I\'ll sign in myself" so the check runs in a window you can see, or ask whoever runs the site to let this computer through.'

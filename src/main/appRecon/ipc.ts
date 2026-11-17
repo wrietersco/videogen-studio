@@ -1,6 +1,7 @@
 import { BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
+import { DECIDE_CHANNEL, type CapabilityReport, type DecisionAnswer, type DecisionRequest } from '../../shared/agentBrief'
 import { brandSourceOf, isAppId, isRunId, validateApp, type ReviewEdits, type RunEvent, type RunRecord } from '../../shared/appRecording'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { applyReviewEdits, reviewBeats } from './planner'
@@ -30,6 +31,8 @@ export interface AppReconIpcDeps {
   gemini?: () => Pick<GeminiProvider, 'readVideoUrl'> | null
   /** a recording was erased: keep only what it cost, and let go of the library clips made for it */
   forgetRun?: (runId: string, usage: ProjectUsage) => void
+  /** what this account can use for each job (writer, voice, music, video, image, vision), read from Settings, the plan and the keys */
+  capabilities?: () => CapabilityReport
   /** replaceable for tests */
   runner?: (input: RunInput, hooks: RunHooks) => Promise<RunOutput>
 }
@@ -39,7 +42,7 @@ const MAX_DOC = 200 * 1024
 
 export function registerAppReconIpc(d: AppReconIpcDeps): void {
   const runner = d.runner ?? runAppRecording
-  let current: { runId: string; appId: string; abort: AbortController; handoff?: () => void; review?: (edits: ReviewEdits | null) => void; control: { takeover: boolean } } | null = null
+  let current: { runId: string; appId: string; abort: AbortController; handoff?: () => void; review?: (edits: ReviewEdits | null) => void; decide?: (answers: DecisionAnswer[] | null) => void; control: { takeover: boolean } } | null = null
   const fail = (err: unknown) => ({ ok: false as const, error: String((err as Error)?.message ?? err) })
   const send = (e: RunEvent) => d.emit('apprec:event', e)
   const notify = (title: string, body: string) => {
@@ -160,6 +163,21 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
         })
     }
 
+    // PARI: the agent asks the person about models and misses (or decides on autopilot), and reports every part it checks
+    const pari: RunInput['pari'] = reuse
+      ? undefined
+      : {
+          mode: app.agentMode === 'autopilot' ? 'autopilot' : 'ask',
+          capabilities: d.capabilities?.() ?? { access: useAi ? 'plan' : 'programmatic', jobs: [], limits: [] },
+          emit: (e) => d.emit('apprec:event', { ...e, runId: rec.id }),
+          decide: (requests: DecisionRequest[]) =>
+            new Promise<DecisionAnswer[] | null>((resolveDecide) => {
+              if (!current) return resolveDecide(null)
+              current.decide = resolveDecide
+              notify('VideoGen Studio needs a choice', requests[0]?.question ?? 'A few choices are waiting for you.')
+              abort.signal.addEventListener('abort', () => resolveDecide(null), { once: true })
+            })
+        }
     const context = app.context + (app.document ? `\n\nAttached notes (information only):\n${app.document.text}` : '')
     const base: Omit<RunInput, 'chat' | 'speech'> = {
       runDir: d.store.runDir(rec.id),
@@ -181,7 +199,8 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
       signal: abort.signal,
       reuse: savedPlan ?? undefined,
       control,
-      media: { tools: useAi ? (d.media?.(rec.id) ?? null) : null, clips: app.aiMedia === true, music: app.aiMusic === true }
+      media: { tools: useAi ? (d.media?.(rec.id) ?? null) : null, clips: app.aiMedia === true, music: app.aiMusic === true },
+      pari
     }
     let styleNotes: string[] = []
     const exec = async () => {
@@ -254,6 +273,17 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
     if (!h) return false
     current!.handoff = undefined
     h()
+    return true
+  })
+
+  ipcMain.handle(DECIDE_CHANNEL, (_e, answers: unknown) => {
+    const r = current?.decide
+    if (!r) return false
+    current!.decide = undefined
+    const list = Array.isArray(answers)
+      ? answers.filter((a): a is DecisionAnswer => !!a && typeof a === 'object' && typeof (a as DecisionAnswer).id === 'string' && typeof (a as DecisionAnswer).option === 'string').map((a) => ({ id: a.id, option: a.option, auto: false }))
+      : null
+    r(list)
     return true
   })
 

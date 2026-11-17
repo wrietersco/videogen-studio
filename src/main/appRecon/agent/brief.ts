@@ -52,10 +52,12 @@ const STOP = new Set(
 const normText = (s: string): string => s.toLowerCase().replace(/[`'"“”‘’]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 const tokensOf = (s: string): string[] => normText(s).split(' ').filter((w) => w.length >= 3 && !STOP.has(w))
 
+/** "presenting" / "presented" / "presents" all count as "present" */
+const stem = (w: string): string => (w.length > 5 ? w.replace(/(?:ing|ed|es|s)$/, '') : w)
 const overlap = (unit: string[], field: string[]): number => {
   if (!unit.length) return 1
-  const set = new Set(field)
-  return unit.filter((w) => set.has(w)).length / unit.length
+  const set = new Set(field.map(stem))
+  return unit.filter((w) => set.has(stem(w))).length / unit.length
 }
 
 const MUSIC_WORD = /\b(?:music|soundtrack|background\s+(?:sounds?|audio|noise)|sound\s*scape|ambien(?:ce|t)|score|nasheed)\b/i
@@ -64,7 +66,7 @@ const NO_ABSTRACT = /\b(?:no|not|don'?t|do\s+not|without|never|avoid)\b[^.!?\n]{
 
 /** everything the plan says in words, for matching the person's sentences against */
 function planFields(plan: FilmPlan): string[] {
-  const f: string[] = [plan.goal, plan.music.description, ...plan.unplaced]
+  const f: string[] = [plan.goal, plan.music.description, plan.product ?? '', plan.heroFeature ?? '', plan.kind === 'launch' ? 'product launch video' : '', ...plan.unplaced]
   for (const s of plan.segments) {
     f.push(s.said, ...(s.explain ?? []))
     if (s.kind === 'narration') f.push(...s.claims)
@@ -74,6 +76,9 @@ function planFields(plan: FilmPlan): string[] {
   }
   return f.filter(Boolean)
 }
+
+const FRAMING = /\b(?:create|make|produce|build|want|need)\b[^.!?\n]{0,40}\b(?:video|film|clip|explainer|walkthrough|demo)\b/i
+const FRAMING_WORDS = new Set(['create', 'make', 'produce', 'build', 'want', 'need', 'video', 'film', 'clip', 'explainer', 'walkthrough', 'demo', 'product', 'launch', 'start', 'starting', 'begin', 'beginning', 'clear', 'present', 'presenting', 'off', 'then', 'short', 'nice', 'great'].map(stem))
 
 /** true when the unit (a sentence or clause) is carried by the plan */
 export function isAccounted(unit: string, plan: FilmPlan, fields: string[] = planFields(plan)): boolean {
@@ -92,7 +97,13 @@ export function isAccounted(unit: string, plan: FilmPlan, fields: string[] = pla
   for (const f of fields) {
     if (normText(f).includes(norm) || overlap(toks, tokensOf(f)) >= 0.7) return true
   }
-  return false
+  // "create a product launch video that starts from …": the framing words are the plan's shape (its kind and order), the rest must be carried
+  if (FRAMING.test(unit)) {
+    const rest = toks.filter((w) => !FRAMING_WORDS.has(stem(w)))
+    if (!rest.length || overlap(rest, fields.flatMap((f) => tokensOf(f))) >= 0.75) return true
+  }
+  // a sentence the plan carries in its own words, spread over several of its parts (the AI writer rewords)
+  return toks.length >= 6 && overlap(toks, fields.flatMap((f) => tokensOf(f))) >= 0.8
 }
 
 /**
@@ -102,9 +113,11 @@ export function isAccounted(unit: string, plan: FilmPlan, fields: string[] = pla
  */
 export function accountFor(typed: string, plan: FilmPlan): FilmPlan {
   // the plan's own earlier `unplaced` do not count as "carried"
-  const kept = [...new Set(plan.unplaced.map((u) => u.trim()).filter(Boolean))]
   const base: FilmPlan = { ...plan, unplaced: [] }
   const fields = planFields(base)
+  // what the writer itself left out counts only when the person really wrote it and nothing in the plan carries it
+  const typedNorm = normText(typed)
+  const kept = [...new Set(plan.unplaced.map((u) => u.trim()).filter(Boolean))].filter((u) => typedNorm.includes(normText(u)) && !isAccounted(u, base, fields))
   const lost: string[] = []
   for (const unit of unitsOf(typed)) {
     if (isAccounted(unit, base, fields)) continue

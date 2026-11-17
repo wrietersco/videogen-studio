@@ -248,7 +248,7 @@ export interface PariReport {
 
 export type PariEvent =
   | { kind: 'pari-plan'; runId: string; plan: FilmPlan; capabilities: CapabilityReport }
-  | { kind: 'pari-decide'; runId: string; requests: DecisionRequest[] }
+  | { kind: 'pari-decide'; runId: string; requests: DecisionRequest[]; /** true = autopilot already answered: show the choices in the log, do not ask */ auto?: boolean }
   | { kind: 'pari-check'; runId: string; check: SegmentCheck }
   | { kind: 'pari-report'; runId: string; report: PariReport }
 

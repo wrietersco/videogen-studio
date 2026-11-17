@@ -189,3 +189,30 @@ describe('older brief shapes still read', () => {
     expect(plan.unplaced).toEqual([])
   })
 })
+
+describe('honesty pass with an AI writer that rewords', () => {
+  it('does not flag sentences the plan carries in other words, nor writer notes the person never wrote', async () => {
+    const { accountFor } = await import('../src/main/appRecon/agent/brief')
+    const typed = 'create a product launch video on Taaweel starting off from clear problem statement and presenting Taaweel as a solution.'
+    const plan = {
+      goal: 'Product launch video for Taaweel: start from a clear problem statement, then present Taaweel as the solution.',
+      kind: 'launch', product: 'Taaweel', segments: [], music: { none: false, description: '', vocals: 'any', instruments: [], exclude: [], ambience: [], quiet: false },
+      voice: {}, look: { style: null, noAbstract: false }, unplaced: ['Your question,'], source: 'ai'
+    } as never
+    expect(accountFor(typed, plan).unplaced).toEqual([])
+  })
+
+  it('reads a "create a launch video" sentence as the shape of the plan when the writer reworded it', async () => {
+    const { accountFor } = await import('../src/main/appRecon/agent/brief')
+    const typed = 'create a product launch video on Taaweel starting off from clear problem statement and presenting Taaweel as a solution.'
+    const plan = {
+      goal: 'Launch Taaweel scientific research feature as the solution to a problem, highlighting its ability to write full research papers.',
+      kind: 'launch', product: 'Taaweel', heroFeature: 'Taaweel scientific research',
+      segments: [{ id: 's1', kind: 'ai-clip', said: 'begin problem statement as infographic ai video', required: true, subject: 'the problem', purpose: 'problem', style: 'infographic' }],
+      music: { none: false, description: '', vocals: 'any', instruments: [], exclude: [], ambience: [], quiet: false }, voice: {}, look: { style: null, noAbstract: false }, unplaced: [], source: 'ai'
+    } as never
+    expect(accountFor(typed, plan).unplaced).toEqual([])
+    // a sentence the plan does NOT carry is still flagged
+    expect(accountFor('create a video and add a cooking recipe segment about pasta.', plan).unplaced.length).toBeGreaterThan(0)
+  })
+})
