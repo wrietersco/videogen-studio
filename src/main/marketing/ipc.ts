@@ -4,12 +4,16 @@ import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { cardPatchOf, isBusinessId, isCardId, isMarketRunId, normalizeDomain, type BusinessProfile, type MarketEvent, type MarketJob, type MarketRunRecord, type MarketStage } from '../../shared/marketing'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
+import { MARKET_DECIDE_CHANNEL } from '../../shared/marketBrief'
 import type { MediaTools } from '../appRecon/run'
 import { meter, readProjectUsage, type ProjectUsage } from '../usage/meter'
 import { readSite, unifiedMd } from './crawl'
 import { brandOf, readFacts } from './profile'
 import { generateCards } from './cards'
 import { FilmCancelled, runMarketingFilm } from './film'
+import { MarketStopped, buildReport, planStage, reviewFilm, type MarketEmit, type MarketPariHooks } from './agent/loop'
+import type { CapabilityReport, DecisionAnswer, DecisionRequest } from '../../shared/agentBrief'
+import { mkdirSync } from 'node:fs'
 import type { MarketingStore } from './store'
 
 /**
@@ -34,6 +38,8 @@ export interface MarketingIpcDeps {
   media?: (runId: string) => MediaTools | null
   /** the most AI clips the account may put in one film (0 = none) */
   maxClips: () => number
+  /** what this account can use for each job (writer, voice, music, video, images), read from settings, plan and keys */
+  capabilities?: () => CapabilityReport
   /** replaceable for tests */
   crawler?: typeof readSite
   filmmaker?: typeof runMarketingFilm
@@ -46,7 +52,7 @@ export function registerMarketingIpc(d: MarketingIpcDeps): void {
   const fail = (err: unknown) => ({ ok: false as const, error: String((err as Error)?.message ?? err) })
   const send = (e: MarketEvent) => d.emit('market:event', e)
   /** the one job this feature runs at a time (a site read or a film) */
-  let current: { businessId: string; job: MarketJob; runId?: string; abort: AbortController } | null = null
+  let current: { businessId: string; job: MarketJob; runId?: string; abort: AbortController; decide?: (answers: DecisionAnswer[] | null) => void } | null = null
   const notify = (title: string, body: string) => {
     try {
       if (Notification.isSupported()) new Notification({ title, body }).show()
@@ -209,37 +215,75 @@ export function registerMarketingIpc(d: MarketingIpcDeps): void {
     const useAi = ai.available
     const tools = useAi ? (d.media?.(rec.id) ?? null) : null
     const maxClips = d.maxClips()
-    const make = () =>
-      (d.filmmaker ?? runMarketingFilm)({
-        runDir: d.store.runDir(rec.id),
+    const chat = useAi ? d.providers().chat : null
+    const runDir = d.store.runDir(rec.id)
+    const say = (message: string) => send({ kind: 'log', businessId: profile.id, job: 'film', runId: rec.id, message })
+    const emitPari: MarketEmit = (e) => send({ ...e, businessId: profile.id, runId: rec.id } as MarketEvent)
+    // PARI: the agent reads the brief, asks about models and misses (or decides on autopilot), and reports every part it checks
+    const hooks: MarketPariHooks = {
+      mode: profile.agentMode === 'autopilot' ? 'autopilot' : 'ask',
+      capabilities: d.capabilities?.() ?? { access: useAi ? 'plan' : 'programmatic', jobs: [], limits: [] },
+      emit: emitPari,
+      decide: (requests: DecisionRequest[]) =>
+        new Promise<DecisionAnswer[] | null>((resolveDecide) => {
+          if (!current) return resolveDecide(null)
+          current.decide = resolveDecide
+          notify('VideoGen Studio needs a choice', requests[0]?.question ?? 'A few choices are waiting for you.')
+          current.abort.signal.addEventListener('abort', () => resolveDecide(null), { once: true })
+        })
+    }
+    let shortfalls: string[] = []
+    const make = async () => {
+      rec.stage = 'plan'
+      send({ kind: 'stage', businessId: profile.id, job: 'film', runId: rec.id, stage: 'plan', message: card.brief?.trim() ? 'Reading your brief' : 'Planning the film' })
+      const outcome = await planStage(
+        { brief: card.brief ?? '', business: { name: profile.name, tagline: profile.tagline, about: profile.about, services: profile.services }, card: { title: card.title, problem: card.problem, solution: card.solution, cta: card.cta, serviceIdx: card.serviceIdx, targetSec: card.targetSec, platform: card.platform } },
+        { chat, say, business: profile.name },
+        hooks
+      )
+      mkdirSync(runDir, { recursive: true })
+      writeFileSync(join(runDir, 'market-plan.json'), JSON.stringify({ plan: outcome.plan, assignment: outcome.assignment, decisions: outcome.answers }, null, 2))
+      const out = await (d.filmmaker ?? runMarketingFilm)({
+        runDir,
         card,
         profile,
-        chat: useAi ? d.providers().chat : null,
+        chat,
         speech: useAi ? d.providers().speech : null,
         tools,
         aiMusic: !!tools?.music,
         maxClips,
+        plan: outcome.plan,
+        assignment: outcome.assignment,
         signal: current?.abort.signal,
         progress: (stage, message) => {
           rec.stage = stage
           send({ kind: 'stage', businessId: profile.id, job: 'film', runId: rec.id, stage, message })
         },
-        log: (message) => send({ kind: 'log', businessId: profile.id, job: 'film', runId: rec.id, message })
+        log: say
       })
+      // REVIEW: what was asked against what was made, and the honest list of what is not in the film
+      const review = reviewFilm(outcome.plan, { made: out.made ?? [], dropped: out.dropped ?? [], durationSec: out.durationSec, musicSource: out.musicSource ?? 'none', voiced: !!out.voiced, written: !!out.written })
+      for (const c of review.checks) emitPari({ kind: 'pari-check', check: c })
+      const report = buildReport(outcome.plan, outcome, review, out.durationSec)
+      shortfalls = report.shortfalls
+      emitPari({ kind: 'pari-report', report })
+      writeFileSync(join(runDir, 'market-report.json'), JSON.stringify(report, null, 2))
+      return out
+    }
 
     void (async () => {
       meter.begin('business-film')
       let record: MarketRunRecord = rec
       try {
         const out = useAi ? await d.aiJob(`mk-${rec.id}`, `${profile.name} — ${card.title}`, make) : await make()
-        record = { ...rec, status: 'done', finishedAt: new Date().toISOString(), video: out.file, durationSec: out.durationSec, notes: out.notes }
+        record = { ...rec, status: 'done', finishedAt: new Date().toISOString(), video: out.file, durationSec: out.durationSec, notes: out.notes, shortfalls }
         card.video = out.file
         card.runId = rec.id
         d.store.save(profile)
         send({ kind: 'done', businessId: profile.id, job: 'film', runId: rec.id, run: record })
         notify('Your business video is ready', card.title)
       } catch (err) {
-        const cancelled = err instanceof FilmCancelled || current?.abort.signal.aborted
+        const cancelled = err instanceof FilmCancelled || err instanceof MarketStopped || current?.abort.signal.aborted
         record = { ...rec, status: cancelled ? 'cancelled' : 'failed', finishedAt: new Date().toISOString(), error: cancelled ? undefined : String((err as Error)?.message ?? err) }
         send({ kind: cancelled ? 'cancelled' : 'failed', businessId: profile.id, job: 'film', runId: rec.id, error: record.error ?? '', run: record })
       } finally {
@@ -250,6 +294,27 @@ export function registerMarketingIpc(d: MarketingIpcDeps): void {
       }
     })()
     return { ok: true as const, runId: rec.id }
+  })
+
+  /** the person's mode for this business: ask before choosing models, or autopilot */
+  ipcMain.handle('market:setMode', (_e, businessId: unknown, mode: unknown) => {
+    if (!isBusinessId(businessId)) return fail('Invalid business')
+    const profile = d.store.get(businessId)
+    if (!profile) return fail('That business no longer exists')
+    profile.agentMode = mode === 'autopilot' ? 'autopilot' : 'ask'
+    return { ok: true as const, profile: d.store.save(profile) }
+  })
+
+  /** the person's answers to the agent's choices (null = stop the video) */
+  ipcMain.handle(MARKET_DECIDE_CHANNEL, (_e, answers: unknown) => {
+    const r = current?.decide
+    if (!r) return false
+    current!.decide = undefined
+    const list = Array.isArray(answers)
+      ? answers.filter((a): a is DecisionAnswer => !!a && typeof a === 'object' && typeof (a as DecisionAnswer).id === 'string' && typeof (a as DecisionAnswer).option === 'string').map((a) => ({ id: a.id, option: a.option, auto: false }))
+      : null
+    r(list)
+    return true
   })
 
   ipcMain.handle('market:cancel', () => {

@@ -6,7 +6,7 @@ import type { CapabilityReport, CheckStatus, DecisionAnswer, DecisionRequest, Fi
 
 const JOB_LABEL: Record<JobKind, string> = { writer: 'Script writer', voice: 'Voice', music: 'Music', video: 'AI video clips', image: 'AI pictures', vision: 'Checking the footage' }
 
-const STATUS: Record<CheckStatus, { label: string; cls: string }> = {
+export const STATUS: Record<CheckStatus, { label: string; cls: string }> = {
   done: { label: '✔ Done', cls: 'bg-mint-soft text-ink' },
   partial: { label: '◐ Partly done', cls: 'bg-sunny-soft text-ink' },
   missed: { label: '✕ Missed', cls: 'bg-coral-soft text-coral' },
@@ -70,7 +70,7 @@ export function PlanPanel({ plan, capabilities, checks }: { plan: FilmPlan; capa
   )
 }
 
-function ModelsList({ caps }: { caps: CapabilityReport }) {
+export function ModelsList({ caps }: { caps: CapabilityReport }) {
   return (
     <details className="mt-3 text-xs">
       <summary className="cursor-pointer font-bold">Models for this video</summary>
@@ -94,13 +94,13 @@ function ModelsList({ caps }: { caps: CapabilityReport }) {
   )
 }
 
-export function DecisionPanel({ requests, onAnswered }: { requests: DecisionRequest[]; onAnswered: () => void }) {
+export function DecisionPanel({ requests, onAnswered, send: sendAnswers }: { requests: DecisionRequest[]; onAnswered: () => void; /** where the answers go (default: Record an app's channel) */ send?: (answers: DecisionAnswer[] | null) => Promise<unknown> }) {
   const [picked, setPicked] = useState<Record<string, string>>(() => Object.fromEntries(requests.map((r) => [r.id, r.options.find((o) => o.recommended)?.id ?? r.autopick])))
   const [busy, setBusy] = useState(false)
   const send = async (answers: DecisionAnswer[] | null) => {
     setBusy(true)
     try {
-      await api.appRec.decide(answers)
+      await (sendAnswers ?? api.appRec.decide)(answers)
     } catch {
       /* the main-process handler may not exist yet */
     }
@@ -158,7 +158,7 @@ export function autopilotLines(requests: DecisionRequest[]): string[] {
   })
 }
 
-export function ReportPanel({ report }: { report: PariReport }) {
+export function ReportPanel({ report }: { report: Pick<PariReport, 'shortfalls'> }) {
   const sf = report.shortfalls
   return (
     <div className={`mt-4 rounded-xl border-2 px-4 py-3 ${sf.length ? 'border-sunny/60 bg-sunny-soft' : 'border-mint/40 bg-mint-soft/40'}`}>

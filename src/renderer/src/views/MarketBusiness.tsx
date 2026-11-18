@@ -3,6 +3,10 @@ import { api, type BusinessProfile, type MarketEvent, type MarketJob, type Marke
 import { Section } from '../components/ui'
 import { POST_APPS, shapeById, shapeOf } from '@shared/shapes'
 import type { PlatformId } from '@shared/spec'
+import type { CapabilityReport, DecisionRequest, SegmentCheck } from '@shared/agentBrief'
+import type { MarketPlan, MarketReport } from '@shared/marketBrief'
+import { DecisionPanel, ReportPanel, autopilotLines } from './PariPanels'
+import { MarketPlanPanel } from './MarketPanels'
 
 /**
  * Market your business: type the website address, and the engine reads the
@@ -21,6 +25,12 @@ interface Live {
   logs: string[]
   error?: string
   run?: MarketRunRecord
+  /** the job has ended (done, failed or stopped); its plan and report stay on screen until closed */
+  finished?: boolean
+  plan?: { plan: MarketPlan; capabilities: CapabilityReport }
+  checks: Record<string, SegmentCheck>
+  decide?: DecisionRequest[]
+  report?: MarketReport
 }
 
 const ANALYZE_STAGES: Array<{ id: MarketStage; label: string }> = [
@@ -30,6 +40,7 @@ const ANALYZE_STAGES: Array<{ id: MarketStage; label: string }> = [
   { id: 'ideas', label: 'Writing the video ideas' }
 ]
 const FILM_STAGES: Array<{ id: MarketStage; label: string }> = [
+  { id: 'plan', label: 'Reading your brief' },
   { id: 'script', label: 'Writing the story' },
   { id: 'voice', label: 'Recording the voice-over' },
   { id: 'media', label: 'Choosing the elements' },
@@ -37,7 +48,7 @@ const FILM_STAGES: Array<{ id: MarketStage; label: string }> = [
 ]
 
 /** the edits of one card, kept locally until they are saved on the way out of the field */
-type Draft = { title?: string; problem?: string; solution?: string; cta?: string }
+type Draft = { title?: string; problem?: string; solution?: string; cta?: string; brief?: string }
 
 export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () => void }) {
   const [businesses, setBusinesses] = useState<BusinessProfile[]>([])
@@ -70,22 +81,30 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
     void refresh()
     return api.market.onEvent((raw) => {
       const e = raw as MarketEvent
-      if (e.kind === 'started') setLive({ businessId: e.businessId, job: e.job, runId: e.runId, cardId: e.cardId, logs: [] })
+      if (e.kind === 'pari-plan') return setLive((l) => (l && l.runId === e.runId ? { ...l, plan: { plan: e.plan, capabilities: e.capabilities }, checks: {} } : l))
+      if (e.kind === 'pari-check') return setLive((l) => (l && l.runId === e.runId ? { ...l, checks: { ...l.checks, [e.check.segment]: e.check } } : l))
+      if (e.kind === 'pari-report') return setLive((l) => (l && l.runId === e.runId ? { ...l, report: e.report } : l))
+      if (e.kind === 'pari-decide') {
+        // autopilot already chose: the choices go to the log, no question
+        if (e.auto) return setLive((l) => (l && l.runId === e.runId ? { ...l, logs: [...l.logs, ...autopilotLines(e.requests)].slice(-40) } : l))
+        return setLive((l) => (l && l.runId === e.runId ? { ...l, decide: e.requests } : l))
+      }
+      if (e.kind === 'started') setLive({ businessId: e.businessId, job: e.job, runId: e.runId, cardId: e.cardId, logs: [], checks: {} })
       else if (e.kind === 'stage') setLive((l) => (l && l.businessId === e.businessId && l.job === e.job ? { ...l, stage: e.stage, message: e.message } : l))
       else if (e.kind === 'log') setLive((l) => (l && l.businessId === e.businessId && l.job === e.job ? { ...l, logs: [...l.logs, e.message].slice(-40) } : l))
       else if (e.kind === 'done') {
         if (e.job === 'analyze') setLive(null)
-        else setLive((l) => (l ? { ...l, run: e.run } : l))
+        else setLive((l) => (l ? { ...l, run: e.run, finished: true } : l))
         void refresh()
       } else {
-        setLive((l) => (l ? { ...l, error: e.kind === 'failed' ? e.error : undefined } : l))
+        setLive((l) => (l ? { ...l, error: e.kind === 'failed' ? e.error : undefined, finished: true, decide: undefined } : l))
         void refresh()
       }
     })
   }, [])
 
   const profile = businesses.find((b) => b.id === sel) ?? null
-  const running = !!live
+  const running = !!live && !live.finished
   const busyHere = running && live.businessId === sel
   const filmRun = live?.job === 'film' ? runs.find((r) => r.id === live.runId) ?? (live.run ? [live.run] : [])[0] : null
 
@@ -106,7 +125,7 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
   const commit = async (card: VideoCard, what: 'save' | 'make') => {
     const d = drafts[card.id] ?? {}
     const patch: Draft = {}
-    for (const k of ['title', 'problem', 'solution', 'cta'] as const) if (d[k] !== undefined && d[k] !== card[k]) patch[k] = d[k]
+    for (const k of ['title', 'problem', 'solution', 'cta', 'brief'] as const) if (d[k] !== undefined && d[k] !== card[k]) patch[k] = d[k]
     if (Object.keys(patch).length) {
       const r = await api.market.updateCard(sel, card.id, patch)
       if (!r.ok) {
@@ -135,7 +154,7 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
   }
 
   const field = (card: VideoCard, k: keyof Draft, value: string) => setDrafts((ds) => ({ ...ds, [card.id]: { ...ds[card.id], [k]: value } }))
-  const valueOf = (card: VideoCard, k: keyof Draft): string => drafts[card.id]?.[k] ?? card[k]
+  const valueOf = (card: VideoCard, k: keyof Draft): string => drafts[card.id]?.[k] ?? card[k] ?? ''
 
   return (
     <div className="page-bg h-full overflow-y-auto">
@@ -185,6 +204,18 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
           {error && <div className="rounded-xl bg-coral-soft px-4 py-3 text-sm font-semibold text-ink/80">{error}</div>}
 
           {busyHere && <JobPanel live={live!} stages={live!.job === 'analyze' ? ANALYZE_STAGES : FILM_STAGES} />}
+          {live && live.businessId === sel && live.job === 'film' && (
+            <div>
+              {live.plan && <MarketPlanPanel plan={live.plan.plan} capabilities={live.plan.capabilities} checks={live.checks} />}
+              {live.decide && !live.finished && <DecisionPanel key={live.decide.map((d) => d.id).join('|')} requests={live.decide} send={api.market.decide} onAnswered={() => setLive((l) => (l ? { ...l, decide: undefined } : l))} />}
+              {live.report && <ReportPanel report={live.report} />}
+              {live.finished && (
+                <div className="mt-3 flex justify-end">
+                  <button onClick={() => setLive(null)} className="btn-ghost !px-3 !py-1 !text-xs">Close this</button>
+                </div>
+              )}
+            </div>
+          )}
 
           {profile && profile.about && (
             <>
@@ -216,6 +247,17 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
               </Section>
 
               <Section icon="🎬" title="Video ideas" hint="Editable starting points. Changes are kept as you leave a field; Create video makes the film.">
+                <div className="mb-4 grid gap-2 sm:grid-cols-2" aria-label="How the agent decides">
+                  {([['ask', 'Ask me before choosing models (recommended)', 'You see a few plain choices, with the best one picked for you.'], ['autopilot', 'Autopilot: decide for me and tell me after', 'It picks the best option itself and lists what it chose in the log.']] as const).map(([id, label, hint]) => {
+                    const on = (profile.agentMode ?? 'ask') === id
+                    return (
+                      <button key={id} disabled={running} onClick={async () => { const r = await api.market.setMode(profile.id, id); if (!r.ok) setError(r.error); else setBusinesses((bs) => bs.map((b) => (b.id === profile.id ? r.profile : b))) }} aria-pressed={on} className={`rounded-xl border-2 px-3 py-2 text-left ${on ? 'border-grape bg-grape-soft' : 'border-ink/10 hover:border-grape/50'}`}>
+                        <div className="text-sm font-bold">{on ? '●' : '○'} {label}</div>
+                        <div className="ml-5 text-xs text-ink/60">{hint}</div>
+                      </button>
+                    )
+                  })}
+                </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   {profile.cards.map((card, i) => (
                     <div key={card.id} className={`card p-4 ${filmRun && live?.cardId === card.id ? 'ring-2 ring-grape' : ''}`}>
@@ -248,6 +290,19 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
                         <div className="flex items-center gap-2">
                           <span className="text-[11px] font-bold uppercase tracking-wide text-ink/40">Call to action</span>
                           <input aria-label="Call to action" value={valueOf(card, 'cta')} onChange={(e) => field(card, 'cta', e.target.value)} onBlur={() => void commit(card, 'save')} maxLength={60} className="field flex-1 px-3 py-1 text-sm" />
+                        </div>
+                        <div>
+                          <div className="text-[11px] font-bold uppercase tracking-wide text-ink/40">Your brief for this video (optional)</div>
+                          <textarea
+                            aria-label="Your brief for this video"
+                            value={valueOf(card, 'brief')}
+                            onChange={(e) => field(card, 'brief', e.target.value)}
+                            onBlur={() => void commit(card, 'save')}
+                            rows={3}
+                            maxLength={2000}
+                            placeholder={'Anything this film must say or show, in your own words. For example: Open with an AI video of a leaking pipe at night. Say we answer calls within the hour. Do not mention prices. Warm Arabic voice, calm music with oud, about 20 seconds for Reels.'}
+                            className="field mt-1 w-full px-3 py-1.5 text-sm"
+                          />
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="whitespace-nowrap text-[11px] font-bold uppercase tracking-wide text-ink/40">Post to</span>
@@ -336,6 +391,12 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
                         </span>
                       )}
                       {r.error && <span className="w-full text-xs text-coral">{r.error}</span>}
+                      {r.shortfalls && r.shortfalls.length > 0 && (
+                        <details className="w-full">
+                          <summary className="cursor-pointer text-xs font-bold text-ink/60">⚠️ What is not in this film ({r.shortfalls.length})</summary>
+                          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-ink/65">{r.shortfalls.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                        </details>
+                      )}
                     </div>
                   ))}
               </div>

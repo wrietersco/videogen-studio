@@ -298,6 +298,8 @@ declare global {
         moreIdeas: (businessId: string) => Promise<{ ok: true; profile: BusinessProfile } | { ok: false; error: string }>
         start: (businessId: string, cardId: string) => Promise<{ ok: true; runId: string } | { ok: false; error: string }>
         cancel: () => Promise<boolean>
+        setMode: (businessId: string, mode: 'ask' | 'autopilot') => Promise<{ ok: true; profile: BusinessProfile } | { ok: false; error: string }>
+        decide: (answers: DecisionAnswer[] | null) => Promise<boolean>
         play: (runId: string) => Promise<boolean>
         reveal: (runId: string) => Promise<boolean>
         runUsage: (runId: string) => Promise<ProjectUsage>

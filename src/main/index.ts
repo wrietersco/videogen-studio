@@ -1040,6 +1040,7 @@ if (headlessFile) {
         return withAccess({ projectKey, programmatic: false, title }, fn)
       },
       maxClips: () => (mode === 'plan' ? planEnt()?.clipsPerVideo ?? 0 : mode === 'programmatic' ? 0 : 2),
+      capabilities: () => readCapabilities(capabilitySourceFromApp({ settings: effective, mode, ent: planEnt(), hasKey: (k) => keyOf(k).length > 0 })),
       // the same AI clip, picture and music models the app recordings use
       media: (runId) => {
         const ready = mode === 'plan' ? (planEnt()?.clipsPerVideo ?? 0) > 0 : mode !== 'programmatic' && keyOf('gemini').length > 0

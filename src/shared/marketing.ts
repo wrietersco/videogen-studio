@@ -6,6 +6,8 @@
 
 import type { PlatformId } from './spec'
 import { isPlatformId } from './shapes'
+import type { MarketPariEvent } from './marketBrief'
+import type { AgentMode } from './agentBrief'
 
 /** one service the business sells, as read from its website */
 export interface ServiceInfo {
@@ -34,6 +36,8 @@ export interface VideoCard {
   targetSec: number
   /** where the film will be posted, which sets its shape (absent = wide YouTube 1920×1080) */
   platform?: PlatformId
+  /** what the person wants this video to say and how it should feel, in their own words ('' = the card alone) */
+  brief?: string
   /** the video this card last made, and how it ended */
   runId?: string
   video?: string
@@ -62,6 +66,8 @@ export interface BusinessProfile {
   cards: VideoCard[]
   /** where the unified markdown of the site is kept (relative to the profile folder) */
   siteMd: string
+  /** 'ask' (default) = the agent asks before choosing models; 'autopilot' = it decides and tells afterwards */
+  agentMode?: AgentMode
   notes: string[]
   createdAt: string
   updatedAt: string
@@ -81,13 +87,15 @@ export interface MarketRunRecord {
   durationSec?: number
   /** what the engine put in the film, shown under the card */
   notes: string[]
+  /** what the film does not carry out of what was asked, and why (empty = everything is in it) */
+  shortfalls?: string[]
   error?: string
 }
 
 /** the two jobs the feature runs: reading the website, and making one card's film */
 export type MarketJob = 'analyze' | 'film'
 
-export type MarketStage = 'fetch' | 'read' | 'brand' | 'ideas' | 'script' | 'voice' | 'media' | 'assemble'
+export type MarketStage = 'fetch' | 'read' | 'brand' | 'ideas' | 'plan' | 'script' | 'voice' | 'media' | 'assemble'
 
 export type MarketEvent =
   | { kind: 'started'; businessId: string; job: MarketJob; runId?: string; cardId?: string }
@@ -96,6 +104,7 @@ export type MarketEvent =
   | { kind: 'done'; businessId: string; job: MarketJob; runId?: string; profile?: BusinessProfile; run?: MarketRunRecord }
   | { kind: 'failed'; businessId: string; job: MarketJob; runId?: string; error: string; run?: MarketRunRecord }
   | { kind: 'cancelled'; businessId: string; job: MarketJob; runId?: string; run?: MarketRunRecord }
+  | MarketPariEvent
 
 const ID = /^[a-z]+-[0-9a-f]{8,24}$/
 
@@ -143,8 +152,16 @@ export function cardPatchOf(raw: unknown): Partial<VideoCard> {
   if (solution) out.solution = solution
   const cta = str(p.cta, 60)
   if (cta) out.cta = cta
+  if (typeof p.brief === 'string') out.brief = cleanBrief(p.brief)
   if (typeof p.serviceIdx === 'number' && Number.isInteger(p.serviceIdx) && p.serviceIdx >= 0) out.serviceIdx = p.serviceIdx
   if (typeof p.targetSec === 'number' && p.targetSec >= 15 && p.targetSec <= 90) out.targetSec = Math.round(p.targetSec)
   if (isPlatformId(p.platform)) out.platform = p.platform
   return out
+}
+
+
+/** a brief keeps its line breaks but not stray spaces, carriage returns or long runs of blank lines */
+export function cleanBrief(raw: string): string {
+  const lines = raw.replace(/\r/g, '').replace(/\t/g, ' ').split('\n').map((l) => l.replace(/ {2,}/g, ' ').trim())
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 2000)
 }

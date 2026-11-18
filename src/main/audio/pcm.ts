@@ -104,7 +104,9 @@ export function loudnorm(input: string, output: string, targetLufs = -14): void 
   let filter = `loudnorm=${spec}`
   try {
     const m = JSON.parse(json) as Record<string, string>
-    filter += `:measured_I=${m.input_i}:measured_TP=${m.input_tp}:measured_LRA=${m.input_lra}:measured_thresh=${m.input_thresh}:offset=${m.target_offset}:linear=true`
+    // a silent track (no voice, no music) has no loudness to measure: it is encoded as it is
+    if (!Number.isFinite(Number(m.input_i))) filter = 'anull'
+    else filter += `:measured_I=${m.input_i}:measured_TP=${m.input_tp}:measured_LRA=${m.input_lra}:measured_thresh=${m.input_thresh}:offset=${m.target_offset}:linear=true`
   } catch {
     /* measurement unavailable — single-pass dynamic normalization */
   }

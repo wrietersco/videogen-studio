@@ -41,6 +41,8 @@ export interface AssembleInput {
   title: string
   musicMood?: VideoSpec['musicMood']
   aiMusic?: (info: { cuts: number[]; total: number }) => Promise<Stereo | null>
+  /** the person wants no music: neither the AI track nor the built-in score */
+  noMusic?: boolean
   keep?: boolean
   log?: (message: string) => void
   /** the film's frame (default 1920×1080) */
@@ -90,7 +92,7 @@ export async function assemble(inp: AssembleInput): Promise<AssembleResult> {
   let music: Stereo | null = null
   let musicSource: 'ai' | 'builtin' | 'none' = 'builtin'
   let musicError: string | undefined
-  if (inp.aiMusic) {
+  if (inp.aiMusic && !inp.noMusic) {
     try {
       const m = await inp.aiMusic({ cuts, total })
       if (m && m.l.length > SR) {
@@ -110,7 +112,7 @@ export async function assemble(inp: AssembleInput): Promise<AssembleResult> {
       inp.log?.(`The AI music could not be used (${musicError}).`)
     }
   }
-  if (!music) music = scoreMusic(spec, cuts, total)
+  if (!music && !inp.noMusic) music = scoreMusic(spec, cuts, total)
   if (!music) musicSource = 'none'
   if (music) duck(music, voice)
   const bus = stereo(total)
