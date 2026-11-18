@@ -97,6 +97,8 @@ export interface MadePart {
   fellBack?: string
   /** tries made to get the wanted element */
   attempts: number
+  /** the pictures of an earlier film were used again (a revision) */
+  reused?: boolean
 }
 
 export interface MarketReport {
@@ -108,6 +110,24 @@ export interface MarketReport {
   shortfalls: string[]
   /** the film's length against the one asked for */
   durationSec?: number
+  /** this film is a revision of an earlier one: what was changed, kept and could not be done */
+  revision?: MarketRevision
+}
+
+/** a finished film made again with the changes the person typed */
+export interface MarketRevision {
+  /** what the person typed, word for word */
+  request: string
+  /** the film this one was made from */
+  parentRunId: string
+  /** what was changed, in plain words */
+  changed: string[]
+  /** what was used again from the earlier film */
+  kept: string[]
+  /** what was asked but could not be done, and why */
+  cannot: string[]
+  /** who read the request: the AI writer or the rules */
+  source: 'ai' | 'rules'
 }
 
 /** events to the screen (inside 'market:event') */

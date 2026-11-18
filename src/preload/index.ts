@@ -178,6 +178,7 @@ const api = {
     removeCard: (businessId: string, cardId: string) => ipcRenderer.invoke('market:removeCard', businessId, cardId),
     moreIdeas: (businessId: string) => ipcRenderer.invoke('market:moreIdeas', businessId),
     start: (businessId: string, cardId: string) => ipcRenderer.invoke('market:start', businessId, cardId),
+    revise: (runId: string, request: string) => ipcRenderer.invoke('market:revise', runId, request),
     cancel: () => ipcRenderer.invoke('market:cancel'),
     setMode: (businessId: string, mode: string) => ipcRenderer.invoke('market:setMode', businessId, mode),
     decide: (answers: unknown) => ipcRenderer.invoke('market:decide', answers),

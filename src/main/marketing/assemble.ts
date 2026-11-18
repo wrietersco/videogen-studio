@@ -45,6 +45,8 @@ export interface PieceShot {
   file: string
   /** a clip's or scene's own length in seconds */
   sec?: number
+  /** a clip played slower (1.5 = half as fast again) or faster (0.75); default 1 */
+  slow?: number
 }
 
 export interface Overlays {
@@ -58,6 +60,10 @@ export interface Overlays {
   progress?: boolean
   /** a soft vignette (default on) */
   vignette?: boolean
+  /** the spoken words' colour in the captions, hex (default: the accent, brightened) */
+  captionColor?: string
+  /** caption size against the usual (default 1) */
+  captionScale?: number
 }
 
 export interface AssembleInput {
@@ -168,7 +174,9 @@ export async function assemble(inp: AssembleInput): Promise<AssembleResult> {
     W, H, accent,
     beats: inp.pieces.map((p, i) => ({ voiceStart: voiceAt(i), voiceSec: spoken(p), text: p.text })),
     hook: inp.overlays?.hook,
-    stickers
+    stickers,
+    captionColor: inp.overlays?.captionColor,
+    captionScale: inp.overlays?.captionScale
   })
   const captionsFile = join(inp.dir, 'captions.ass')
   writeFileSync(captionsFile, ass)
@@ -198,14 +206,18 @@ export async function assemble(inp: AssembleInput): Promise<AssembleResult> {
     graph.push(`[${i}:v]scale=${W2}:${H2}:force_original_aspect_ratio=increase,crop=${W2}:${H2},zoompan=z='${m.z}':x='${m.x}':y='${m.y}':d=1:s=${W}x${H}:fps=30,${norm},trim=duration=${num(d)},setpts=PTS-STARTPTS,settb=1/30[${label}]`)
   }
   /** a clip: when the voice outlasts it, it plays forward and back instead of freezing on its last frame */
-  const clip = (file: string, d: number, own: number, label: string): void => {
+  const clip = (file: string, d: number, own0: number, label: string, slow = 1): void => {
     const i = addInput('-i', file)
+    const k = Math.min(3, Math.max(0.4, slow))
+    // a slowed clip lasts longer on the clock: its own length grows with it
+    const own = own0 * k
+    const pace = k === 1 ? '' : `setpts=${num(k)}*(PTS-STARTPTS),`
     const len = Math.min(own, d)
     if (d - len > 0.4 && len > 1) {
       const rest = Math.max(0, d - 2 * len)
-      graph.push(`[${i}:v]${sc},${norm},trim=duration=${num(len)},setpts=PTS-STARTPTS,split[c${label}a][c${label}b];[c${label}b]reverse[c${label}r];[c${label}a][c${label}r]concat=n=2:v=1:a=0${rest > 0 ? `,tpad=stop_mode=clone:stop_duration=${num(rest + 0.2)}` : ''},trim=duration=${num(d)},setpts=PTS-STARTPTS,settb=1/30[${label}]`)
+      graph.push(`[${i}:v]${pace}${sc},${norm},trim=duration=${num(len)},setpts=PTS-STARTPTS,split[c${label}a][c${label}b];[c${label}b]reverse[c${label}r];[c${label}a][c${label}r]concat=n=2:v=1:a=0${rest > 0 ? `,tpad=stop_mode=clone:stop_duration=${num(rest + 0.2)}` : ''},trim=duration=${num(d)},setpts=PTS-STARTPTS,settb=1/30[${label}]`)
     } else {
-      graph.push(`[${i}:v]${sc},${norm},tpad=stop_mode=clone:stop_duration=${num(Math.max(0, d - len) + 0.2)},trim=duration=${num(d)},setpts=PTS-STARTPTS,settb=1/30[${label}]`)
+      graph.push(`[${i}:v]${pace}${sc},${norm},tpad=stop_mode=clone:stop_duration=${num(Math.max(0, d - len) + 0.2)},trim=duration=${num(d)},setpts=PTS-STARTPTS,settb=1/30[${label}]`)
     }
   }
   /** a rendered scene, its last frame held when it is shorter than its slot */
@@ -227,7 +239,7 @@ export async function assemble(inp: AssembleInput): Promise<AssembleResult> {
       const need = durs[i] + (n - 1) * IN
       const heroes = p.shots.filter((s) => s.kind === 'clip')
       const others = n - heroes.length
-      const heroSec = (s: PieceShot) => Math.min(s.sec ?? need, others ? need * 0.6 : need)
+      const heroSec = (s: PieceShot) => Math.min(s.sec !== undefined ? s.sec * Math.min(3, Math.max(0.4, s.slow ?? 1)) : need, others ? need * 0.6 : need)
       const left = need - heroes.reduce((a, s) => a + heroSec(s), 0)
       const secs = p.shots.map((s) => (s.kind === 'clip' ? heroSec(s) : Math.max(1.6, left / Math.max(1, others))))
       const scale = need / secs.reduce((a, x) => a + x, 0)
@@ -235,7 +247,7 @@ export async function assemble(inp: AssembleInput): Promise<AssembleResult> {
       p.shots.forEach((s, j) => {
         const l = `s${i}_${j}`
         if (s.kind === 'still') still(s.file, ds[j], variant++, l)
-        else if (s.kind === 'clip') clip(s.file, ds[j], s.sec ?? ds[j], l)
+        else if (s.kind === 'clip') clip(s.file, ds[j], s.sec ?? ds[j], l, s.slow)
         else scene(s.file, ds[j], s.sec ?? ds[j], l)
       })
       let cur = `s${i}_0`
