@@ -12,6 +12,7 @@ import { brandOf, readFacts } from './profile'
 import { generateCards } from './cards'
 import { FilmCancelled, runMarketingFilm } from './film'
 import { MarketStopped, buildReport, planStage, reviewFilm, type MarketEmit, type MarketPariHooks } from './agent/loop'
+import { readPreviousRun, reviseFilm } from './agent/revise'
 import type { CapabilityReport, DecisionAnswer, DecisionRequest } from '../../shared/agentBrief'
 import { mkdirSync } from 'node:fs'
 import type { MarketingStore } from './store'
@@ -285,6 +286,88 @@ export function registerMarketingIpc(d: MarketingIpcDeps): void {
       } catch (err) {
         const cancelled = err instanceof FilmCancelled || err instanceof MarketStopped || current?.abort.signal.aborted
         record = { ...rec, status: cancelled ? 'cancelled' : 'failed', finishedAt: new Date().toISOString(), error: cancelled ? undefined : String((err as Error)?.message ?? err) }
+        send({ kind: cancelled ? 'cancelled' : 'failed', businessId: profile.id, job: 'film', runId: rec.id, error: record.error ?? '', run: record })
+      } finally {
+        d.store.saveRun(record)
+        meter.end(d.store.runDir(rec.id))
+        current = null
+        d.setBusy(false)
+      }
+    })()
+    return { ok: true as const, runId: rec.id }
+  })
+
+  /**
+   * Make a finished film again with the changes the person typed. Only what changed is made again; the
+   * new film is a new run linked to the earlier one, which is kept.
+   */
+  ipcMain.handle('market:revise', (_e, runId: unknown, rawRequest: unknown) => {
+    if (!isMarketRunId(runId)) return fail('Invalid film')
+    const request = String(rawRequest ?? '').trim().slice(0, 2000)
+    if (!request) return fail('Type what should change first.')
+    if (current || d.isBusy()) return fail('Another job is running. Wait for it to finish, then try again.')
+    const parent = d.store.runs().find((r) => r.id === runId)
+    if (!parent || parent.status !== 'done') return fail('Only a finished film can be made again with changes.')
+    const prev = readPreviousRun(parent.id, d.store.runDir(parent.id))
+    if (!prev) return fail('This film was made before changes could be saved with it. Use "Make it again" on its card instead.')
+    const profile = d.store.get(parent.businessId)
+    if (!profile) return fail('That business no longer exists')
+    const plan = prev.plan
+    const card = profile.cards.find((c) => c.id === parent.cardId) ?? { id: parent.cardId, title: plan.goal.slice(0, 80), problem: plan.problem.say, solution: plan.goal, cta: plan.close.cta, targetSec: plan.targetSec ?? 30, ...(plan.platform ? { platform: plan.platform } : {}) }
+    const rec: MarketRunRecord = { ...d.store.newRun(profile.id, parent.cardId), parentRunId: parent.id }
+    d.store.saveRun(rec)
+    current = { businessId: profile.id, job: 'film', runId: rec.id, abort: new AbortController() }
+    d.setBusy(true)
+    send({ kind: 'started', businessId: profile.id, job: 'film', runId: rec.id, cardId: parent.cardId })
+    const ai = d.ai()
+    const useAi = ai.available
+    const tools = useAi ? (d.media?.(rec.id) ?? null) : null
+    const chat = useAi ? d.providers().chat : null
+    const runDir = d.store.runDir(rec.id)
+    const say = (message: string) => send({ kind: 'log', businessId: profile.id, job: 'film', runId: rec.id, message })
+    const emitPari: MarketEmit = (e) => send({ ...e, businessId: profile.id, runId: rec.id } as MarketEvent)
+    const hooks: MarketPariHooks = {
+      mode: profile.agentMode === 'autopilot' ? 'autopilot' : 'ask',
+      capabilities: d.capabilities?.() ?? { access: useAi ? 'plan' : 'programmatic', jobs: [], limits: [] },
+      emit: emitPari,
+      decide: (requests: DecisionRequest[]) =>
+        new Promise<DecisionAnswer[] | null>((resolveDecide) => {
+          if (!current) return resolveDecide(null)
+          current.decide = resolveDecide
+          notify('VideoGen Studio needs a choice', requests[0]?.question ?? 'A few choices are waiting for you.')
+          current.abort.signal.addEventListener('abort', () => resolveDecide(null), { once: true })
+        })
+    }
+    const make = () =>
+      reviseFilm({
+        prev, request, runDir, profile, card, chat,
+        speech: useAi ? d.providers().speech : null,
+        tools, maxClips: d.maxClips(), hooks,
+        filmmaker: d.filmmaker,
+        signal: current?.abort.signal,
+        progress: (stage, message) => {
+          rec.stage = stage
+          send({ kind: 'stage', businessId: profile.id, job: 'film', runId: rec.id, stage, message })
+        },
+        log: say
+      })
+    void (async () => {
+      meter.begin('business-film')
+      let record: MarketRunRecord = rec
+      try {
+        const { out, report, revision } = useAi ? await d.aiJob(`mk-${rec.id}`, `${profile.name} — ${card.title} (changed)`, make) : await make()
+        record = { ...rec, status: 'done', finishedAt: new Date().toISOString(), video: out.file, durationSec: out.durationSec, notes: out.notes, shortfalls: report.shortfalls, revision: { request: revision.request, changed: revision.changed, kept: revision.kept, cannot: revision.cannot } }
+        const c = profile.cards.find((x) => x.id === parent.cardId)
+        if (c) {
+          c.video = out.file
+          c.runId = rec.id
+          d.store.save(profile)
+        }
+        send({ kind: 'done', businessId: profile.id, job: 'film', runId: rec.id, run: record })
+        notify('Your changed video is ready', card.title)
+      } catch (err) {
+        const cancelled = err instanceof FilmCancelled || err instanceof MarketStopped || current?.abort.signal.aborted
+        record = { ...rec, status: cancelled ? 'cancelled' : 'failed', finishedAt: new Date().toISOString(), error: cancelled ? (err instanceof MarketStopped ? err.message : undefined) : String((err as Error)?.message ?? err) }
         send({ kind: cancelled ? 'cancelled' : 'failed', businessId: profile.id, job: 'film', runId: rec.id, error: record.error ?? '', run: record })
       } finally {
         d.store.saveRun(record)

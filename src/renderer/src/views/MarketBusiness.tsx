@@ -6,7 +6,7 @@ import type { PlatformId } from '@shared/spec'
 import type { CapabilityReport, DecisionRequest, SegmentCheck } from '@shared/agentBrief'
 import type { MarketPlan, MarketReport } from '@shared/marketBrief'
 import { DecisionPanel, ReportPanel, autopilotLines } from './PariPanels'
-import { MarketPlanPanel } from './MarketPanels'
+import { MarketPlanPanel, ReviseBox, RevisionSummary } from './MarketPanels'
 
 /**
  * Market your business: type the website address, and the engine reads the
@@ -153,6 +153,14 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
     setBusinesses((bs) => bs.map((b) => (b.id === sel ? r.profile : b)))
   }
 
+  /** make a finished film again with the changes typed */
+  const revise = async (runId: string, request: string): Promise<boolean> => {
+    setError(null)
+    const r = await api.market.revise(runId, request)
+    if (!r.ok) setError(r.error)
+    return r.ok
+  }
+
   const field = (card: VideoCard, k: keyof Draft, value: string) => setDrafts((ds) => ({ ...ds, [card.id]: { ...ds[card.id], [k]: value } }))
   const valueOf = (card: VideoCard, k: keyof Draft): string => drafts[card.id]?.[k] ?? card[k] ?? ''
 
@@ -209,6 +217,7 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
               {live.plan && <MarketPlanPanel plan={live.plan.plan} capabilities={live.plan.capabilities} checks={live.checks} />}
               {live.decide && !live.finished && <DecisionPanel key={live.decide.map((d) => d.id).join('|')} requests={live.decide} send={api.market.decide} onAnswered={() => setLive((l) => (l ? { ...l, decide: undefined } : l))} />}
               {live.report && <ReportPanel report={live.report} />}
+              {live.report?.revision && <RevisionSummary revision={live.report.revision} />}
               {live.finished && (
                 <div className="mt-3 flex justify-end">
                   <button onClick={() => setLive(null)} className="btn-ghost !px-3 !py-1 !text-xs">Close this</button>
@@ -328,6 +337,7 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
                           🎥 {card.video ? 'Make it again' : 'Create video'}
                         </button>
                       </div>
+                      {card.video && card.runId && runs.some((r) => r.id === card.runId && r.status === 'done') && <ReviseBox disabled={running} onRevise={(text) => revise(card.runId!, text)} />}
                       {live?.cardId === card.id && live.job === 'film' && live.error && <div className="mt-2 rounded-lg bg-coral-soft px-3 py-2 text-xs font-semibold text-ink/80">{live.error}</div>}
                       {live?.cardId === card.id && live.job === 'film' && live.run?.notes.length ? <div className="mt-2 text-xs text-ink/50">{live.run.notes.join(' · ')}</div> : null}
                     </div>
@@ -390,7 +400,20 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
                           </button>
                         </span>
                       )}
+                      {r.parentRunId && <span className="text-xs text-ink/45">✏️ changed from an earlier film</span>}
                       {r.error && <span className="w-full text-xs text-coral">{r.error}</span>}
+                      {r.revision && (
+                        <details className="w-full">
+                          <summary className="cursor-pointer text-xs font-bold text-ink/60">✏️ What was changed</summary>
+                          <RevisionSummary revision={r.revision} />
+                        </details>
+                      )}
+                      {r.status === 'done' && (
+                        <details className="w-full">
+                          <summary className="cursor-pointer text-xs font-bold text-ink/60">✏️ Change this film</summary>
+                          <ReviseBox disabled={running} onRevise={(text) => revise(r.id, text)} />
+                        </details>
+                      )}
                       {r.shortfalls && r.shortfalls.length > 0 && (
                         <details className="w-full">
                           <summary className="cursor-pointer text-xs font-bold text-ink/60">⚠️ What is not in this film ({r.shortfalls.length})</summary>

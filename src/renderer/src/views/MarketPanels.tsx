@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type { CapabilityReport, SegmentCheck } from '@shared/agentBrief'
 import type { MarketPlan, Show } from '@shared/marketBrief'
 import { ModelsList, STATUS } from './PariPanels'
@@ -49,6 +50,60 @@ export function MarketPlanPanel({ plan, capabilities, checks }: { plan: MarketPl
         </div>
       )}
       {capabilities && <ModelsList caps={capabilities} />}
+    </div>
+  )
+}
+
+/** under a finished film: say what should change, and make it again (the earlier film is kept) */
+export function ReviseBox({ disabled, onRevise }: { disabled: boolean; onRevise: (request: string) => Promise<boolean> }) {
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  return (
+    <div className="mt-3 rounded-xl border-2 border-ink/10 bg-white/60 px-3 py-2">
+      <div className="text-[11px] font-bold uppercase tracking-wide text-ink/40">What should change?</div>
+      <textarea
+        aria-label="What should change?"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={2}
+        maxLength={2000}
+        placeholder={'Anything, in your own words. For example: make the hook funnier. Use a different picture in the second scene. No music. Say we deliver on Sundays. 15 seconds.'}
+        className="field mt-1 w-full px-3 py-1.5 text-sm"
+      />
+      <div className="mt-1 flex items-center justify-between gap-2">
+        <span className="text-[11px] text-ink/45">Only what you change is made again. Your earlier film is kept.</span>
+        <button
+          disabled={disabled || busy || !text.trim()}
+          onClick={async () => {
+            setBusy(true)
+            const ok = await onRevise(text.trim())
+            setBusy(false)
+            if (ok) setText('')
+          }}
+          className="btn-primary !px-3 !py-1 !text-xs"
+        >
+          ✏️ Make it again with these changes
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/** after a change: what was changed, what was kept, what could not be done */
+export function RevisionSummary({ revision }: { revision: { request: string; changed: string[]; kept: string[]; cannot: string[] } }) {
+  const list = (icon: string, title: string, items: string[]) =>
+    items.length ? (
+      <div className="mt-1">
+        <div className="text-xs font-bold">{icon} {title}</div>
+        <ul className="list-disc space-y-0.5 pl-5 text-xs text-ink/70">{items.map((s, i) => <li key={i}>{s}</li>)}</ul>
+      </div>
+    ) : null
+  return (
+    <div className="mt-2 rounded-lg bg-mint-soft/50 px-3 py-2" aria-label="What was changed">
+      <div className="text-xs text-ink/55">You asked: “{revision.request}”</div>
+      {list('✏️', 'Changed', revision.changed)}
+      {list('♻️', 'Kept from the earlier film', revision.kept)}
+      {list('⚠️', 'Could not do', revision.cannot)}
     </div>
   )
 }

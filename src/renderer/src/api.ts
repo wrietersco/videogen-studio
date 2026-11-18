@@ -297,6 +297,8 @@ declare global {
         removeCard: (businessId: string, cardId: string) => Promise<{ ok: true; profile: BusinessProfile } | { ok: false; error: string }>
         moreIdeas: (businessId: string) => Promise<{ ok: true; profile: BusinessProfile } | { ok: false; error: string }>
         start: (businessId: string, cardId: string) => Promise<{ ok: true; runId: string } | { ok: false; error: string }>
+        /** make a finished film again with the changes typed; the earlier film is kept */
+        revise: (runId: string, request: string) => Promise<{ ok: true; runId: string } | { ok: false; error: string }>
         cancel: () => Promise<boolean>
         setMode: (businessId: string, mode: 'ask' | 'autopilot') => Promise<{ ok: true; profile: BusinessProfile } | { ok: false; error: string }>
         decide: (answers: DecisionAnswer[] | null) => Promise<boolean>

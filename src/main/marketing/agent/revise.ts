@@ -313,6 +313,11 @@ export function readRevisionByRules(request: string, prev: PreviousRun): MarketE
       else e.avoid.push(clean(take[1].replace(/^(?:part|point|bit|line)s?\s+(?:about|on|of)\s+/i, ''), 60))
       continue
     }
+    // things the engine cannot put in a film (an animated logo, effects, a person) are listed, never voiced as a line
+    if (/^(?:please\s+)?(?:also\s+)?(?:add|put|include|make|show)\b/i.test(c) && /\b(logo|animation|animated|animate|dance|dancing|effects?|fireworks|font|transition|filter|face|person|avatar|emoji|watermark|qr)\b/i.test(low)) {
+      e.cannot.push(`"${c}" is not something this film engine can make yet, so it is not in the film.`)
+      continue
+    }
     const sayIt = /^(?:please\s+)?(?:also\s+)?(?:say|mention|add|tell (?:them|people|viewers)|let (?:them|people) know|include)\s+(?:that\s+)?(.{4,200})$/i.exec(c)
     if (sayIt) {
       e.add.push({ say: sentence(cap(clean(sayIt[1].replace(/^["“']|["”']$/g, ''), 200))) })
