@@ -141,13 +141,13 @@ export function spotScore(s: PictureSpot, logoUrl?: string): number {
   return score
 }
 
-/** an 8×8 brightness fingerprint, so the same photo at two sizes is kept once */
+/** a 16×16 brightness fingerprint, so the same photo at two sizes is kept once */
 async function fingerprint(buf: Buffer): Promise<bigint> {
   const sharp = (await import('sharp')).default
-  const px = await sharp(buf).flatten({ background: '#fff' }).grayscale().resize(8, 8, { fit: 'fill' }).raw().toBuffer()
+  const px = await sharp(buf).flatten({ background: '#fff' }).grayscale().resize(16, 16, { fit: 'fill' }).raw().toBuffer()
   const mean = px.reduce((a, b) => a + b, 0) / px.length
   let bits = 0n
-  for (let i = 0; i < 64; i++) if (px[i] > mean) bits |= 1n << BigInt(i)
+  for (let i = 0; i < 256; i++) if (px[i] > mean) bits |= 1n << BigInt(i)
   return bits
 }
 const distance = (a: bigint, b: bigint): number => {
@@ -190,7 +190,7 @@ export async function savePictures(spots: Array<PictureSpot & { page: string }>,
     if (out.length >= max || tries >= max * 3) break
     // the same picture at two sizes often differs only in its query (?w=300)
     const key = s.src.replace(/[?#].*$/, '').replace(/-\d{2,4}x\d{2,4}(?=\.\w+$)/, '')
-    if (seenUrl.has(key)) continue
+    if (seenUrl.has(key)) { opts.log?.(`  picture skipped (same address as one already seen): ${s.src.slice(-40)}`); continue }
     seenUrl.add(key)
     tries++
     try {
@@ -199,12 +199,12 @@ export async function savePictures(spots: Array<PictureSpot & { page: string }>,
       const meta = await img.metadata()
       const w = meta.width ?? 0
       const h = meta.height ?? 0
-      if (meta.format === 'svg' || Math.min(w, h) < MIN_EDGE || Math.max(w, h) / Math.max(1, Math.min(w, h)) > 3) continue
+      if (meta.format === 'svg' || Math.min(w, h) < MIN_EDGE || Math.max(w, h) / Math.max(1, Math.min(w, h)) > 3) { opts.log?.(`  picture skipped (too small or too wide): ${s.src.slice(-40)}`); continue }
       // a flat picture (one colour, a placeholder) says nothing about the product
       const stats = await sharp(buf).stats()
-      if (stats.channels.slice(0, 3).every((c) => c.stdev < 6)) continue
+      if (stats.channels.slice(0, 3).every((c) => c.stdev < 6)) { opts.log?.(`  picture skipped (one flat colour): ${s.src.slice(-40)}`); continue }
       const print = await fingerprint(buf)
-      if (prints.some((p) => distance(p, print) <= 5)) continue
+      if (prints.some((p) => distance(p, print) <= 12)) { opts.log?.(`  picture skipped (the same photo as one already kept): ${s.src.slice(-40)}`); continue }
       prints.push(print)
       mkdirSync(folder, { recursive: true })
       const cutout = !!meta.hasAlpha && (await clearCorners(buf))

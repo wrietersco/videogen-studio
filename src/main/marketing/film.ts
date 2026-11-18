@@ -17,6 +17,7 @@ import type { MadePart, MarketPlan, Show } from '@shared/marketBrief'
 import { assemble, type FilmPiece, type PieceShot } from './assemble'
 import { iconFor, type IconName } from './overlays'
 import { planFromCard } from './agent/brief'
+import { renderProductScene, type ProductEntrance } from './productScene'
 import { filmFrame } from '@shared/shapes'
 
 /**
@@ -105,6 +106,56 @@ interface Script {
 type Kind = 'scene' | 'still' | 'clip'
 
 const NO_TEXT = 'No text, no letters, no logos, no watermarks, no faces. Smooth, slow, continuous motion.'
+/** the one branded shot: the business's own logo, from its reference picture, on its own packaging, and nothing else written */
+const BRAND_ONLY = "The only lettering anywhere is the business's own logo, copied exactly from the logo reference picture, printed on the product's box, bag, sticker or label. No other text, no watermarks, no close-up faces."
+
+/** what a beat shows of the business's own products: the product's name, its own photos and one benefit line */
+export interface BeatProduct {
+  name: string
+  images: string[]
+  benefit?: string
+}
+
+const nameWords = (s: string): string[] => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 2 && !/^(the|and|with|for|our|your|from)$/.test(w))
+
+/**
+ * Which of the business's own pictures each beat shows. A beat that names a
+ * service shows that service's photos; otherwise the card's own service; then
+ * the business's general product photos. Photos are shared out so the same
+ * one is shown at most twice in a film.
+ */
+export function productPicker(p: BusinessProfile, card: VideoCard): { any: boolean; forBeat: (text: string) => BeatProduct | null } {
+  const real = (list?: string[]): string[] => (list ?? []).filter((f) => existsSync(f))
+  const services = p.services.map((sv) => ({ sv, images: real(sv.images) }))
+  const general = real(p.brand.productImages)
+  const uses = new Map<string, number>()
+  const any = general.length > 0 || services.some((x) => x.images.length > 0)
+  const take = (list: string[], n: number): string[] => {
+    const ok = [...new Set(list)].filter((f) => (uses.get(f) ?? 0) < 2).sort((a, b) => (uses.get(a) ?? 0) - (uses.get(b) ?? 0))
+    const got = ok.slice(0, n)
+    for (const f of got) uses.set(f, (uses.get(f) ?? 0) + 1)
+    return got
+  }
+  const forBeat = (text: string): BeatProduct | null => {
+    if (!any) return null
+    const t = new Set(nameWords(text))
+    const named = services.find((x) => {
+      const w = nameWords(x.sv.name)
+      return x.images.length > 0 && w.length > 0 && w.filter((y) => t.has(y)).length / w.length >= 0.5
+    })
+    const own = card.serviceIdx !== undefined ? services[card.serviceIdx] : undefined
+    for (const pick of [named, own && own.images.length ? own : undefined]) {
+      if (!pick) continue
+      const images = take([...pick.images, ...general], 3)
+      if (images.length) return { name: pick.sv.name, images, benefit: pick.sv.benefits[0] }
+    }
+    const images = take([...general, ...services.flatMap((x) => x.images)], 3)
+    if (!images.length) return null
+    const sv = own?.sv ?? services.find((x) => x.images.includes(images[0]))?.sv
+    return { name: sv?.name ?? p.name, images, benefit: sv?.benefits[0] }
+  }
+  return { any, forBeat }
+}
 const clean = (s: string, max: number): string => s.replace(/\s+/g, ' ').trim().slice(0, max)
 
 const stemOf = (w: string): string => (w.length > 5 ? w.replace(/(?:ing|ed|es|s)$/, '') : w)
@@ -346,31 +397,41 @@ const MAX_STILLS = 8
 /** the settings a bakery, a clinic or a shop is seen in when no writer is there to choose: a home, an office, a celebration */
 const STOCK_SETTINGS = ['in a warm, cosy home on a wooden table by a window', 'on a tidy desk in a bright modern office, colleagues\' hands reaching in', 'at a lively small celebration table with friends gathered around, soft party lights', 'outdoors in soft morning light, on a bench in a calm street']
 
-/** a photograph prompt built without a writer: the beat's idea in a setting that changes from shot to shot */
-function stockMoment(beat: Beat, k: number, brand: { accent?: string; backdrop?: [string, string] }, motif: Motif): string {
+/** what people do with the product, shot to shot, when no writer is there to choose */
+const STOCK_USES = ['being shared from hand to hand', 'being unwrapped as a gift', 'served on a plate, a hand reaching for it', 'held up close in two hands']
+
+/** a photograph prompt built without a writer: the beat's idea (or the real product in use) in a setting that changes from shot to shot */
+function stockMoment(beat: Beat, k: number, brand: { accent?: string; backdrop?: [string, string] }, motif: Motif, product?: { name: string; ref: boolean }): string {
   const look = clipLook('middle', brand, motif)
   const idea = (beat.visual ?? beat.line).replace(/\.$/, '')
+  if (product && !beat.visual) {
+    const what = product.ref ? `the exact ${product.name} shown in the reference photo (same shape, colours and packaging)` : product.name
+    return [`A warm, natural photograph of ${what} ${STOCK_USES[k % STOCK_USES.length]}, ${STOCK_SETTINGS[k % STOCK_SETTINGS.length]}.`, `It shows: ${idea}.`, "People's hands or people seen from behind, close and real, soft natural light, shallow depth of field.", look.palette, NO_TEXT].filter(Boolean).join(' ')
+  }
   return [`A warm, natural photograph illustrating: ${idea}, ${STOCK_SETTINGS[k % STOCK_SETTINGS.length]}.`, 'Close, appetising, real materials, soft natural light, shallow depth of field.', look.palette, NO_TEXT].filter(Boolean).join(' ')
 }
 
 /** the writer's shot list: for each beat, several different photographable moments in different everyday settings */
-async function writeMoments(beats: Beat[], counts: number[], card: VideoCard, p: BusinessProfile, chat: LLMProvider, brand: { accent?: string; backdrop?: [string, string] }, motif: Motif, style: string | null, say: (m: string) => void): Promise<Map<number, string[]>> {
+async function writeMoments(beats: Beat[], counts: number[], card: VideoCard, p: BusinessProfile, chat: LLMProvider, brand: { accent?: string; backdrop?: [string, string] }, motif: Motif, style: string | null, say: (m: string) => void, products: Array<{ name: string; ref: boolean } | undefined> = []): Promise<Map<number, string[]>> {
   const out = new Map<number, string[]>()
   const idx = beats.map((_, i) => i).filter((i) => counts[i] > 0)
-  for (const i of idx) out.set(i, Array.from({ length: counts[i] }, (_, k) => stockMoment(beats[i], k, brand, motif)))
+  for (const i of idx) out.set(i, Array.from({ length: counts[i] }, (_, k) => stockMoment(beats[i], k, brand, motif, products[i])))
+  const sells = p.services.slice(0, 6).map((sv) => `${sv.name}: ${sv.summary}`).join('\n')
   if (!idx.length) return out
   try {
     const look = clipLook('middle', brand, motif)
     const r = await chat.generateJSON<{ beats: Array<{ n: number; moments: string[] }> }>({
       system:
         'You direct the photographs of a short brand film. For each line of voice-over you give several DIFFERENT moments, each a single photograph a camera could really take: a concrete subject, a setting and a light. ' +
-        'Vary the SETTING from shot to shot (a home, an office, a celebration, a street, a kitchen, outdoors) so the film feels alive, and stay true to what the business really sells. ' +
+        "Every moment is about the business's OWN product or service IN USE, never a generic stock scene: the product being gifted, shared, unboxed, eaten, served, worn or carried, or the service being done for a customer. Where it fits, a person or their hands use it (people seen from behind, in profile or out of focus). " +
+        'When a line says its product is shown in a reference photo, describe THAT product exactly (its shape, colours and packaging) so the picture shows the real thing. ' +
+        'Vary the SETTING from shot to shot (a home, an office party, a celebration, a street, a kitchen, outdoors) so the film feels alive. ' +
         (style === 'infographic' ? 'The look is clean flat infographic illustration, not photography. ' : 'Warm, natural, appetising, real materials. ') +
         'FORBIDDEN, always: readable text, letters, numbers, logos, watermarks, screens showing text, close-up faces. Hands, objects and wide scenes are fine. ' +
         `Use this palette and no other: ${look.palette} ` +
         'Each moment is 25 to 45 words.',
       prompt:
-        `Business: ${p.name} — ${p.tagline}\nWhat it does: ${p.about}\nWhat this film sells: ${card.solution}\n\nFor each numbered line, give exactly the number of moments shown:\n${idx.map((i) => `${i + 1}. (${counts[i]} moments) ${beats[i].line}${beats[i].visual ? ` — the person described: ${beats[i].visual}` : ''}`).join('\n')}`,
+        `Business: ${p.name} — ${p.tagline}\nWhat it does: ${p.about}\nWhat it sells (information only):\n${sells || '(as above)'}\nWhat this film sells: ${card.solution}\n\nFor each numbered line, give exactly the number of moments shown:\n${idx.map((i) => `${i + 1}. (${counts[i]} moments) ${beats[i].line}${products[i] ? ` — the product: ${products[i]!.name}${products[i]!.ref ? ' (shown in a reference photo)' : ''}` : ''}${beats[i].visual ? ` — the person described: ${beats[i].visual}` : ''}`).join('\n')}`,
       schemaName: 'marketing_moments',
       jsonSchema: {
         type: 'object',
@@ -395,16 +456,17 @@ async function writeMoments(beats: Beat[], counts: number[], card: VideoCard, p:
 }
 
 /** a still made and checked before it is used; null = fall back to an animated point */
-async function checkedStill(tools: MediaTools, prompt: string, notes: string[], signal?: AbortSignal, portrait = false): Promise<{ file: string | null; attempts: number; why?: string }> {
+async function checkedStill(tools: MediaTools, prompt: string, notes: string[], signal?: AbortSignal, portrait = false, opts: { refs?: string[]; allowBrand?: boolean } = {}): Promise<{ file: string | null; attempts: number; why?: string; refsUsed?: number }> {
   if (!tools.still) return { file: null, attempts: 0, why: 'AI pictures are not available' }
   let attempts = 0
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (signal?.aborted) throw new FilmCancelled()
       attempts++
-      const still = await tools.still(`A still photograph for a brand film. ${prompt}`, { portrait })
-      const verdict = tools.reviewStill ? await tools.reviewStill(still.file).catch(() => null) : null
-      if (!verdict || verdict.ok) return { file: still.file, attempts }
+      const refs = tools.stillTakesRefs && opts.refs?.length ? opts.refs : undefined
+      const still = await tools.still(`A still photograph for a brand film. ${prompt}`, { portrait, ...(refs ? { refs } : {}) })
+      const verdict = tools.reviewStill ? await tools.reviewStill(still.file, opts.allowBrand ? { allowBrand: true } : undefined).catch(() => null) : null
+      if (!verdict || verdict.ok) return { file: still.file, attempts, refsUsed: still.refsUsed ?? 0 }
     }
     notes.push('A picture for one beat did not pass the check, so an animated point is used instead.')
     return { file: null, attempts, why: 'the picture did not pass the quality check' }
@@ -482,6 +544,33 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
   const idOf = (i: number): string => (i === 0 ? 'problem' : script.beats[i - 1].pointId ?? `p${i}`)
   const wantedOf = (i: number): Show => (i === 0 ? plan.problem.show : plan.points.find((x) => x.id === script.beats[i - 1].pointId)?.show ?? 'any')
 
+  // the business's own products: which of its photos each beat shows (never the trouble), and whether the picture model can look at them
+  const picker = productPicker(p, card)
+  const beatProducts: Array<BeatProduct | null> = allBeats.map((b, i) => (i === 0 ? null : picker.forBeat(`${b.headline} ${b.line}`)))
+  const withRefs = !!inp.tools?.still && !!inp.tools.stillTakesRefs
+  if (picker.any && inp.tools?.still && !withRefs) notes.push('Your picture model cannot look at your product photos, so the AI pictures are drawn from words alone; your own photos are shown in the product scenes.')
+  const productHint = beatProducts.map((bp) => (bp ? { name: bp.name, ref: withRefs } : undefined))
+  /** the pictures a still should show: the beat's product photo, and the logo for the one branded shot */
+  const refsOf = (i: number, branded = false): string[] => (withRefs ? [...(beatProducts[i]?.images.slice(0, 1) ?? []), ...(branded && logo ? [logo] : [])] : [])
+  const ENTRANCES: ProductEntrance[] = ['rise', 'turn', 'slide']
+  let productScenes = 0
+  /** the real product photo, animated: a whole beat (with its name and a line) or one shot of a beat's montage (no words) */
+  const productScene = async (i: number, bp: BeatProduct, sec: number, words: boolean): Promise<{ file: string; durationSec: number } | null> => {
+    try {
+      const b = allBeats[i]
+      const r = await renderProductScene(
+        { images: bp.images, name: words ? bp.name : '', line: words ? b.headline : undefined, pill: words ? b.chapter : undefined, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: sec, size: frame, entrance: ENTRANCES[productScenes % ENTRANCES.length], cutout: /\.png$/i.test(bp.images[0]), text: words ? 'side' : 'none' },
+        join(inp.runDir, `scene-product-${i}.mp4`)
+      )
+      productScenes++
+      if (!elements.includes('Product scenes (your own photos)')) elements.push('Product scenes (your own photos)')
+      return r
+    } catch (err) {
+      say(`  the product scene for beat ${i} could not be made (${String((err as Error)?.message ?? err).slice(0, 80)})`)
+      return null
+    }
+  }
+
   /** an AI clip for one part; a failed asked-for clip is tried once more with the plain storyboard */
   const makeClip = async (i: number, pcm: Float32Array): Promise<{ piece: FilmPiece | null; attempts: number; why?: string }> => {
     const b = allBeats[i]
@@ -498,7 +587,9 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
         // the clip's first frame is made and checked before any video is paid for
         let imageFile: string | undefined
         if (tools.still && attempts === 1) {
-          const still = await tools.still(`First frame of this shot, a still photograph: ${prompt}`, { portrait })
+          // the first frame shows the real product when the picture model can look at its photo; the clip then moves from it
+          const refs = refsOf(i)
+          const still = await tools.still(`First frame of this shot, a still photograph${refs.length ? `, showing the exact ${beatProducts[i]!.name} from the reference photo` : ''}: ${prompt}`, { portrait, ...(refs.length ? { refs } : {}) })
           const verdict = tools.reviewStill ? await tools.reviewStill(still.file).catch(() => null) : null
           if (!verdict || verdict.ok) imageFile = still.file
         }
@@ -531,8 +622,18 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
       budget -= wantStills[i]
     })
   }
-  const moments = inp.chat && inp.tools && wantStills.some((n) => n > 0) ? await writeMoments(allBeats, wantStills, card, p, inp.chat, brand, motif, plan.look.style, say) : new Map<number, string[]>()
-  const stillPrompt = (i: number, k: number): string => moments.get(i)?.[k] ?? stockMoment(allBeats[i], k, brand, motif)
+  const moments = inp.chat && inp.tools && wantStills.some((n) => n > 0) ? await writeMoments(allBeats, wantStills, card, p, inp.chat, brand, motif, plan.look.style, say, productHint) : new Map<number, string[]>()
+  const stillPrompt = (i: number, k: number): string => moments.get(i)?.[k] ?? stockMoment(allBeats[i], k, brand, motif, productHint[i])
+  // one picture in the film brands the scene: the product's own box, bag or sticker carrying the logo (only when the model can copy the logo from it)
+  const brandedBeat = withRefs && logo ? allBeats.findIndex((_, i) => i > 0 && beatProducts[i] && wantStills[i] >= 2) : -1
+  const brandedPrompt = (i: number, k: number): string => {
+    const base = stillPrompt(i, k)
+    const bp = beatProducts[i]!
+    const body = base.includes(NO_TEXT) ? base.replace(NO_TEXT, BRAND_ONLY) : `${base} ${BRAND_ONLY}`
+    return `${body} The ${bp.name} is shown in its own packaging carrying the business's logo from the second reference picture, as part of the scene (a box, a bag, a sticker), never as a watermark.`
+  }
+  let refsMade = 0
+  let brandedMade = false
 
   const pieces: FilmPiece[] = []
   const stickers: Array<{ piece: number; text: string; icon: IconName }> = []
@@ -563,18 +664,41 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
     // a clip that could not be made is still told in pictures when the account can make them
     const nStills = allKinds[i] === 'clip' && !hero && canStill && i > 0 ? Math.min(3, Math.max(2, Math.round(sec / 3.4))) : wantStills[i]
     if (inp.tools && nStills > 0) {
-      const made1 = await Promise.all(Array.from({ length: nStills }, (_, k) => checkedStill(inp.tools!, stillPrompt(i, k), notes, inp.signal, portrait)))
-      for (const s of made1) {
+      const made1 = await Promise.all(
+        Array.from({ length: nStills }, (_, k) => {
+          const branded = i === brandedBeat && k === nStills - 1
+          return checkedStill(inp.tools!, branded ? brandedPrompt(i, k) : stillPrompt(i, k), notes, inp.signal, portrait, { refs: refsOf(i, branded), allowBrand: branded })
+        })
+      )
+      for (const [k, s] of made1.entries()) {
         attempts += s.attempts
+        if (s.refsUsed && s.file) {
+          refsMade++
+          if (i === brandedBeat && k === nStills - 1) brandedMade = true
+        }
         if (s.file) {
           shots.push({ kind: 'still', file: s.file })
           elements.push('AI image')
         } else if (!fellBack) fellBack = `an AI picture could not be used (${s.why})`
       }
     }
+    // a beat about a product opens on the real product photo, animated, before the pictures of it in use (at most 3 in a film)
+    const bp = beatProducts[i]
+    if (shots.length && bp && productScenes < 3) {
+      const shot = await productScene(i, bp, 3, false)
+      if (shot) shots.unshift({ kind: 'scene', file: shot.file, sec: shot.durationSec })
+    }
+    // with no pictures, a beat about a product is told by the product scene: the business's own photo animated, with its name
+    // and the beat's headline (the free engine's main picture)
+    const wholeSec = Math.min(8, Math.max(4.2, sec - 0.2))
+    const whole = !shots.length && i > 0 && bp ? await productScene(i, bp, wholeSec, true) : null
+    const onScene = !!whole
     if (shots.length) {
       pieces.push({ kind: 'montage', file: '', shots, text: b.line, chapter: i === 0 ? '' : b.chapter, pcm, sec: Math.max(sec, hero ? clipSec : 0) })
       made.push({ id, wanted, made: hero ? 'clip' : 'image', line: b.line, ...(wanted === 'clip' && !hero && fellBack ? { fellBack } : {}), attempts: Math.max(1, attempts) })
+    } else if (whole) {
+      pieces.push({ kind: 'scene', file: whole.file, text: b.line, chapter: b.chapter, pcm, sec: Math.max(wholeSec, sec), srcSec: whole.durationSec })
+      made.push({ id, wanted, made: 'scene', line: b.line, ...(fellBack ? { fellBack } : {}), attempts: Math.max(1, attempts) })
     } else if (i === 0) {
       // the trouble opens the film, on the problem scene (rendered with the closing card below)
       pieces.push({ kind: 'scene', file: '', text: b.line, pcm, sec, chapter: '' })
@@ -586,8 +710,10 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
       pieces.push({ kind: 'scene', file: scene.file, text: b.line, chapter: b.chapter, pcm, sec: Math.max(want, sec), srcSec: scene.durationSec })
       made.push({ id, wanted, made: 'scene', line: b.line, ...(fellBack ? { fellBack } : {}), attempts: Math.max(1, attempts) })
     }
-    if (i > 0) stickers.push({ piece: pieces.length - 1, text: b.headline, icon: iconFor(`${b.headline} ${b.line}`) })
+    // a product scene already carries the headline on screen, so it gets no sticker
+    if (i > 0 && !onScene) stickers.push({ piece: pieces.length - 1, text: b.headline, icon: iconFor(`${b.headline} ${b.line}`) })
   }
+  if (refsMade) notes.push(`${refsMade} AI picture${refsMade === 1 ? ' was' : 's were'} made from your own product photo${brandedMade ? ', one with your logo on the packaging' : ''}.`)
   check()
 
   // ------------------------------------------------------------ the music
