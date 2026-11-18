@@ -101,6 +101,10 @@ export interface AssOptions {
   hook?: string
   hookAt?: number
   stickers?: Sticker[]
+  /** the spoken words' colour, hex (default: the accent, brightened to read on a dark picture) */
+  captionColor?: string
+  /** caption size against the usual (default 1) */
+  captionScale?: number
 }
 
 const portraitOf = (W: number, H: number): boolean => H > W
@@ -155,7 +159,8 @@ export function brighten(hex: string): string {
 export function buildMarketingAss(o: AssOptions): string {
   const { W, H } = o
   const tall = portraitOf(W, H)
-  const capSize = Math.round(tall ? W * 0.082 : H * 0.075)
+  const capScale = Math.min(1.6, Math.max(0.6, o.captionScale ?? 1))
+  const capSize = Math.round((tall ? W * 0.082 : H * 0.075) * capScale)
   const hookSize = Math.round(tall ? W * 0.115 : H * 0.115)
   const stickSize = Math.round(tall ? W * 0.05 : H * 0.05)
   // the bottom fifth of a tall film is covered by the app's own buttons, so the captions sit higher there
@@ -195,7 +200,7 @@ export function buildMarketingAss(o: AssOptions): string {
 
   const accent = assColour(o.accent)
   // spoken words need to read on a dark picture even when the brand colour is dark
-  const spoken = assColour(brighten(o.accent))
+  const spoken = assColour(o.captionColor ? o.captionColor.replace('#', '') : brighten(o.accent))
   return [
     '[Script Info]', 'ScriptType: v4.00+', `PlayResX: ${W}`, `PlayResY: ${H}`, 'WrapStyle: 0', 'ScaledBorderAndShadow: yes', '',
     '[V4+ Styles]',

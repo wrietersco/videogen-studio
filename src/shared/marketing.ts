@@ -90,6 +90,10 @@ export interface MarketRunRecord {
   /** what the film does not carry out of what was asked, and why (empty = everything is in it) */
   shortfalls?: string[]
   error?: string
+  /** made again from this earlier film with the person's changes (the earlier one is kept) */
+  parentRunId?: string
+  /** what the person asked to change, and what was changed, kept and could not be done */
+  revision?: { request: string; changed: string[]; kept: string[]; cannot: string[] }
 }
 
 /** the two jobs the feature runs: reading the website, and making one card's film */

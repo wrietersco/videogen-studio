@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { renderScene, pickMotif, type Motif } from '../appRecon/scenes'
 import { voiceLine, neutralProblemTitle, problemLineOk, problemTitleOk } from '../appRecon/narrate'
@@ -18,6 +18,7 @@ import { assemble, type FilmPiece, type PieceShot } from './assemble'
 import { iconFor, type IconName } from './overlays'
 import { planFromCard } from './agent/brief'
 import { filmFrame } from '@shared/shapes'
+import { reusedVoice, usableShots, voiceFileOf, writeFilmRecord, type FilmReuse, type FilmVoiceRecord } from './filmRecord'
 
 /**
  * One card's film, made with the record-an-app engine minus the recording:
@@ -57,6 +58,8 @@ export interface FilmInput {
   signal?: AbortSignal
   progress: (stage: MarketStage, message: string) => void
   log?: (m: string) => void
+  /** a revision: the parts of an earlier film to use again (its script, voice lines, pictures, music and caption look) */
+  reuse?: FilmReuse
 }
 
 export interface FilmResult {
@@ -75,6 +78,8 @@ export interface FilmResult {
   voiced: boolean
   /** the AI writer wrote the script (not the plan's own words) */
   written: boolean
+  /** a revision: what came from the earlier film */
+  reused?: { voices: number; parts: string[]; music: boolean }
 }
 
 interface Beat {
@@ -441,9 +446,9 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
   // ------------------------------------------------------------ the script
   inp.progress('script', 'Writing the story')
   const maxBeats = Math.max(2, plan.points.length)
-  let script = stockScript(card, p, plan, maxBeats)
-  let written = false
-  if (inp.chat) {
+  let script = inp.reuse?.script ? structuredClone(inp.reuse.script) : stockScript(card, p, plan, maxBeats)
+  let written = !!inp.reuse?.script
+  if (inp.chat && !inp.reuse?.script) {
     try {
       script = await writeScript(card, p, inp.chat, plan, maxBeats, notes)
       written = true
@@ -452,7 +457,7 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
     }
   }
   // a card with no brief keeps all its points (as before); a brief's length and must-haves are fitted
-  const fitted = plan.source === 'card' ? { script, dropped: [] as string[] } : fitBeats(script, plan, targetSec)
+  const fitted = plan.source === 'card' || inp.reuse?.script ? { script, dropped: [] as string[] } : fitBeats(script, plan, targetSec)
   script = fitted.script
   if (fitted.dropped.length) notes.push(`To keep the film near ${targetSec}s, ${fitted.dropped.length} nice-to-have point${fitted.dropped.length === 1 ? ' was' : 's were'} left out.`)
   say(`script: "${script.problemHeadline}" + ${script.beats.length} beats + close`)
@@ -462,10 +467,21 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
   inp.progress('voice', 'Recording the voice-over')
   const tone = `${plan.voice.tone ? plan.voice.tone.replace(/^./, (c) => c.toUpperCase()) : 'Confident, warm'} brand-film narrator. Clear and engaging, at an unhurried pace${plan.voice.tone ? '' : ', with a smile in the voice'}.${plan.voice.language ? ` Speak in ${plan.voice.language}.` : ''}`
   const spokenSec = (pcm: Float32Array, text: string) => (pcm.length ? pcm.length / SR : readSec(text))
-  const problemPcm = await voiceLine(speech, inp.runDir, 'voice-problem', script.problemLine, tone)
+  // a line said before in the same words and tone is used again (a revision); every other line is said now
+  const voices: FilmVoiceRecord[] = []
+  let voicesReused = 0
+  const say1 = async (name: string, text: string): Promise<Float32Array> => {
+    const kept = speech ? reusedVoice(inp.reuse, inp.runDir, name, text, tone) : null
+    if (kept) voicesReused++
+    const pcm = kept ?? (await voiceLine(speech, inp.runDir, name, text, tone))
+    const file = speech ? voiceFileOf(inp.runDir, name) : null
+    if (file) voices.push({ text, tone, file })
+    return pcm
+  }
+  const problemPcm = await say1('voice-problem', script.problemLine)
   const beatPcms: Float32Array[] = []
-  for (let i = 0; i < script.beats.length; i++) beatPcms.push(await voiceLine(speech, inp.runDir, `voice-beat-${i + 1}`, script.beats[i].line, tone))
-  const closePcm = await voiceLine(speech, inp.runDir, 'voice-close', script.close, tone)
+  for (let i = 0; i < script.beats.length; i++) beatPcms.push(await say1(`voice-beat-${i + 1}`, script.beats[i].line))
+  const closePcm = await say1('voice-close', script.close)
   if (speech) elements.push('AI voice-over')
   check()
 
@@ -475,6 +491,10 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
   const problemBeat: Beat = { headline: script.problemHeadline, line: script.problemLine, chapter: '', ...(plan.problem.visual ? { visual: plan.problem.visual } : {}) }
   const allBeats = [problemBeat, ...script.beats]
   const allKinds: Kind[] = [chosen.problem, ...chosen.kinds]
+  // a revision: parts whose pictures are used again are not storyboarded or made again
+  const partId = (i: number): string => (i === 0 ? 'problem' : script.beats[i - 1].pointId ?? `p${i}`)
+  const kept = allBeats.map((_, i) => usableShots(inp.reuse?.shots?.[partId(i)]))
+  kept.forEach((k, i) => { if (k) allKinds[i] = 'scene' })
   say(`elements: problem ${chosen.problem}; beats ${chosen.kinds.join(', ') || '(none)'}`)
   const clipPrompts = inp.chat && inp.tools && allKinds.includes('clip') ? await writeClipPrompts(allBeats, allKinds, card, p, inp.chat, brand, motif, plan.look.style, say) : new Map<number, string>()
   const clipSec = clipSeconds(targetSec)
@@ -543,6 +563,14 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
     const wanted = wantedOf(i)
     const sec = secOf(i)
     check()
+    const keep = kept[i]
+    if (keep) {
+      const clipped = keep.some((s) => s.kind === 'clip')
+      pieces.push({ kind: 'montage', file: '', shots: keep, text: b.line, chapter: i === 0 ? '' : b.chapter, pcm, sec: Math.max(sec, clipped ? clipSec : 0) })
+      made.push({ id, wanted, made: clipped ? 'clip' : 'image', line: b.line, attempts: 1, reused: true })
+      if (i > 0) stickers.push({ piece: pieces.length - 1, text: b.headline, icon: iconFor(`${b.headline} ${b.line}`) })
+      continue
+    }
     let fellBack = chosen.why.get(id) ?? chosen.why.get(b.pointId ?? '')
     let attempts = 0
     const shots: PieceShot[] = []
@@ -597,7 +625,7 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
   const aiModel = modelPick && !/^(none|builtin(:.*)?)$/.test(modelPick) ? modelPick : undefined
   // the person described the music (a style, vocals, instruments, sounds): their words, not a mood template, make the brief
   const described = !plan.music.none && (!!plan.music.description.trim() || !!plan.music.genre || plan.music.vocals !== 'none' || plan.music.instruments.length > 0 || plan.music.ambience.length > 0)
-  if (inp.chat && !noMusic && !described) {
+  if (inp.chat && !noMusic && !described && !inp.reuse?.musicMood) {
     try {
       choice = await chooseMusic({ chat: inp.chat, context: `${card.title}. ${card.solution}`, mode: 'launch', targetSec, secrets: [], say })
     } catch {
@@ -620,17 +648,24 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
   made.push({ id: 'close', wanted: 'close', made: 'scene', line: closeText, attempts: 1 })
   elements.push('Animated scenes (HTML/canvas)')
 
-  const wantAiMusic = !noMusic && inp.aiMusic && !!inp.tools?.music && modelPick !== 'builtin:procedural'
+  const keptMusic = !noMusic && inp.reuse?.music && existsSync(inp.reuse.music) ? inp.reuse.music : undefined
+  const wantAiMusic = !noMusic && (!!keptMusic || (inp.aiMusic && !!inp.tools?.music && modelPick !== 'builtin:procedural'))
+  const style = inp.reuse?.style ?? {}
   const out = await assemble({
     dir: inp.runDir,
     size: frame,
     pieces,
     title: card.title,
-    musicMood: choice?.mood,
+    musicMood: choice?.mood ?? (inp.reuse?.musicMood as MusicChoice['mood'] | undefined),
     noMusic,
-    overlays: { accent: p.brand.accent ?? 'f5a524', hook: script.hook, stickers },
+    overlays: { accent: p.brand.accent ?? 'f5a524', hook: style.hook === false ? undefined : script.hook, stickers: style.stickers === false ? [] : stickers, captionColor: style.captionColor, captionScale: style.captionScale },
     aiMusic: wantAiMusic
       ? async ({ cuts, total }) => {
+          if (keptMusic) {
+            const file = join(inp.runDir, 'music.mp3')
+            if (file !== keptMusic) copyFileSync(keptMusic, file)
+            return decodeStereo(file)
+          }
           const spec = { title: card.title, musicMood: choice?.mood ?? 'corporate', design: { look: 'social' }, voiceover: ['x'], narration: [] } as unknown as VideoSpec
           const brief = described
             ? musicPrompt(plan.music, total, !!speech)
@@ -647,6 +682,19 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
   else if (out.musicSource === 'builtin') elements.push('Built-in score')
   if (p.brand.colors.length) notes.push(`Brand colours from ${p.domain}: ${p.brand.colors.slice(0, 3).join(', ')}`)
   if (choice) notes.push(`Music: ${choice.mood} — ${choice.why}`)
+  const musicModel = out.musicSource === 'ai' ? (keptMusic ? inp.reuse?.musicModel : aiModel) : undefined
+  // what the film is made of, so it can be made again with a few changes
+  writeFilmRecord(inp.runDir, {
+    version: 1,
+    script,
+    parts: allBeats.map((b, i) => ({ id: partId(i), headline: b.headline, line: b.line, kind: made[i]?.made ?? 'scene', shots: (pieces[i]?.shots ?? []).filter((s) => s.kind !== 'scene'), ...(b.visual ? { visual: b.visual } : {}) })),
+    voices,
+    music: { source: out.musicSource, ...(out.musicSource === 'ai' && existsSync(join(inp.runDir, 'music.mp3')) ? { file: join(inp.runDir, 'music.mp3') } : {}), ...(musicModel ? { model: musicModel } : {}), ...(choice?.mood ?? inp.reuse?.musicMood ? { mood: choice?.mood ?? inp.reuse?.musicMood } : {}) },
+    frame,
+    style,
+    targetSec,
+    durationSec: out.durationSec
+  })
   return {
     file: out.file,
     durationSec: out.durationSec,
@@ -655,8 +703,9 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
     made,
     dropped: fitted.dropped,
     musicSource: out.musicSource,
-    ...(out.musicSource === 'ai' && aiModel ? { musicModel: aiModel } : {}),
+    ...(musicModel ? { musicModel } : {}),
     voiced: !!speech,
-    written
+    written,
+    ...(inp.reuse ? { reused: { voices: voicesReused, parts: kept.map((k, i) => (k ? partId(i) : '')).filter(Boolean), music: !!keptMusic && out.musicSource === 'ai' } } : {})
   }
 }
