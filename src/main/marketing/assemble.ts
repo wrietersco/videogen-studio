@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildCaptions, readSec } from '../appRecon/produce'
+import { readSec } from '../appRecon/produce'
+import { buildMarketingAss, renderBadge, type IconName, type Sticker } from './overlays'
 import { duck } from '../audio/mix'
 import { ffmpegBin, loudnorm, mixIn, SR, stereo, writeWav, type Stereo } from '../audio/pcm'
 import { scoreMusic } from '../audio/score'
@@ -17,7 +18,7 @@ import type { VideoSpec } from '@shared/spec'
 
 export interface FilmPiece {
   /** where the picture comes from: a rendered scene, a still that slowly zooms, or an AI clip */
-  kind: 'scene' | 'still' | 'clip'
+  kind: 'scene' | 'still' | 'clip' | 'montage'
   file: string
   /** what is said over this piece (also the captions) */
   text: string
@@ -33,6 +34,30 @@ export interface FilmPiece {
   clipSec?: number
   /** fade to black at the very end of the film */
   fadeOut?: boolean
+  /** a slow push-in over the whole piece, so a still card never looks stuck */
+  push?: boolean
+  /** a montage: several different shots under this piece's line of voice (replaces `file`) */
+  shots?: PieceShot[]
+}
+
+export interface PieceShot {
+  kind: 'scene' | 'still' | 'clip'
+  file: string
+  /** a clip's or scene's own length in seconds */
+  sec?: number
+}
+
+export interface Overlays {
+  /** the brand accent, hex */
+  accent: string
+  /** the opening line, shown big for the first moments */
+  hook?: string
+  /** a sticker (and optionally an icon badge) for the point of a piece */
+  stickers?: Array<{ piece: number; text: string; icon?: IconName }>
+  /** the progress bar along the top (default on) */
+  progress?: boolean
+  /** a soft vignette (default on) */
+  vignette?: boolean
 }
 
 export interface AssembleInput {
@@ -43,6 +68,7 @@ export interface AssembleInput {
   aiMusic?: (info: { cuts: number[]; total: number }) => Promise<Stereo | null>
   /** the person wants no music: neither the AI track nor the built-in score */
   noMusic?: boolean
+  overlays?: Overlays
   keep?: boolean
   log?: (message: string) => void
   /** the film's frame (default 1920×1080) */
@@ -123,33 +149,109 @@ export async function assemble(inp: AssembleInput): Promise<AssembleResult> {
   writeWav(wav, bus)
   loudnorm(wav, mix)
 
-  // ---- captions: the spoken words of every piece, in reading-sized chunks
-  const beats = inp.pieces.map((p, i) => ({ start: starts[i], end: starts[i] + durs[i], voiceStart: starts[i] + (i === 0 ? 0.5 : X + 0.15), voiceSec: spoken(p), text: p.text, chapter: p.chapter ?? '', index: p.chapter ? i + 1 : 0 }))
+  // ---- captions, hook, stickers: written as subtitle events and drawn over the picture
   const W = inp.size?.width ?? 1920
   const H = inp.size?.height ?? 1080
-  const ass = buildCaptions(beats, W, H)
+  const accent = `#${(inp.overlays?.accent ?? 'f5a524').replace('#', '')}`
+  const voiceAt = (i: number) => starts[i] + (i === 0 ? 0.5 : X + 0.15)
+  const stickers: Sticker[] = []
+  const badges: Array<{ file: string; start: number; end: number }> = []
+  for (const s of inp.overlays?.stickers ?? []) {
+    if (s.piece <= 0 || s.piece >= inp.pieces.length) continue
+    const start = starts[s.piece] + X + 0.1
+    const end = Math.min(start + 2.6, starts[s.piece] + durs[s.piece] - 0.25)
+    if (end - start < 0.8) continue
+    stickers.push({ start, end, text: s.text })
+    if (s.icon) badges.push({ file: await renderBadge(s.icon, accent, join(inp.dir, `badge-${s.piece}-${s.icon}.png`), 320), start, end })
+  }
+  const ass = buildMarketingAss({
+    W, H, accent,
+    beats: inp.pieces.map((p, i) => ({ voiceStart: voiceAt(i), voiceSec: spoken(p), text: p.text })),
+    hook: inp.overlays?.hook,
+    stickers
+  })
   const captionsFile = join(inp.dir, 'captions.ass')
   writeFileSync(captionsFile, ass)
 
   // ---- picture: every piece normalised to the same frame, then dissolved into the next
   const inputs: string[] = []
   const graph: string[] = []
+  let nIn = 0
+  const addInput = (...args: string[]): number => {
+    inputs.push(...args)
+    return nIn++
+  }
+  const sc = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}`
+  /** one picture, moved slowly: pushed in, pulled out, or panned across — never the same twice in a row */
+  const still = (file: string, d: number, variant: number, label: string): void => {
+    const i = addInput('-loop', '1', '-framerate', '30', '-i', file)
+    const F = Math.max(1, Math.round(d * 30))
+    const W2 = Math.round(W * 1.25)
+    const H2 = Math.round(H * 1.25)
+    const moves = [
+      { z: `1+0.12*on/${F}`, x: 'iw/2-iw/zoom/2', y: 'ih/2-ih/zoom/2' },
+      { z: `1.12-0.12*on/${F}`, x: 'iw/2-iw/zoom/2', y: 'ih/2-ih/zoom/2' },
+      { z: '1.14', x: `(iw-iw/zoom)*on/${F}`, y: 'ih/2-ih/zoom/2' },
+      { z: '1.14', x: `(iw-iw/zoom)*(1-on/${F})`, y: 'ih/2-ih/zoom/2' }
+    ]
+    const m = moves[variant % moves.length]
+    graph.push(`[${i}:v]scale=${W2}:${H2}:force_original_aspect_ratio=increase,crop=${W2}:${H2},zoompan=z='${m.z}':x='${m.x}':y='${m.y}':d=1:s=${W}x${H}:fps=30,${norm},trim=duration=${num(d)},setpts=PTS-STARTPTS,settb=1/30[${label}]`)
+  }
+  /** a clip: when the voice outlasts it, it plays forward and back instead of freezing on its last frame */
+  const clip = (file: string, d: number, own: number, label: string): void => {
+    const i = addInput('-i', file)
+    const len = Math.min(own, d)
+    if (d - len > 0.4 && len > 1) {
+      const rest = Math.max(0, d - 2 * len)
+      graph.push(`[${i}:v]${sc},${norm},trim=duration=${num(len)},setpts=PTS-STARTPTS,split[c${label}a][c${label}b];[c${label}b]reverse[c${label}r];[c${label}a][c${label}r]concat=n=2:v=1:a=0${rest > 0 ? `,tpad=stop_mode=clone:stop_duration=${num(rest + 0.2)}` : ''},trim=duration=${num(d)},setpts=PTS-STARTPTS,settb=1/30[${label}]`)
+    } else {
+      graph.push(`[${i}:v]${sc},${norm},tpad=stop_mode=clone:stop_duration=${num(Math.max(0, d - len) + 0.2)},trim=duration=${num(d)},setpts=PTS-STARTPTS,settb=1/30[${label}]`)
+    }
+  }
+  /** a rendered scene, its last frame held when it is shorter than its slot */
+  const scene = (file: string, d: number, own: number, label: string, fadeOut = false, push = false): void => {
+    const i = addInput('-i', file)
+    const F = Math.max(1, Math.round(d * 30))
+    const move = push ? `,scale=${Math.round(W * 1.12)}:${Math.round(H * 1.12)},zoompan=z='1+0.07*on/${F}':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s=${W}x${H}:fps=30,${norm}` : ''
+    graph.push(`[${i}:v]scale=${W}:${H},${norm},tpad=stop_mode=clone:stop_duration=${num(Math.max(0, d - own) + 0.3)},trim=duration=${num(d)},setpts=PTS-STARTPTS${move}${fadeOut ? `,fade=t=out:st=${num(d - 0.8)}:d=0.8` : ''},settb=1/30[${label}]`)
+  }
+  const IN = 0.4
+  const CUTS = ['fade', 'slideleft', 'zoomin', 'smoothleft', 'fade', 'circleopen']
+  let variant = 0
   const labels: string[] = []
   inp.pieces.forEach((p, i) => {
     const label = `p${i}`
-    if (p.kind === 'still') {
-      // one picture, pushed slowly into: the zoom grows frame by frame over the whole piece
-      const frames = Math.max(1, Math.round(durs[i] * 30))
-      inputs.push('-loop', '1', '-framerate', '30', '-i', p.file)
-      graph.push(`[${i}:v]scale=${Math.round(W * 1.25)}:${Math.round(H * 1.25)}:force_original_aspect_ratio=increase,crop=${Math.round(W * 1.25)}:${Math.round(H * 1.25)},zoompan=z='1+0.10*on/${frames}':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s=${W}x${H}:fps=30,${norm},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[${label}]`)
+    if (p.shots?.length) {
+      // several different shots under one line of voice, dissolving or cutting into each other
+      const n = p.shots.length
+      const need = durs[i] + (n - 1) * IN
+      const heroes = p.shots.filter((s) => s.kind === 'clip')
+      const others = n - heroes.length
+      const heroSec = (s: PieceShot) => Math.min(s.sec ?? need, others ? need * 0.6 : need)
+      const left = need - heroes.reduce((a, s) => a + heroSec(s), 0)
+      const secs = p.shots.map((s) => (s.kind === 'clip' ? heroSec(s) : Math.max(1.6, left / Math.max(1, others))))
+      const scale = need / secs.reduce((a, x) => a + x, 0)
+      const ds = secs.map((x) => x * scale)
+      p.shots.forEach((s, j) => {
+        const l = `s${i}_${j}`
+        if (s.kind === 'still') still(s.file, ds[j], variant++, l)
+        else if (s.kind === 'clip') clip(s.file, ds[j], s.sec ?? ds[j], l)
+        else scene(s.file, ds[j], s.sec ?? ds[j], l)
+      })
+      let cur = `s${i}_0`
+      let off = 0
+      for (let j = 1; j < n; j++) {
+        off += ds[j - 1] - IN
+        graph.push(`[${cur}][s${i}_${j}]xfade=transition=${CUTS[(i + j) % CUTS.length]}:duration=${IN}:offset=${num(off)}[m${i}_${j}]`)
+        cur = `m${i}_${j}`
+      }
+      graph.push(`[${cur}]trim=duration=${num(durs[i])},setpts=PTS-STARTPTS${p.fadeOut ? `,fade=t=out:st=${num(durs[i] - 0.8)}:d=0.8` : ''},settb=1/30[${label}]`)
+    } else if (p.kind === 'still') {
+      still(p.file, durs[i], variant++, label)
     } else if (p.kind === 'clip') {
-      const hold = Math.max(0, durs[i] - (p.clipSec ?? durs[i])) + 0.2
-      inputs.push('-i', p.file)
-      graph.push(`[${i}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},${norm},tpad=stop_mode=clone:stop_duration=${num(hold)},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS[${label}]`)
+      clip(p.file, durs[i], p.clipSec ?? durs[i], label)
     } else {
-      const hold = Math.max(0, durs[i] - (p.srcSec ?? durs[i])) + 0.3
-      inputs.push('-i', p.file)
-      graph.push(`[${i}:v]scale=${W}:${H},${norm},tpad=stop_mode=clone:stop_duration=${num(hold)},trim=duration=${num(durs[i])},setpts=PTS-STARTPTS${p.fadeOut ? `,fade=t=out:st=${num(durs[i] - 0.8)}:d=0.8` : ''}[${label}]`)
+      scene(p.file, durs[i], p.srcSec ?? durs[i], label, p.fadeOut, p.push)
     }
     labels.push(label)
   })
@@ -158,11 +260,32 @@ export async function assemble(inp: AssembleInput): Promise<AssembleResult> {
     graph.push(`[${last}][${labels[i]}]xfade=transition=fade:duration=${X}:offset=${num(starts[i])}[x${i}]`)
     last = `x${i}`
   }
-  graph.push(`[${last}]subtitles='${filterPath(captionsFile)}',format=yuv420p[v]`)
+  // ---- effects: a soft vignette, a progress bar along the top, the icon badges popping in, then the subtitles
+  let tail = `${last}`
+  if (inp.overlays?.vignette !== false) {
+    graph.push(`[${tail}]vignette=PI/6[vg]`)
+    tail = 'vg'
+  }
+  if (inp.overlays?.progress !== false) {
+    const bar = addInput('-f', 'lavfi', '-i', `color=c=${accent.replace('#', '0x')}:s=${W}x${Math.max(8, Math.round(H * 0.006))}:r=30:d=${num(total)}`)
+    graph.push(`[${bar}:v]format=rgba[bar]`)
+    graph.push(`[${tail}][bar]overlay=x='-w+w*t/${num(total)}':y=0:eval=frame[pb]`)
+    tail = 'pb'
+  }
+  const BS = Math.round(W * (H > W ? 0.2 : 0.11))
+  badges.forEach((b, k) => {
+    const ic = addInput('-loop', '1', '-framerate', '30', '-t', num(total), '-i', b.file)
+    // the badge grows in with a small overshoot and shrinks away at the end
+    const grow = `min(1,(t-${num(b.start)})/0.2)+0.12*max(0,sin((t-${num(b.start)})/0.2*PI))`
+    const shrink = `min(1,(${num(b.end)}-t)/0.18)`
+    graph.push(`[${ic}:v]format=rgba,setpts=PTS+${num(b.start)}/TB,scale=w='max(2,${BS}*(${grow})*${shrink})':h=-2:eval=frame[ic${k}]`)
+    graph.push(`[${tail}][ic${k}]overlay=x='(W-w)/2':y='${Math.round(H * (H > W ? 0.205 : 0.22))}-h/2':eval=frame:enable='between(t,${num(b.start)},${num(b.end)})'[bd${k}]`)
+    tail = `bd${k}`
+  })
+  graph.push(`[${tail}]subtitles='${filterPath(captionsFile)}',format=yuv420p[v]`)
   const script = join(inp.dir, 'graph.txt')
   writeFileSync(script, graph.join(';'))
-  inputs.push('-i', mix)
-  const audioIdx = inp.pieces.length
+  const audioIdx = addInput('-i', mix)
   const file = join(inp.dir, 'marketing.mp4')
   ffmpeg(
     [...inputs, '-filter_complex_script', script, '-map', '[v]', '-map', `${audioIdx}:a`, '-t', num(total), '-c:v', 'libx264', '-crf', '17', '-preset', 'medium', '-c:a', 'copy', '-movflags', '+faststart', file],

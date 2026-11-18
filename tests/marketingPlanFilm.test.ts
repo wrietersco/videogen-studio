@@ -90,7 +90,7 @@ describe.skipIf(!canFilm)('a film made from a brief (stand-in models)', () => {
 
   const BRIEF = 'Open with an AI video of a leaking pipe at night. Say we answer calls within the hour. Show an AI video of the plumber arriving. Show an AI video of the repair. Do not mention prices. Arabic music with vocals and duff only. About 20 seconds for TikTok. End with Book a free visit.'
 
-  it('makes what the brief asked, says why a clip became a card, and the music follows the chosen model', async () => {
+  it('makes what the brief asked, says why a clip became pictures, and the music follows the chosen model', async () => {
     const plan = readMarketBriefByRules({ brief: BRIEF, business, card: { title: card.title, problem: card.problem, solution: card.solution, cta: card.cta, targetSec: card.targetSec } })
     expect(plan.platform).toBe('tiktok')
     const out = await runMarketingFilm({
@@ -102,13 +102,13 @@ describe.skipIf(!canFilm)('a film made from a brief (stand-in models)', () => {
     // a tall film, because the brief said TikTok
     const probe = spawnSync(ffmpegBin(), ['-i', out.file, '-f', 'null', '-'], { encoding: 'utf8' })
     expect(probe.stderr).toMatch(/Video: h264.*1080x1920/)
-    // the person's clips come first: the problem and the first asked-for point; the third could not be made (the plan allows two)
+    // the person's clips come first: the problem and the first asked-for point; the third becomes pictures (the plan allows two)
     expect(calls.filter((c) => c === 'clip')).toHaveLength(2)
     const by = (id: string) => out.made.find((m) => m.id === id)!
     expect(by('problem')).toMatchObject({ wanted: 'clip', made: 'clip' })
     const clipPoints = out.made.filter((m) => m.wanted === 'clip' && m.id !== 'problem')
     expect(clipPoints.filter((m) => m.made === 'clip')).toHaveLength(1)
-    const fallen = clipPoints.find((m) => m.made === 'scene')!
+    const fallen = clipPoints.find((m) => m.made === 'image')!
     expect(fallen.fellBack).toMatch(/no more AI clips/)
     // the music is the described one, from the chosen model
     expect(musicAsks).toHaveLength(1)
@@ -122,7 +122,7 @@ describe.skipIf(!canFilm)('a film made from a brief (stand-in models)', () => {
     // the review tells the truth about the clip that became a card
     const review = reviewFilm(plan, { made: out.made, dropped: out.dropped, durationSec: out.durationSec, musicSource: out.musicSource, voiced: out.voiced, written: out.written })
     const report = buildReport(plan, { assignment: {}, answers: [] }, review, out.durationSec)
-    expect(report.shortfalls.join(' ')).toMatch(/AI video clip.*animated card/)
+    expect(report.shortfalls.join(' ')).toMatch(/AI video clip.*AI picture/)
   }, 420000)
 
   it('no music and no voice when the person chose them off', async () => {

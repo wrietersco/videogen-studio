@@ -81,13 +81,13 @@ describe('the film helpers', () => {
     const tools = { clip: async () => ({ file: 'x' }), still: async () => ({ file: 'y' }), music: async () => Buffer.alloc(0) } as unknown as MediaTools
     const r = chooseElements(beats, plan, { tools, maxClips: 2, noClips: false })
     expect(r.problem).toBe('clip')
-    expect(r.kinds).toEqual(['clip', 'scene', 'still'])
+    expect(r.kinds).toEqual(['clip', 'still', 'still'])
     expect(r.why.get('p2')).toMatch(/no more AI clips/)
     const none = chooseElements(beats, plan, { tools: null, maxClips: 2, noClips: false })
     expect(none.problem).toBe('scene')
     expect(none.why.get('problem')).toMatch(/not available/)
     const off = chooseElements(beats, plan, { tools, maxClips: 2, noClips: true })
-    expect(off.kinds).toEqual(['scene', 'scene', 'still'])
+    expect(off.kinds).toEqual(['still', 'still', 'still'])
     expect(off.why.get('p1')).toMatch(/drawn scenes/)
   })
 })
@@ -141,5 +141,33 @@ describe('REVIEW: what was asked against what was made', () => {
   it('a point dropped for length is reported as skipped', () => {
     const r = reviewFilm(plan, { made: made.filter((m) => m.id !== 'p2'), dropped: ['p2'], durationSec: 21, musicSource: 'ai', voiced: true, written: true })
     expect(r.checks.find((c) => c.segment === 'p2')!.status).toBe('skipped')
+  })
+})
+
+describe('the length asked for sets how much is said (seen live: a 20s brief made a 36s film)', () => {
+  it('a short film gets short lines; a card with no brief keeps the usual ranges', async () => {
+    const { wordBudget, shortenTo } = await import('../src/main/marketing/film')
+    const short = wordBudget(20, 2, true)
+    expect(short.problemMax).toBeLessThanOrEqual(14)
+    expect(Number(short.beat.split(' to ')[1])).toBeLessThanOrEqual(14)
+    expect(wordBudget(25, 3, false)).toMatchObject({ problem: '20 to 32', beat: '14 to 22' })
+    const long = "You're tired of store-bought biscuits that are dry and hard. You want something soft and indulgent but don't want to bake it yourself. After a long day, a warm, gooey treat feels impossible to find."
+    expect(shortenTo(long, 12).split(/\s+/).length).toBeLessThanOrEqual(16)
+    expect(shortenTo(long, 12)).toMatch(/hard\.$/)
+    expect(shortenTo('A short line.', 12)).toBe('A short line.')
+  })
+})
+
+describe('captions read on a dark picture (seen live: a dark brown brand colour faded spoken words away)', () => {
+  it('brightens a dark colour and leaves a light one alone', async () => {
+    const { brighten, iconFor, chunkWords, hookLines } = await import('../src/main/marketing/overlays')
+    const lum = (hex: string) => (0.299 * parseInt(hex.slice(0, 2), 16) + 0.587 * parseInt(hex.slice(2, 4), 16) + 0.114 * parseInt(hex.slice(4, 6), 16)) / 255
+    expect(lum(brighten('#844925'))).toBeGreaterThanOrEqual(0.6)
+    expect(brighten('#ffd54a')).toBe('ffd54a')
+    expect(iconFor('Baked fresh, delivered warm')).toBe('truck')
+    expect(iconFor('Order on WhatsApp')).toBe('chat')
+    expect(iconFor('Something unrelated')).toBe('check')
+    expect(chunkWords('You are tired of dry, hard biscuits.', 3).every((c) => c.length <= 3)).toBe(true)
+    expect(hookLines('Craving a warm, gooey cookie?')).toEqual(['CRAVING A WARM,', 'GOOEY COOKIE?'])
   })
 })

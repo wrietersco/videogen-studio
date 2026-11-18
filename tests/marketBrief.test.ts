@@ -134,6 +134,37 @@ describe('the AI reading', () => {
   })
 })
 
+describe('a writer that rewords is not an instruction lost (seen live on a cookie shop)', () => {
+  it('"Tell people they can order on WhatsApp" is carried by a point; "End with X" by the closing line', async () => {
+    const typed = 'Open with an AI video of a warm cookie being broken in half. Say it is baked to order one day ahead and delivered warm to your office or home. Tell people they can order on WhatsApp for any occasion. Do not mention prices. End with Order on WhatsApp.'
+    const chat = {
+      generateJSON: async () => ({
+        problem: { say: 'You cannot find a warm gooey treat', said: 'Open with an AI video of a warm cookie being broken in half', show: 'clip', visual: 'A warm cookie being broken in half.' },
+        points: [
+          { say: 'It is baked to order one day ahead and delivered warm to your office or home.', said: 'Say it is baked to order one day ahead and delivered warm to your office or home.', show: 'any', required: true },
+          { say: 'You can order on WhatsApp for any occasion.', said: 'They can order on WhatsApp for any occasion.', show: 'any', required: true }
+        ],
+        close: { say: 'Oye Cookie. Order on WhatsApp.', cta: 'Order on WhatsApp', said: 'Order on WhatsApp' },
+        avoid: ['prices'],
+        unplaced: ['Tell people they can order on WhatsApp for any occasion.', 'End with Order on WhatsApp.']
+      })
+    } as unknown as LLMProvider
+    const plan = await readMarketBrief(input(typed), { chat })
+    expect(plan.unplaced).toEqual([])
+  })
+  it('but an instruction nothing carries is still listed', async () => {
+    const chat = {
+      generateJSON: async () => ({
+        problem: { say: 'A pipe bursts', show: 'scene' },
+        points: [{ say: 'We answer calls within the hour', said: 'Say we answer calls within the hour', show: 'any', required: true }],
+        close: { cta: 'Call us now' }
+      })
+    } as unknown as LLMProvider
+    const plan = await readMarketBrief(input('Say we answer calls within the hour. Make the logo spin around slowly.'), { chat })
+    expect(plan.unplaced.join(' ')).toMatch(/logo spin/)
+  })
+})
+
 describe('the brief on a card', () => {
   it('keeps line breaks, drops stray spaces and is capped', () => {
     expect(cleanBrief('  one  two \r\n\r\n\r\n\r\n three\t ')).toBe('one two\n\nthree')

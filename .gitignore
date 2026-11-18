@@ -17,3 +17,6 @@ library/
 .env
 /brand/
 /app-recordings/
+
+# Market my business data written by the dev app
+business-profiles/

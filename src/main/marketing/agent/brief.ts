@@ -374,5 +374,20 @@ export async function readMarketBrief(input: MarketBriefInput, deps: { chat: LLM
 /** the honesty pass: what the plan does not carry is listed word for word */
 export function withUnplaced(typed: string, plan: MarketPlan, name: string): MarketPlan {
   const checked = accountFor(typed, toFilmPlan(plan, name))
-  return { ...plan, unplaced: checked.unplaced }
+  // the writer rewords: "Tell people they can order on WhatsApp" is carried by a point that says "You can order on WhatsApp"
+  const have = new Set(planWords(plan))
+  const carried = (u: string): boolean => {
+    const w = contentWords(u)
+    return w.length > 0 && w.filter((x) => have.has(x)).length / w.length >= 0.75
+  }
+  return { ...plan, unplaced: checked.unplaced.filter((u) => !carried(u)) }
+}
+
+const LEADS = new Set('tell say end ending close closing finish open opening start begin show mention explain people tell make sure that they with for any and then also please film video clip'.split(' '))
+const stemW = (w: string): string => (w.length > 5 ? w.replace(/(?:ing|ed|es|s)$/, '') : w)
+const contentWords = (s: string): string[] => s.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 3 && !LEADS.has(w)).map(stemW)
+/** every meaningful word the plan says */
+function planWords(plan: MarketPlan): string[] {
+  const all = [plan.goal, plan.audience ?? '', plan.service ?? '', plan.problem.say, plan.problem.said, plan.problem.visual ?? '', plan.close.say, plan.close.cta, plan.close.said, plan.music.description, plan.music.genre ?? '', ...plan.music.instruments, ...plan.avoid, plan.voice.tone ?? '', plan.voice.language ?? '', ...plan.points.flatMap((p) => [p.say, p.said, p.visual ?? ''])]
+  return all.flatMap(contentWords)
 }

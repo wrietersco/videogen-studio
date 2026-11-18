@@ -14,7 +14,8 @@ import type { LLMProvider, SpeechProvider } from '../providers/types'
 import type { BusinessProfile, MarketStage, VideoCard } from '@shared/marketing'
 import type { JobAssignment } from '@shared/agentBrief'
 import type { MadePart, MarketPlan, Show } from '@shared/marketBrief'
-import { assemble, type FilmPiece } from './assemble'
+import { assemble, type FilmPiece, type PieceShot } from './assemble'
+import { iconFor, type IconName } from './overlays'
 import { planFromCard } from './agent/brief'
 import { filmFrame } from '@shared/shapes'
 
@@ -97,6 +98,8 @@ interface Script {
   beats: Beat[]
   /** the last words: the business and the next step */
   close: string
+  /** the opening line shown big in the first seconds (3 to 7 words) */
+  hook?: string
 }
 
 type Kind = 'scene' | 'still' | 'clip'
@@ -131,9 +134,10 @@ function stockScript(card: VideoCard, p: BusinessProfile, plan: MarketPlan, max:
   while (beats.length < 2) beats.push({ headline: beats.length === 0 ? 'The fix' : 'What you get', line: beats.length === 0 ? clean(card.solution, 220) : `With ${p.name}, ${p.tagline.toLowerCase()}.`, chapter: beats.length === 0 ? 'The fix' : 'What you get' })
   return {
     problemHeadline: neutralProblemTitle(`${plan.problem.say} ${card.title}`),
-    problemLine: clean(plan.problem.say, 300),
+    problemLine: plan.source === 'card' ? clean(plan.problem.say, 300) : shortenTo(clean(plan.problem.say, 300), wordBudget(plan.targetSec ?? card.targetSec, beats.length, true).problemMax),
     beats,
-    close: clean(plan.close.say || `${p.name}. ${plan.close.cta}.`, 160)
+    close: clean(plan.close.say || `${p.name}. ${plan.close.cta}.`, 160),
+    hook: neutralProblemTitle(`${plan.problem.say} ${card.title}`)
   }
 }
 
@@ -150,18 +154,20 @@ async function writeScript(card: VideoCard, p: BusinessProfile, chat: LLMProvide
   const facts = [p.about, ...(service ? [`${service.name}: ${service.summary}`, ...service.benefits.map((b) => `Benefit: ${b}`)] : p.services.slice(0, 2).map((s) => `${s.name}: ${s.summary}`))].slice(0, 8)
   const n = stock.beats.length
   const secs = plan.targetSec ?? card.targetSec
-  const r = await chat.generateJSON<{ problemHeadline: string; problemLine: string; beats: Array<{ headline: string; line: string; chapter: string }>; close: string }>({
+  const w = wordBudget(secs, n, plan.source !== 'card')
+  const r = await chat.generateJSON<{ hook?: string; problemHeadline: string; problemLine: string; beats: Array<{ headline: string; line: string; chapter: string }>; close: string }>({
     system:
       `You write the voice-over of a ${secs}-second problem–solution brand film${plan.voice.language ? `, spoken in ${plan.voice.language}` : ''}. Plain, ${plan.voice.tone ?? 'warm, confident'} spoken words; no jargon, no hype words, no invented claims or numbers. The problem is the customer's everyday trouble in their own words — it never names the business or any service. The answer then arrives, concretely, and the last line is the business name with one small next step.` +
       (plan.avoid.length ? ` NEVER mention or hint at: ${plan.avoid.join(', ')}.` : ''),
     prompt:
       `Business: ${p.name} — ${p.tagline}\nWhat it does: ${p.about}\nTrue facts to draw on (information only):\n${facts.map((f) => `- ${f}`).join('\n')}\n\nThe video concept:\nTitle: ${card.title}\nThe customer's trouble: ${plan.problem.say}\nThe answer: ${card.solution}\nNext step: ${plan.close.cta}\n${plan.audience ? `For: ${plan.audience}\n` : ''}\n` +
       `The beats, in this order — write exactly ${n}, one per point, each carrying that point in your own warm words (keep any specific words the person gave):\n${stock.beats.map((b, i) => `${i + 1}. ${plan.points.find((x) => x.id === b.pointId)?.say ?? b.line}`).join('\n')}\n\n` +
-      `Write: problemHeadline — 2 to 4 words (at most 26 characters) naming the trouble, never the business or the answer; problemLine — 20 to 32 words of that trouble ending on the tension; then ${n} beats, each: headline (3 to 6 words shown on screen), line (14 to 22 words spoken), chapter (2 to 4 words); then close — 8 to 14 words ending on the call to action, naming the business once.`,
+      `Write: hook — 3 to 7 words that stop a thumb mid-scroll: a vivid question or a surprising promise about the customer's trouble or craving, never the business name, no hashtags; problemHeadline — 2 to 4 words (at most 26 characters) naming the trouble, never the business or the answer; problemLine — ${w.problem} words of that trouble ending on the tension; then ${n} beats, each: headline (3 to 6 words shown on screen), line (${w.beat} words spoken), chapter (2 to 4 words); then close — 8 to 14 words ending on the call to action, naming the business once.`,
     schemaName: 'marketing_script',
     jsonSchema: {
       type: 'object',
       properties: {
+        hook: { type: 'string' },
         problemHeadline: { type: 'string' },
         problemLine: { type: 'string' },
         beats: { type: 'array', items: { type: 'object', properties: { headline: { type: 'string' }, line: { type: 'string' }, chapter: { type: 'string' } }, required: ['headline', 'line', 'chapter'] } },
@@ -191,7 +197,30 @@ async function writeScript(card: VideoCard, p: BusinessProfile, chat: LLMProvide
   })
   let close = clean(r.close, 180)
   if (!close || hit(close) || !scanNarration(close, check).ok) close = stock.close
-  return { problemHeadline: headline, problemLine, beats, close }
+  let hook = clean(r.hook ?? '', 70).replace(/[#@]/g, '')
+  if (!hook || hit(hook) || !scanNarration(hook, check).ok || hook.split(' ').length > 9) hook = stock.hook ?? ''
+  return { hook, problemHeadline: headline, problemLine: plan.source === 'card' ? problemLine : shortenTo(problemLine, w.problemMax), beats, close }
+}
+
+/** how many words each spoken part may have so the film lands near the length asked (a card with no brief keeps the usual ranges) */
+export function wordBudget(targetSec: number, beats: number, fitted: boolean): { problem: string; beat: string; problemMax: number } {
+  if (!fitted) return { problem: '20 to 32', beat: '14 to 22', problemMax: 400 }
+  // about 2.5 spoken words a second; the closing line and the pauses between parts take about 7 seconds
+  const total = Math.max(30, (targetSec - 7) * 2.5)
+  const problemMax = Math.round(Math.min(32, Math.max(10, total * 0.3)))
+  const beat = Math.round(Math.min(22, Math.max(8, (total - problemMax) / Math.max(1, beats))))
+  return { problem: `${Math.max(8, problemMax - 4)} to ${problemMax}`, beat: `${Math.max(6, beat - 3)} to ${beat}`, problemMax }
+}
+
+/** the first sentences of a line that fit in `max` words (the whole line when it already fits) */
+export function shortenTo(line: string, max: number): string {
+  if (line.split(/\s+/).length <= max * 1.3) return line
+  let out = ''
+  for (const s of line.split(/(?<=[.!?])\s+/)) {
+    if (out && (out + ' ' + s).split(/\s+/).length > max * 1.2) break
+    out = out ? `${out} ${s}` : s
+  }
+  return out || line
 }
 
 /** roughly how long a spoken line lasts on the film's clock */
@@ -234,7 +263,7 @@ export function chooseElements(
     if (w === 'clip') {
       if (canClip && clips < opts.maxClips) { clips++; return 'clip' }
       why.set(b.pointId ?? b.headline, clipReason())
-      return 'scene'
+      return opts.tools?.still ? 'still' : 'scene'
     }
     if (w === 'image') {
       if (opts.tools?.still) return 'still'
@@ -247,23 +276,16 @@ export function chooseElements(
   // 3. the engine's own choice for the rest
   if (opts.tools) {
     const CLIP_WORDS = /process|workflow|pipeline|build|create|craft|design|deliver|manage|connect|integrate|automat|install|repair|clean|train|coach|produce|ship|grow|plan|organize|organise|run\b/i
-    const STILL_WORDS = /team|office|studio|kitchen|workshop|clinic|garden|home|room|table|desk|hands?|tools?|material|product|device|machine|plant|dish|plate|field/i
-    let stills = kinds.filter((k) => k === 'still').length
-    const room = (k: Kind): boolean => (k === 'clip' ? canClip && clips < opts.maxClips : k === 'still' ? stills < 2 : true)
+    // with pictures available a beat is told in photographs, never an abstract motif card
+    const room = (k: Kind): boolean => (k === 'clip' ? canClip && clips < opts.maxClips : k === 'still' ? !!opts.tools?.still : true)
     beats.forEach((b, i) => {
       if (kinds[i] !== null) return
       const t = `${b.headline} ${b.line}`
       const prev = kinds[i - 1] ?? undefined
       let kind: Kind
       if (room('clip') && CLIP_WORDS.test(t) && prev !== 'clip') kind = 'clip'
-      else if (room('still') && STILL_WORDS.test(t) && prev !== 'still') kind = 'still'
-      else {
-        // keep the film varied: never the same element twice in a row when there is a choice
-        const order: Kind[] = ['scene', 'still', 'clip']
-        kind = order.find((k) => room(k) && k !== prev) ?? 'scene'
-      }
+      else kind = room('still') ? 'still' : 'scene'
       if (kind === 'clip') clips++
-      if (kind === 'still') stills++
       kinds[i] = kind
     })
   }
@@ -315,6 +337,59 @@ async function writeClipPrompts(beats: Beat[], kinds: Kind[], card: VideoCard, p
     }
   } catch (err) {
     say(`  (the writer could not storyboard the clips: ${(err as Error).message.slice(0, 80)})`)
+  }
+  return out
+}
+
+const MAX_STILLS = 8
+
+/** the settings a bakery, a clinic or a shop is seen in when no writer is there to choose: a home, an office, a celebration */
+const STOCK_SETTINGS = ['in a warm, cosy home on a wooden table by a window', 'on a tidy desk in a bright modern office, colleagues\' hands reaching in', 'at a lively small celebration table with friends gathered around, soft party lights', 'outdoors in soft morning light, on a bench in a calm street']
+
+/** a photograph prompt built without a writer: the beat's idea in a setting that changes from shot to shot */
+function stockMoment(beat: Beat, k: number, brand: { accent?: string; backdrop?: [string, string] }, motif: Motif): string {
+  const look = clipLook('middle', brand, motif)
+  const idea = (beat.visual ?? beat.line).replace(/\.$/, '')
+  return [`A warm, natural photograph illustrating: ${idea}, ${STOCK_SETTINGS[k % STOCK_SETTINGS.length]}.`, 'Close, appetising, real materials, soft natural light, shallow depth of field.', look.palette, NO_TEXT].filter(Boolean).join(' ')
+}
+
+/** the writer's shot list: for each beat, several different photographable moments in different everyday settings */
+async function writeMoments(beats: Beat[], counts: number[], card: VideoCard, p: BusinessProfile, chat: LLMProvider, brand: { accent?: string; backdrop?: [string, string] }, motif: Motif, style: string | null, say: (m: string) => void): Promise<Map<number, string[]>> {
+  const out = new Map<number, string[]>()
+  const idx = beats.map((_, i) => i).filter((i) => counts[i] > 0)
+  for (const i of idx) out.set(i, Array.from({ length: counts[i] }, (_, k) => stockMoment(beats[i], k, brand, motif)))
+  if (!idx.length) return out
+  try {
+    const look = clipLook('middle', brand, motif)
+    const r = await chat.generateJSON<{ beats: Array<{ n: number; moments: string[] }> }>({
+      system:
+        'You direct the photographs of a short brand film. For each line of voice-over you give several DIFFERENT moments, each a single photograph a camera could really take: a concrete subject, a setting and a light. ' +
+        'Vary the SETTING from shot to shot (a home, an office, a celebration, a street, a kitchen, outdoors) so the film feels alive, and stay true to what the business really sells. ' +
+        (style === 'infographic' ? 'The look is clean flat infographic illustration, not photography. ' : 'Warm, natural, appetising, real materials. ') +
+        'FORBIDDEN, always: readable text, letters, numbers, logos, watermarks, screens showing text, close-up faces. Hands, objects and wide scenes are fine. ' +
+        `Use this palette and no other: ${look.palette} ` +
+        'Each moment is 25 to 45 words.',
+      prompt:
+        `Business: ${p.name} — ${p.tagline}\nWhat it does: ${p.about}\nWhat this film sells: ${card.solution}\n\nFor each numbered line, give exactly the number of moments shown:\n${idx.map((i) => `${i + 1}. (${counts[i]} moments) ${beats[i].line}${beats[i].visual ? ` — the person described: ${beats[i].visual}` : ''}`).join('\n')}`,
+      schemaName: 'marketing_moments',
+      jsonSchema: {
+        type: 'object',
+        properties: { beats: { type: 'array', items: { type: 'object', properties: { n: { type: 'integer' }, moments: { type: 'array', items: { type: 'string' } } }, required: ['n', 'moments'] } } },
+        required: ['beats']
+      },
+      temperature: 0.8,
+      maxTokens: 1500
+    })
+    for (const i of idx) {
+      const got = (r.beats ?? []).find((x) => x.n === i + 1)?.moments ?? []
+      const list = out.get(i)!
+      got.slice(0, counts[i]).forEach((m, k) => {
+        const body = clean(m, 400)
+        if (body && !promptIssues(body).length) list[k] = [`${body.replace(/\.*$/, '.')} Photographic.`, look.palette, NO_TEXT].join(' ')
+      })
+    }
+  } catch (err) {
+    say(`  (the writer could not plan the shots: ${(err as Error).message.slice(0, 80)}; plain shots are used)`)
   }
   return out
 }
@@ -438,51 +513,80 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
     return { piece: null, attempts, why }
   }
 
+  // the pictures of a beat: a hero AI clip when one was chosen, then different still photographs (home, office, a celebration…)
+  // with a slow move on each, so nothing sits frozen while the voice goes on
+  const canStill = !!inp.tools?.still
+  const secOf = (i: number): number => {
+    const spoken = spokenSec(i === 0 ? problemPcm : beatPcms[i - 1], allBeats[i].line)
+    return Math.max(4.2, spoken + (i === 0 ? 1.9 : 1.5))
+  }
+  // how many stills each beat wants, spent in film order up to a budget
+  const wantStills: number[] = allBeats.map(() => 0)
+  if (canStill) {
+    let budget = MAX_STILLS
+    allBeats.forEach((_, i) => {
+      const sec = secOf(i)
+      const n = allKinds[i] === 'still' && i > 0 ? Math.max(2, Math.min(4, Math.round(sec / 3.4))) : allKinds[i] === 'clip' ? (sec > clipSec + 1.4 ? Math.min(2, Math.ceil((sec - clipSec) / 3.4)) : 0) : 0
+      wantStills[i] = Math.min(n, budget)
+      budget -= wantStills[i]
+    })
+  }
+  const moments = inp.chat && inp.tools && wantStills.some((n) => n > 0) ? await writeMoments(allBeats, wantStills, card, p, inp.chat, brand, motif, plan.look.style, say) : new Map<number, string[]>()
+  const stillPrompt = (i: number, k: number): string => moments.get(i)?.[k] ?? stockMoment(allBeats[i], k, brand, motif)
+
   const pieces: FilmPiece[] = []
+  const stickers: Array<{ piece: number; text: string; icon: IconName }> = []
   for (let i = 0; i < allBeats.length; i++) {
     const b = allBeats[i]
     const pcm = i === 0 ? problemPcm : beatPcms[i - 1]
-    const spoken = spokenSec(pcm, b.line)
     const id = idOf(i)
     const wanted = wantedOf(i)
+    const sec = secOf(i)
     check()
     let fellBack = chosen.why.get(id) ?? chosen.why.get(b.pointId ?? '')
     let attempts = 0
+    const shots: PieceShot[] = []
+    let hero = false
     if (allKinds[i] === 'clip' && inp.tools) {
       const r = await makeClip(i, pcm)
       attempts = r.attempts
       if (r.piece) {
-        pieces.push(i === 0 ? { ...r.piece, chapter: '', sec: Math.max(r.piece.sec, spoken + 1.9) } : r.piece)
+        shots.push({ kind: 'clip', file: r.piece.file, sec: r.piece.clipSec })
+        hero = true
         elements.push('AI video clip')
         notes.push(`AI clip: ${clean(i === 0 ? 'the problem' : b.headline, 60)}`)
-        made.push({ id, wanted, made: 'clip', line: b.line, attempts })
-        continue
+      } else {
+        fellBack = `the AI clip could not be made (${r.why})`
+        notes.push(`An AI clip for "${clean(i === 0 ? 'the problem' : b.headline, 40)}" could not be made (${r.why}), so ${i === 0 ? 'the problem card' : 'pictures'} are used.`)
       }
-      fellBack = `the AI clip could not be made (${r.why})`
-      notes.push(`An AI clip for "${clean(i === 0 ? 'the problem' : b.headline, 40)}" could not be made (${r.why}), so ${i === 0 ? 'the problem card' : 'an animated point'} is used.`)
     }
-    if (allKinds[i] === 'still' && inp.tools && i > 0) {
-      const s = await checkedStill(inp.tools, stockClipPrompt(b, brand, motif), notes, inp.signal, portrait)
-      attempts = s.attempts
-      if (s.file) {
-        pieces.push({ kind: 'still', file: s.file, text: b.line, chapter: b.chapter, pcm, sec: Math.max(4.2, spoken + 1.4) })
-        elements.push('AI image')
-        made.push({ id, wanted, made: 'image' as MadePart['made'], line: b.line, attempts })
-        continue
+    // a clip that could not be made is still told in pictures when the account can make them
+    const nStills = allKinds[i] === 'clip' && !hero && canStill && i > 0 ? Math.min(3, Math.max(2, Math.round(sec / 3.4))) : wantStills[i]
+    if (inp.tools && nStills > 0) {
+      const made1 = await Promise.all(Array.from({ length: nStills }, (_, k) => checkedStill(inp.tools!, stillPrompt(i, k), notes, inp.signal, portrait)))
+      for (const s of made1) {
+        attempts += s.attempts
+        if (s.file) {
+          shots.push({ kind: 'still', file: s.file })
+          elements.push('AI image')
+        } else if (!fellBack) fellBack = `an AI picture could not be used (${s.why})`
       }
-      fellBack = `the AI picture could not be used (${s.why})`
     }
-    if (i === 0) {
+    if (shots.length) {
+      pieces.push({ kind: 'montage', file: '', shots, text: b.line, chapter: i === 0 ? '' : b.chapter, pcm, sec: Math.max(sec, hero ? clipSec : 0) })
+      made.push({ id, wanted, made: hero ? 'clip' : 'image', line: b.line, ...(wanted === 'clip' && !hero && fellBack ? { fellBack } : {}), attempts: Math.max(1, attempts) })
+    } else if (i === 0) {
       // the trouble opens the film, on the problem scene (rendered with the closing card below)
-      pieces.push({ kind: 'scene', file: '', text: b.line, pcm, sec: Math.max(4.2, spoken + 1.9), chapter: '' })
+      pieces.push({ kind: 'scene', file: '', text: b.line, pcm, sec, chapter: '' })
       made.push({ id, wanted, made: 'scene', line: b.line, ...(fellBack ? { fellBack } : {}), attempts: Math.max(1, attempts) })
-      continue
+    } else {
+      // the animated point: the beat as its own moving card
+      const want = Math.min(8, Math.max(4.2, sec - 0.2))
+      const scene = await renderScene({ kind: 'point', motif, pill: b.chapter, headline: b.headline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: want, size: frame }, join(inp.runDir, `scene-beat-${i}.mp4`))
+      pieces.push({ kind: 'scene', file: scene.file, text: b.line, chapter: b.chapter, pcm, sec: Math.max(want, sec), srcSec: scene.durationSec })
+      made.push({ id, wanted, made: 'scene', line: b.line, ...(fellBack ? { fellBack } : {}), attempts: Math.max(1, attempts) })
     }
-    // the animated point: the beat as its own moving card
-    const want = Math.min(8, Math.max(4.2, spoken + 1.5))
-    const scene = await renderScene({ kind: 'point', motif, pill: b.chapter, headline: b.headline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: want, size: frame }, join(inp.runDir, `scene-beat-${i}.mp4`))
-    pieces.push({ kind: 'scene', file: scene.file, text: b.line, chapter: b.chapter, pcm, sec: Math.max(want, spoken + 1.5), srcSec: scene.durationSec })
-    made.push({ id, wanted, made: 'scene', line: b.line, ...(fellBack ? { fellBack } : {}), attempts: Math.max(1, attempts) })
+    if (i > 0) stickers.push({ piece: pieces.length - 1, text: b.headline, icon: iconFor(`${b.headline} ${b.line}`) })
   }
   check()
 
@@ -505,14 +609,14 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
   inp.progress('assemble', 'Building the film')
   const closeText = script.close
   const outroSpoken = spokenSec(closePcm, closeText)
-  const outroSec = Math.max(4.2, outroSpoken + 2.3)
+  const outroSec = Math.max(3.6, outroSpoken + 1.4)
   if (pieces[0].kind === 'scene' && pieces[0].file === '') {
     const problemSec = Math.max(4.2, spokenSec(problemPcm, script.problemLine) + 1.9)
     const problemScene = await renderScene({ kind: 'problem', motif, headline: script.problemHeadline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: Math.min(8, problemSec), size: frame }, join(inp.runDir, 'scene-problem.mp4'))
     pieces[0] = { ...pieces[0], file: problemScene.file, sec: problemSec, srcSec: problemScene.durationSec }
   }
   const outroScene = await renderScene({ kind: 'outro', motif, pill: clean(plan.close.cta.toUpperCase(), 24), headline: p.name, sub: p.tagline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: Math.min(8, outroSec), size: frame }, join(inp.runDir, 'scene-outro.mp4'))
-  pieces.push({ kind: 'scene', file: outroScene.file, text: closeText, pcm: closePcm, sec: outroSec, srcSec: outroScene.durationSec, chapter: '', fadeOut: true })
+  pieces.push({ kind: 'scene', file: outroScene.file, text: closeText, pcm: closePcm, sec: outroSec, srcSec: outroScene.durationSec, chapter: '', fadeOut: true, push: true })
   made.push({ id: 'close', wanted: 'close', made: 'scene', line: closeText, attempts: 1 })
   elements.push('Animated scenes (HTML/canvas)')
 
@@ -524,6 +628,7 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
     title: card.title,
     musicMood: choice?.mood,
     noMusic,
+    overlays: { accent: p.brand.accent ?? 'f5a524', hook: script.hook, stickers },
     aiMusic: wantAiMusic
       ? async ({ cuts, total }) => {
           const spec = { title: card.title, musicMood: choice?.mood ?? 'corporate', design: { look: 'social' }, voiceover: ['x'], narration: [] } as unknown as VideoSpec
