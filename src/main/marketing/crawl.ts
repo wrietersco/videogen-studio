@@ -7,6 +7,7 @@ import { captureSiteBrand, type SiteBrand } from '../appRecon/siteBrand'
 import { scrubText } from '../appRecon/detect'
 import { normalizeDomain } from '@shared/marketing'
 import type { LLMProvider } from '../providers/types'
+import { PICTURE_PROBE, savePictures, type PictureSpot, type SavedPicture } from './pictures'
 
 /**
  * Reads a business's public website with the same Chromium the app uses for
@@ -29,6 +30,8 @@ export interface SiteRead {
   /** candidate taglines: the meta description, the first headline, the title */
   taglineCandidates: string[]
   notes: string[]
+  /** the business's own product and service pictures, saved in the business folder (absent on older reads) */
+  pictures?: SavedPicture[]
 }
 
 export interface ReadOptions {
@@ -42,6 +45,8 @@ export interface ReadOptions {
   allowPrivate?: boolean
   /** test hook: a page to read with (a local server), instead of launching Chromium */
   page?: (url: string) => Promise<Page>
+  /** false = do not keep the site's product pictures (default: keep them) */
+  pictures?: boolean
 }
 
 /** how many characters of one page are kept: plenty for a profile, small enough for any model */
@@ -162,6 +167,17 @@ async function readAll(page: Page, url: string, host: string, opts: ReadOptions)
   say(`opening ${url}`)
   await openPage(page, url, 30000)
   const home = await readPage(page)
+  const spots: Array<PictureSpot & { page: string }> = []
+  const lookForPictures = async (at: string): Promise<void> => {
+    if (opts.pictures === false) return
+    try {
+      const got = (await page.evaluate(PICTURE_PROBE)) as PictureSpot[]
+      for (const s of got ?? []) spots.push({ ...s, page: at })
+    } catch (err) {
+      say(`  pictures on ${at} could not be listed (${(err as Error).message.slice(0, 60)})`)
+    }
+  }
+  await lookForPictures(home.url)
   const taglines = (await page.evaluate(TAGLINES)) as { title: string; description: string; og: string; h1: string }
   const brand = await captureSiteBrand(page, { dir: opts.dir, siteHost: host, log: opts.log })
   if (!home.md) notes.push('The home page had no readable text (it may need JavaScript the reader could not run), so the profile is built from its title alone.')
@@ -181,6 +197,7 @@ async function readAll(page: Page, url: string, host: string, opts: ReadOptions)
       await openPage(page, u, 20000)
       const p = await readPage(page)
       pages.push({ url: p.url, title: p.title, md: p.md })
+      await lookForPictures(p.url)
       for (const l of p.links) {
         if (queue.length + pages.length >= maxPages) break
         if (!seen.has(l.href) && !SKIP_WORDS.test(l.href)) {
@@ -194,9 +211,15 @@ async function readAll(page: Page, url: string, host: string, opts: ReadOptions)
   }
   say(`services pages: ${pages.length ? pages.map((p) => p.url).join(', ') : 'none found'}`)
 
+  let pictures: SavedPicture[] = []
+  if (spots.length) {
+    pictures = await savePictures(spots, { dir: opts.dir, siteHost: host, logoUrl: brand.how === 'file' ? brand.from : undefined, log: opts.log })
+    say(`product pictures kept: ${pictures.length} of ${spots.length} on the pages`)
+  }
+
   const candidate = (s: string) => s.replace(/\s+/g, ' ').trim().slice(0, 160)
   const taglineCandidates = [candidate(taglines.description), candidate(taglines.og), candidate(taglines.h1), candidate(taglines.title.split(/[|–—]/)[0])].filter((s, i, a) => s.length >= 8 && a.indexOf(s) === i)
-  return { home: { url: home.url, title: home.title, md: home.md }, pages, brand, taglineCandidates, notes }
+  return { home: { url: home.url, title: home.title, md: home.md }, pages, brand, taglineCandidates, notes, pictures }
 }
 
 export async function readSite(domain: string, opts: ReadOptions): Promise<SiteRead> {

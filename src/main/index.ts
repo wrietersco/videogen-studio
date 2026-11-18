@@ -1047,19 +1047,23 @@ if (headlessFile) {
         if (!ready) return null
         return {
           still: media.imageAvailable() && !['none', 'stock'].includes(effective.media.image || 'auto')
-            ? async (prompt: string, o?: { portrait?: boolean }) => {
+            ? async (prompt: string, o?: { portrait?: boolean; refs?: string[] }) => {
                 meter.setStage('ai keyframe')
                 try {
-                  const { jpeg } = await media.keyframe(prompt, o?.portrait)
+                  // the business's own product photo and logo, when the image model can look at pictures
+                  const refs = media.keyframeTakesRefs() ? (o?.refs ?? []).flatMap((f) => { try { return [readFileSync(f)] } catch { return [] } }) : []
+                  const { jpeg, refsUsed } = await media.keyframe(prompt, o?.portrait, refs)
                   const dir = join(marketingStore.runDir(runId), 'keyframes')
                   mkdirSync(dir, { recursive: true })
-                  const file = join(dir, `keyframe-${Date.now()}.jpg`)
+                  // several stills are made at once, so the name carries more than the time
+                  const file = join(dir, `keyframe-${Date.now()}-${Math.random().toString(16).slice(2, 6)}.jpg`)
                   writeFileSync(file, jpeg)
-                  return { file }
+                  return { file, refsUsed }
                 } finally { meter.setStage('ai clip') }
               }
             : undefined,
-          reviewStill: async (file: string) => media.reviewKeyframe(readFileSync(file)),
+          stillTakesRefs: media.keyframeTakesRefs(),
+          reviewStill: async (file: string, o?: { allowBrand?: boolean }) => media.reviewKeyframe(readFileSync(file), o),
           clip: async (prompt, seconds, opts) => {
             if (opts?.imageFile) meter.setStage('ai clip')
             const asset = await media.clipToLibrary(prompt, opts?.portrait ? 'portrait' : 'landscape', { fresh: true, projectId: `mk-${runId}`, durationSec: seconds, ...(opts?.imageFile ? { image: readFileSync(opts.imageFile) } : {}) })

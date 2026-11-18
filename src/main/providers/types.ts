@@ -85,6 +85,12 @@ export interface ImageGenRequest {
   width: number
   height: number
   styleHint?: string
+  /**
+   * pictures the new picture should show (a product photo, a logo). Only image
+   * models that can look at pictures use them (Gemini's); others ignore them,
+   * so a caller asks `takesImageRefs` first.
+   */
+  refs?: Array<{ mimeType: string; base64: string }>
 }
 
 export interface LLMProvider {

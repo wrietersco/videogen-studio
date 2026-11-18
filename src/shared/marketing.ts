@@ -18,6 +18,8 @@ export interface ServiceInfo {
   /** what the customer gets, in the customer's words */
   benefits: string[]
   audience?: string
+  /** the service's own pictures from the site, saved in the business folder (absent on profiles read before pictures were kept) */
+  images?: string[]
 }
 
 /** a problem–solution video the person can edit and then have made */
@@ -52,6 +54,8 @@ export interface BusinessBrand {
   backdrop?: [string, string]
   /** the logo prepared for dark cards, when one was found */
   logoFile?: string
+  /** product pictures from the site that belong to no one service, saved in the business folder */
+  productImages?: string[]
 }
 
 export interface BusinessProfile {

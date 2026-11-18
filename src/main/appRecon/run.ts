@@ -46,10 +46,16 @@ import type { PlatformId } from '@shared/spec'
 export interface MediaTools {
   /** one clip of this many whole seconds (3 to 10); resolves to the file. `imageFile` is a still used as the clip's first frame (image-to-video) */
   clip(prompt: string, seconds: number, opts?: { imageFile?: string; /** a tall 9:16 clip for a tall film (default wide 16:9) */ portrait?: boolean }): Promise<{ file: string; durationSec?: number }>
-  /** a cheap still (the user's image model) saved to a file, wide 16:9 or tall 9:16; absent = clips start from text only */
-  still?(prompt: string, opts?: { portrait?: boolean }): Promise<{ file: string; costUsd?: number }>
-  /** checks a still is a coherent, concrete picture with no readable text; null/absent = no review available (the still is used unchecked) */
-  reviewStill?(file: string): Promise<{ ok: boolean; reason?: string } | null>
+  /**
+   * a cheap still (the user's image model) saved to a file, wide 16:9 or tall 9:16; absent = clips start from text only.
+   * `refs` are local pictures the still should show (a product photo, a logo); an image model that cannot look at
+   * pictures ignores them, and `refsUsed` (absent or 0) says so.
+   */
+  still?(prompt: string, opts?: { portrait?: boolean; refs?: string[] }): Promise<{ file: string; costUsd?: number; refsUsed?: number }>
+  /** true when `still` can use `refs` (the image model looks at pictures); absent = it cannot */
+  stillTakesRefs?: boolean
+  /** checks a still is a coherent, concrete picture with no readable text (`allowBrand` = the business's own logo on its packaging is fine); null/absent = no review available (the still is used unchecked) */
+  reviewStill?(file: string, opts?: { allowBrand?: boolean }): Promise<{ ok: boolean; reason?: string } | null>
   /** one finished track (an audio file's bytes) for this brief */
   music(brief: string, /** the model the plan assigned ("gemini:lyria-3.5", "elevenlabs:music_v2_5"); absent = Settings decide */ model?: string): Promise<Buffer>
 }

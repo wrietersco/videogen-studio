@@ -3,6 +3,7 @@ import { unifiedMd } from './crawl'
 import { scrubText } from '../appRecon/detect'
 import type { LLMProvider } from '../providers/types'
 import type { BusinessBrand, ServiceInfo } from '@shared/marketing'
+import { linkPictures } from './pictures'
 
 /**
  * The business's profile: what the writer understands from the site's own
@@ -51,7 +52,7 @@ export function stockFacts(read: SiteRead): ProfileFacts {
   })
   // the index page of the services is the menu, not a service
   const real = services.filter((sv) => !/^(our )?(services|solutions|what we do|offerings)$/i.test(sv.name))
-  return { name, tagline, about, services: real.length ? real : services }
+  return { name, tagline, about, services: withPictures(read, real.length ? real : services) }
 }
 
 /** the writer's reading of the site: one JSON answer over the unified markdown */
@@ -103,19 +104,32 @@ export async function readFacts(read: SiteRead, opts: { chat: LLMProvider | null
       }))
       .filter((s) => s.summary.length > 10)
       .slice(0, 8)
-    return { name, tagline: tagline || stock.tagline, about, services: services.length ? services : stock.services }
+    return { name, tagline: tagline || stock.tagline, about, services: services.length ? withPictures(read, services) : stock.services }
   } catch (err) {
     opts.say(`the writer could not read the site (${(err as Error).message.slice(0, 80)}); the profile is built from the page titles`)
     return stock
   }
 }
 
-/** the site's look as the films use it: colours, a dark-card-safe accent, the gradient, the logo */
-export function brandOf(read: SiteRead): BusinessBrand {
+/** each service with the site's own pictures of it */
+function withPictures(read: SiteRead, services: ServiceInfo[]): ServiceInfo[] {
+  if (!read.pictures?.length) return services
+  return linkPictures(services, read.pictures, read.home.url).services
+}
+
+/**
+ * The site's look as the films use it: colours, a dark-card-safe accent, the
+ * gradient, the logo, and the product pictures that belong to no one service
+ * (matched against `services` when given, else against the services the
+ * pages alone name).
+ */
+export function brandOf(read: SiteRead, services?: ServiceInfo[]): BusinessBrand {
+  const general = read.pictures?.length ? linkPictures(services ?? stockFacts(read).services, read.pictures, read.home.url).general : []
   return {
     colors: read.brand.colors,
     accent: read.brand.accent,
     backdrop: read.brand.look?.backdrop,
-    logoFile: read.brand.logo
+    logoFile: read.brand.logo,
+    ...(general.length ? { productImages: general } : {})
   }
 }

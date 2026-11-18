@@ -133,7 +133,7 @@ export class GeminiProvider implements LLMProvider {
       'POST',
       `/models/${model}:generateContent`,
       {
-        contents: [{ role: 'user', parts: [{ text: req.styleHint ? `${req.prompt} Style: ${req.styleHint}` : req.prompt }] }],
+        contents: [{ role: 'user', parts: [...(req.refs ?? []).slice(0, 4).map((r) => ({ inlineData: { mimeType: r.mimeType, data: r.base64 } })), { text: req.styleHint ? `${req.prompt} Style: ${req.styleHint}` : req.prompt }] }],
         generationConfig: { responseModalities: ['IMAGE'], imageConfig: { aspectRatio } }
       }
     )

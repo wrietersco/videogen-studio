@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { ffmpegBin } from '../audio/pcm'
@@ -557,19 +557,31 @@ frame(0);
 `
 
 export async function renderScene(inp: SceneInput, outFile: string): Promise<{ file: string; durationSec: number }> {
-  const T = Math.max(0.5, inp.durationSec)
+  return renderSceneHtml(sceneHtml(inp), { width: inp.size?.width ?? 1920, height: inp.size?.height ?? 1080 }, inp.durationSec, outFile)
+}
+
+/**
+ * Any self-contained scene page (one whose every frame is window.__seek(t))
+ * rendered frame by frame to a silent 30 fps H.264 file. `stills` = a PNG of
+ * the frame at each of these seconds is also saved (for contact sheets and checks).
+ */
+export async function renderSceneHtml(html: string, size: { width: number; height: number }, durationSec: number, outFile: string, stills?: { at: number[]; dir: string }): Promise<{ file: string; durationSec: number; stills: string[] }> {
+  const T = Math.max(0.5, durationSec)
   const frames = Math.max(1, Math.round(T * FPS))
   mkdirSync(dirname(outFile), { recursive: true })
   const tmp = mkdtempSync(join(tmpdir(), 'vg-scene-'))
   let browser: Awaited<ReturnType<typeof launch>> | null = null
+  const shots: string[] = []
+  const shotAt = new Set((stills?.at ?? []).map((t) => Math.min(frames - 1, Math.max(0, Math.round(t * FPS)))))
+  if (stills) mkdirSync(stills.dir, { recursive: true })
   try {
-    const width = inp.size?.width ?? 1920
-    const height = inp.size?.height ?? 1080
+    const { width, height } = size
     browser = await launch({ width, height, scale: 1, userDataDir: join(tmp, 'profile') })
     const page = await browser.newPage()
     await page.setViewport({ width, height, deviceScaleFactor: 1 })
-    await page.setContent(sceneHtml(inp), { waitUntil: 'load' })
+    await page.setContent(html, { waitUntil: 'load' })
     await page.evaluate('document.fonts && document.fonts.ready')
+    await page.evaluate('Promise.all([...document.images].map((i) => i.decode ? i.decode().catch(() => undefined) : undefined))')
 
     const ff = spawn(
       ffmpegBin(),
@@ -588,13 +600,18 @@ export async function renderScene(inp: SceneInput, outFile: string): Promise<{ f
       for (let i = 0; i < frames; i++) {
         await page.evaluate(`window.__seek(${i / FPS})`)
         const buf = await page.screenshot({ type: 'jpeg', quality: 92, optimizeForSpeed: true })
+        if (stills && shotAt.has(i)) {
+          const png = join(stills.dir, `frame-${String(i).padStart(4, '0')}.png`)
+          writeFileSync(png, await page.screenshot({ type: 'png' }))
+          shots.push(png)
+        }
         if (!ff.stdin.write(buf)) await new Promise<void>((r) => ff.stdin.once('drain', () => r()))
       }
     } finally {
       ff.stdin.end()
     }
     await done
-    return { file: outFile, durationSec: frames / FPS }
+    return { file: outFile, durationSec: frames / FPS, stills: shots }
   } finally {
     if (browser) await browser.close().catch(() => undefined)
     rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })

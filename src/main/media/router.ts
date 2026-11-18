@@ -267,25 +267,49 @@ export class MediaRouter {
     return { buffer, assetId: asset.id, source: 'generated', reused: false }
   }
 
-  /** one landscape 16:9 still from the configured image model (never stock, never a second candidate); metered by the provider */
-  async keyframe(prompt: string, portrait = false): Promise<{ jpeg: Buffer }> {
+  /**
+   * can the configured image model look at reference pictures (a product photo, a logo)?
+   * Gemini's image models take pictures with the words; OpenAI's are only reached
+   * through /images/generations here (words alone), so they cannot.
+   */
+  keyframeTakesRefs(): boolean {
+    const p = this.painter()
+    return !!p?.provider.generateImage && p.provider.id === 'gemini'
+  }
+
+  /**
+   * one landscape 16:9 still from the configured image model (never stock, never a second candidate); metered by the provider.
+   * `refs` are pictures it should show (at most 4, made small first); `refsUsed` says whether the model was given them.
+   */
+  async keyframe(prompt: string, portrait = false, refs: Buffer[] = []): Promise<{ jpeg: Buffer; refsUsed: number }> {
     const p = this.painter()
     if (!p?.provider.generateImage) throw new Error('no image model configured')
     const [width, height] = portrait ? [720, 1280] : [1280, 720]
-    const buffer = await p.provider.generateImage({ prompt, width, height, model: p.model })
     const sharp = (await import('sharp')).default
-    return { jpeg: await sharp(buffer).resize({ width, height, fit: 'cover' }).jpeg({ quality: 90 }).toBuffer() }
+    const use = this.keyframeTakesRefs() ? refs.slice(0, 4) : []
+    const refParts = await Promise.all(
+      use.map(async (b) => {
+        // a cut-out logo keeps its clear background; a photo goes as a small JPEG
+        const meta = await sharp(b).metadata()
+        const small = sharp(b).rotate().resize({ width: 1024, height: 1024, fit: 'inside', withoutEnlargement: true })
+        return meta.hasAlpha ? { mimeType: 'image/png', base64: (await small.png().toBuffer()).toString('base64') } : { mimeType: 'image/jpeg', base64: (await small.jpeg({ quality: 85 }).toBuffer()).toString('base64') }
+      })
+    )
+    const buffer = await p.provider.generateImage({ prompt, width, height, model: p.model, ...(refParts.length ? { refs: refParts } : {}) })
+    return { jpeg: await sharp(buffer).resize({ width, height, fit: 'cover' }).jpeg({ quality: 90 }).toBuffer(), refsUsed: refParts.length }
   }
 
   /** is this still a coherent, concrete picture with no readable text? null = no review model available (the caller skips the check) */
-  async reviewKeyframe(jpeg: Buffer): Promise<{ ok: boolean; reason?: string } | null> {
+  async reviewKeyframe(jpeg: Buffer, opts?: { allowBrand?: boolean }): Promise<{ ok: boolean; reason?: string } | null> {
     const vision = this.d.providerForRole?.('image-process') ?? this.d.provider(this.d.settings().provider)
     if (vision.id === 'mock') return null
     try {
       const sharp = (await import('sharp')).default
       const preview = await sharp(jpeg).resize({ width: 720, height: 720, fit: 'inside' }).jpeg().toBuffer()
       const r = await vision.generateJSON<{ coherent: boolean; hasReadableText: boolean; reason: string }>({
-        system: 'You check one picture that will be the opening frame of an AI video shot. Answer coherent=true only if it is a concrete, believable picture of a clear subject with no melted, garbled or distorted shapes. hasReadableText=true if any words, letters, numbers or logos can be read in it (nonsense lettering counts). Give a short reason.',
+        system:
+          'You check one picture that will be the opening frame of an AI video shot. Answer coherent=true only if it is a concrete, believable picture of a clear subject with no melted, garbled or distorted shapes. hasReadableText=true if any words, letters, numbers or logos can be read in it (nonsense lettering counts). Give a short reason.' +
+          (opts?.allowBrand ? " One clean brand logo printed on the product's own box, bag, label or sticker is expected and does NOT count as readable text; garbled or misspelled lettering still does." : ''),
         prompt: 'Check this opening frame.', schemaName: 'KeyframeCheck',
         jsonSchema: { type: 'object', properties: { coherent: { type: 'boolean' }, hasReadableText: { type: 'boolean' }, reason: { type: 'string' } }, required: ['coherent', 'hasReadableText', 'reason'], additionalProperties: false },
         images: [{ mimeType: 'image/jpeg', base64: preview.toString('base64') }], temperature: 0.1, maxTokens: 120
