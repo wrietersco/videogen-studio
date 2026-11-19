@@ -8,7 +8,7 @@
  *   elevenlabs.io/pricing/api
  */
 
-export const PRICES_AS_OF = '2026-11-14'
+export const PRICES_AS_OF = '2026-11-19'
 
 export type MediaKind = 'text' | 'image' | 'voice' | 'music' | 'sfx' | 'video' | 'transcribe'
 
@@ -65,6 +65,7 @@ export const RATES: Record<string, Rate> = {
   'tts-1-hd': { perKChars: 0.03 },
   'whisper-1': { perMinute: 0.006 },
   // ---- Gemini text ----
+  'gemini-4-neon': { inTok: 3, outTok: 15 },
   'gemini-4-argon': { inTok: 2, outTok: 10 },
   'gemini-3.1-pro-preview': { inTok: 2, outTok: 12 },
   'gemini-3.8-flash': { inTok: 0.75, outTok: 3.75 },

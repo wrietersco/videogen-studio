@@ -32,6 +32,25 @@ type InteractionAudio = {
 }
 type UsageMeta = { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number } }
 
+/**
+ * Gemini 4 models (Argon, Neon) think at "high" by default and their thinking
+ * tokens count against maxOutputTokens, so a small cap truncates the answer
+ * (cut-off JSON). Give them room; only tokens actually used are billed.
+ */
+export function withThinkingRoom(model: string, maxTokens: number): number {
+  return /^gemini-4-/.test(model) ? maxTokens + 24576 : maxTokens
+}
+
+/**
+ * Gemini 4 models are tuned for their default temperature (1.0): Google warns
+ * that lower values make them loop. A live Gemini 4 Neon run asked for 0.3
+ * and wrote 63,000 characters of one runaway JSON string. Their temperature
+ * is left unset; older models keep the one asked for.
+ */
+export function temperatureFor(model: string, wanted: number): number | undefined {
+  return /^gemini-4-/.test(model) ? undefined : wanted
+}
+
 export class GeminiProvider implements LLMProvider {
   readonly id: ProviderId = 'gemini'
   readonly label = 'Google (Gemini)'
@@ -55,7 +74,8 @@ export class GeminiProvider implements LLMProvider {
       m('gemini-3.5-flash-lite', 'Gemini 3.5 Flash-Lite', '$0.30 in / $2.50 out per 1M tok'),
       m('gemini-3.8-flash', 'Gemini 3.8 Flash', '$0.75 in / $3.75 out per 1M tok · intro price to Dec 31'),
       m('gemini-4-argon', 'Gemini 4 Argon', '$2 in / $10 out per 1M tok · intro price to Nov 30'),
-      m('gemini-3.1-pro-preview', 'Gemini 3.1 Pro (preview)', '$2 in / $12 out per 1M tok')
+      m('gemini-3.1-pro-preview', 'Gemini 3.1 Pro (preview)', '$2 in / $12 out per 1M tok'),
+      m('gemini-4-neon', 'Gemini 4 Neon', '$3 in / $15 out per 1M tok · newest, strongest · paid tier only')
     ]
   }
 
@@ -68,8 +88,8 @@ export class GeminiProvider implements LLMProvider {
       generationConfig: {
         responseMimeType: 'application/json',
         responseSchema: toOpenApiish(req.jsonSchema),
-        temperature: req.temperature ?? 0.8,
-        maxOutputTokens: req.maxTokens ?? 8192
+        temperature: temperatureFor(model, req.temperature ?? 0.8),
+        maxOutputTokens: withThinkingRoom(model, req.maxTokens ?? 8192)
       }
     }
     const json = await this.request<{ candidates: Array<{ content: { parts: Array<{ text?: string }> } }> } & UsageMeta>(
@@ -95,7 +115,7 @@ export class GeminiProvider implements LLMProvider {
       {
         contents,
         systemInstruction: { parts: [{ text: system }] },
-        generationConfig: { temperature: req.temperature ?? 0.8, maxOutputTokens: req.maxTokens ?? 4096 }
+        generationConfig: { temperature: temperatureFor(model, req.temperature ?? 0.8), maxOutputTokens: withThinkingRoom(model, req.maxTokens ?? 4096) }
       }
     )
     this.meterText(model, json)
@@ -113,7 +133,7 @@ export class GeminiProvider implements LLMProvider {
     const json = await this.request<{ candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> } & UsageMeta>('POST', `/models/${model}:generateContent`, {
       contents: [{ role: 'user', parts: [{ fileData: { fileUri: req.url }, videoMetadata: { startOffset: '0s', endOffset: `${Math.max(10, Math.round(req.endSec ?? 180))}s` } }, { text: req.prompt }] }],
       systemInstruction: { parts: [{ text: req.system }] },
-      generationConfig: { responseMimeType: 'application/json', responseSchema: toOpenApiish(req.jsonSchema), temperature: 0.3, maxOutputTokens: 1500, mediaResolution: 'MEDIA_RESOLUTION_LOW' }
+      generationConfig: { responseMimeType: 'application/json', responseSchema: toOpenApiish(req.jsonSchema), temperature: temperatureFor(model, 0.3), maxOutputTokens: withThinkingRoom(model, 1500), mediaResolution: 'MEDIA_RESOLUTION_LOW' }
     })
     this.meterText(model, json)
     const text = json.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') ?? ''

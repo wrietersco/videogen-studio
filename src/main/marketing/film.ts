@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { renderScene, pickMotif, type Motif } from '../appRecon/scenes'
-import { voiceLine, neutralProblemTitle, problemLineOk, problemTitleOk } from '../appRecon/narrate'
+import { voiceLine, neutralProblemTitle, problemLineOk } from '../appRecon/narrate'
 import { chooseMusic, clipLook, fixPrompt, promptIssues, clipSeconds, withStyle, type MusicChoice } from '../appRecon/aiMedia'
 import type { MediaTools } from '../appRecon/run'
 import { scanNarration } from '../appRecon/detect'
@@ -17,6 +17,7 @@ import type { MadePart, MarketPlan, Show } from '@shared/marketBrief'
 import { assemble, type FilmPiece, type PieceShot } from './assemble'
 import { iconFor, type IconName } from './overlays'
 import { planFromCard } from './agent/brief'
+import { directIntro } from './agent/intro'
 import { renderProductScene, type ProductEntrance } from './productScene'
 import { filmFrame } from '@shared/shapes'
 import { reusedVoice, usableShots, voiceFileOf, writeFilmRecord, type FilmReuse, type FilmVoiceRecord } from './filmRecord'
@@ -197,6 +198,21 @@ function stockScript(card: VideoCard, p: BusinessProfile, plan: MarketPlan, max:
   }
 }
 
+/**
+ * A trouble headline any business can use: short, never the business's name,
+ * never the answer in other words. The record-an-app check also wants
+ * software trouble words ("hard to find", "too slow"), which threw away a
+ * bakery's "Dry, bland cookies" and put "Too much, too scattered" in its film.
+ */
+export function marketTitleOk(title: string, solution: string, business: string): boolean {
+  const t = title.trim()
+  if (t.length < 4 || t.length > 30) return false
+  if (business.trim().length >= 3 && t.toLowerCase().includes(business.trim().toLowerCase())) return false
+  const sig = (x: string) => x.toLowerCase().split(/[^a-z0-9']+/).filter((w) => w.length > 3)
+  const theirs = new Set(sig(solution))
+  return sig(t).filter((w) => theirs.has(w)).length < 2
+}
+
 /** a short headline from a longer line: its meaningful first words */
 function headlineOf(line: string): string {
   const words = line.replace(/^[^a-zA-Z0-9]+/, '').split(/\s+/).filter((w) => w.length > 2 && !/^(the|and|with|for|our|your|that|this|from)$/i.test(w))
@@ -237,7 +253,7 @@ async function writeScript(card: VideoCard, p: BusinessProfile, chat: LLMProvide
   const check = { values: [] as string[] }
   const hit = (t: string) => avoidHit(t, plan.avoid)
   let headline = clean(r.problemHeadline, 30).replace(/[.!?:]+$/, '')
-  if (!headline || hit(headline) || !scanNarration(headline, check).ok || !problemTitleOk(headline, card.solution, p.tagline, p.name)) headline = stock.problemHeadline
+  if (!headline || hit(headline) || !scanNarration(headline, check).ok || !marketTitleOk(headline, card.solution, p.name)) headline = stock.problemHeadline
   let problemLine = clean(r.problemLine, 320)
   if (hit(problemLine) || !problemLineOk(problemLine, card.solution, p.name) || !scanNarration(problemLine, check).ok) problemLine = stock.problemLine
   // a beat the writer got wrong is replaced by the plan's own words BEFORE any voice is paid for
@@ -764,10 +780,52 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
   const closeText = script.close
   const outroSpoken = spokenSec(closePcm, closeText)
   const outroSec = Math.max(3.6, outroSpoken + 1.4)
+  // the very opening is designed and coded by the AI for this business (never a template): the drawn card is only the
+  // last resort when there is no writer or every round of the intro director failed
+  let aiIntro = false
   if (pieces[0].kind === 'scene' && pieces[0].file === '') {
     const problemSec = Math.max(4.2, spokenSec(problemPcm, script.problemLine) + 1.9)
-    const problemScene = await renderScene({ kind: 'problem', motif, headline: script.problemHeadline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: Math.min(8, problemSec), size: frame }, join(inp.runDir, 'scene-problem.mp4'))
-    pieces[0] = { ...pieces[0], file: problemScene.file, sec: problemSec, srcSec: problemScene.durationSec }
+    const introSec = Math.min(8, problemSec)
+    let opening: { file: string; durationSec: number } | null = null
+    if (inp.chat) {
+      inp.progress('assemble', 'Designing the opening')
+      try {
+        const tools = inp.tools
+        const r = await directIntro({
+          chat: inp.chat,
+          brief: { hook: script.hook || script.problemHeadline, headline: script.problemHeadline, line: script.problemLine, business: p.name, about: `${p.tagline ?? ''} ${p.about}`.trim(), accent: p.brand.accent, backdrop: p.brand.backdrop, colors: p.brand.colors, style: plan.look.style, tone: plan.voice.tone },
+          size: frame,
+          durationSec: introSec,
+          dir: join(inp.runDir, 'intro'),
+          logo,
+          signal: inp.signal,
+          say,
+          still: tools?.still
+            ? async (prompt) => {
+                const s = await tools.still!(`A still photograph, no readable text, no logos: ${prompt}`, { portrait })
+                const verdict = tools.reviewStill ? await tools.reviewStill(s.file).catch(() => null) : null
+                return !verdict || verdict.ok ? s.file : null
+              }
+            : undefined
+        })
+        if (r.file) {
+          opening = { file: r.file, durationSec: r.durationSec }
+          aiIntro = true
+          elements.push('AI-coded opening (HTML/CSS/JS motion)')
+          if (r.picture) elements.push('AI image')
+          notes.push(`The opening was designed and coded by the AI${r.concept ? `: ${clean(r.concept, 140)}` : ''} (${r.rounds} round${r.rounds === 1 ? '' : 's'}${r.picture ? ', over an AI picture' : ''}).`)
+        } else {
+          notes.push(`The AI could not design the opening (${clean(r.why ?? 'unknown', 120)}), so the drawn opening card is used.`)
+        }
+      } catch (err) {
+        if (err instanceof FilmCancelled || inp.signal?.aborted) throw new FilmCancelled()
+        notes.push(`The AI opening could not be made (${clean(String((err as Error)?.message ?? err), 120)}), so the drawn opening card is used.`)
+      }
+    } else {
+      notes.push('No AI writer is set up, so the drawn opening card is used.')
+    }
+    if (!opening) opening = await renderScene({ kind: 'problem', motif, headline: script.problemHeadline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: introSec, size: frame }, join(inp.runDir, 'scene-problem.mp4'))
+    pieces[0] = { ...pieces[0], file: opening.file, sec: problemSec, srcSec: opening.durationSec }
   }
   const outroScene = await renderScene({ kind: 'outro', motif, pill: clean(plan.close.cta.toUpperCase(), 24), headline: p.name, sub: p.tagline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: Math.min(8, outroSec), size: frame }, join(inp.runDir, 'scene-outro.mp4'))
   pieces.push({ kind: 'scene', file: outroScene.file, text: closeText, pcm: closePcm, sec: outroSec, srcSec: outroScene.durationSec, chapter: '', fadeOut: true, push: true })
@@ -784,7 +842,7 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
     title: card.title,
     musicMood: choice?.mood ?? (inp.reuse?.musicMood as MusicChoice['mood'] | undefined),
     noMusic,
-    overlays: { accent: p.brand.accent ?? 'f5a524', hook: style.hook === false ? undefined : script.hook, stickers: style.stickers === false ? [] : stickers, captionColor: style.captionColor, captionScale: style.captionScale },
+    overlays: { accent: p.brand.accent ?? 'f5a524', hook: style.hook === false || aiIntro ? undefined : script.hook, stickers: style.stickers === false ? [] : stickers, captionColor: style.captionColor, captionScale: style.captionScale },
     aiMusic: wantAiMusic
       ? async ({ cuts, total }) => {
           if (keptMusic) {

@@ -158,6 +158,15 @@ describe.skipIf(!canFilm)('one card\'s film (stand-in models)', () => {
             close: 'GreenLeaf Landscapes. Book a free visit.'
           }
         if (req.schemaName === 'marketing_shots') return { shots: [{ n: 1, prompt: 'A slow shot over a Lisbon rooftop garden at golden hour, hose water arcing onto dark green leaves, camera drifting forward, warm low light, photographic.' }] }
+        if (req.schemaName === 'IntroCode')
+          return {
+            concept: 'The hook rises word by word over a drifting green glow.',
+            picture: '',
+            html: '<div class="g"></div><h1 class="k">Tired of weekend watering?</h1>',
+            css: '.g{position:absolute;inset:-10%;background:radial-gradient(circle,#2f9e44,#0a120a)}.k{position:absolute;left:8%;right:8%;top:25%;margin:0;font:400 90px "Archivo Black";color:#fff}',
+            js: 'var tl=gsap.timeline({paused:true});tl.fromTo(".g",{scale:1},{scale:1.2,duration:DURATION,ease:"none"},0);tl.fromTo(".k",{y:60,opacity:0},{y:0,opacity:1,duration:0.5,immediateRender:false},0.1);window.__seek=function(t){tl.seek(t,false)};'
+          }
+        if (req.schemaName === 'IntroReview') return { score: 8, hookReadable: true, issues: [] }
         if (req.schemaName === 'music_choice') return { mood: 'minimal', style: 'Soft acoustic guitar over gentle strings, unhurried and warm.', why: 'calm gardens' }
         throw new Error(`unexpected schema ${(req as { schemaName?: string }).schemaName}`)
       }
@@ -172,6 +181,11 @@ describe.skipIf(!canFilm)('one card\'s film (stand-in models)', () => {
     expect(made).toContain('music')
     expect(out.elements.join(' ')).toMatch(/AI voice-over/)
     expect(out.elements.join(' ')).toMatch(/Animated scenes/)
+    // the very opening is the AI's own code, not the drawn template
+    expect(out.elements.join(' ')).toMatch(/AI-coded opening/)
+    expect(out.notes.join(' ')).toMatch(/opening was designed and coded by the AI/)
+    expect(existsSync(join(root, 'ai', 'intro', 'intro.mp4'))).toBe(true)
+    expect(existsSync(join(root, 'ai', 'scene-problem.mp4'))).toBe(false)
     expect(out.durationSec).toBeGreaterThan(15)
   }, 300000)
 
