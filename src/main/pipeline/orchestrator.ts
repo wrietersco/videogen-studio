@@ -38,6 +38,13 @@ export function isIsometricOnlyBrief(prompt: string): boolean {
   return /\bisometric\b/i.test(prompt) && !/\b(?:no|avoid|without|not)\s+(?:any\s+)?isometric\b/i.test(prompt) && !/\b(?:some|one|single|one of|a few)\s+(?:scenes?|shots?)\s+(?:in|with|as)\s+(?:an?\s+)?isometric\b/i.test(prompt) && !/\b(?:mix|combine|intercut|alternate|blend)\b.{0,80}\b(?:footage|photos?|photographs?|live.action)\b/i.test(prompt)
 }
 
+/** Check before authoring, including programmatic runs using paid coding models. */
+export function isometricReviewProblem(coder: LLMProvider, vision: LLMProvider): string | undefined {
+  if (vision.id === 'mock' && coder.id !== 'mock') return 'A visual reviewer is required to verify a fully isometric animation. Configure an image-capable review model in Settings; your choices were not changed.'
+  if (vision.supportsVision?.() === false) return 'The selected image-review model cannot inspect images. Choose an image-capable model for that role in Settings; your choices were not changed.'
+  return undefined
+}
+
 /** Recompose an interrupted project without refitting already-recorded narration. */
 export function canReuseNarrationTiming(spec: VideoSpec, projectDir: string): boolean {
   if (!spec.narration.some(n => n.text.trim())) return true
@@ -715,14 +722,18 @@ export class Orchestrator {
     targeted?: Map<string, string>,
     isometricOnly = false
   ): Promise<VideoSpec> {
+    // A resume that already has every coded scene needs no author or reviewer.
+    // Only reuse files in the project's custom-assets directory.
+    const isometricIds = isometricOnly
+      ? targeted ? [...targeted.keys()] : spec.scenes.filter(s => !spec.customVideos?.some(c => c.sceneId === s.id && /^assets\/custom\/[A-Za-z0-9._-]+\.mp4$/.test(c.file) && existsSync(join(this.store.dir(projectId), c.file)))).map(s => s.id)
+      : undefined
+    if (isometricIds && !isometricIds.length) return spec
     const provider = this.providerFor()
     const coder = this.codeProviderFor()
     const vision = this.visionProviderFor()
-    if (isometricOnly && vision.id === 'mock' && coder.id !== 'mock') {
-      throw new Error('A visual reviewer is required to verify a fully isometric animation. Configure an image-capable review model in Settings; your choices were not changed.')
-    }
+    const reviewProblem = isometricOnly ? isometricReviewProblem(coder, vision) : undefined
+    if (reviewProblem) throw new Error(reviewProblem)
     if (vision.supportsVision?.() === false) {
-      if (isometricOnly) throw new Error('The selected image-review model cannot inspect images. Choose an image-capable model for that role in Settings; your choices were not changed.')
       this.store.appendEvent(projectId, 'custom scenes skipped: selected image-review model cannot inspect images')
       return spec
     }
@@ -733,7 +744,7 @@ export class Orchestrator {
       return spec
     }
     const hasMedia = new Set(spec.crafts.filter((c) => c.media).map((c) => c.sceneId))
-    const ids = isometricOnly && targeted ? [...targeted.keys()] : isometricOnly ? spec.scenes.filter(s => !spec.customVideos?.some(c => c.sceneId === s.id && /^assets\/custom\/[A-Za-z0-9._-]+\.mp4$/.test(c.file) && existsSync(join(this.store.dir(projectId), c.file)))).map(s => s.id) : targeted ? [...targeted.keys()] : (await chooseCustomScenes(provider.id === 'mock' ? coder : provider, spec, prompt)).filter((id) => !hasMedia.has(id))
+    const ids = isometricIds ?? (targeted ? [...targeted.keys()] : (await chooseCustomScenes(provider.id === 'mock' ? coder : provider, spec, prompt)).filter((id) => !hasMedia.has(id)))
     if (!ids.length) return spec
     emit({ stage: 'custom', status: 'started', total: ids.length })
     const dir = this.store.dir(projectId)

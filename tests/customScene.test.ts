@@ -6,7 +6,7 @@ import { Planner } from '../src/main/pipeline/planner'
 import { compose } from '../src/main/composer'
 import { resolve } from 'node:path'
 import type { LLMProvider } from '../src/main/providers/types'
-import { Orchestrator, extractAudioLayer, isBlankReviewFrame, isIsometricOnlyBrief, canReuseNarrationTiming } from '../src/main/pipeline/orchestrator'
+import { Orchestrator, extractAudioLayer, isBlankReviewFrame, isIsometricOnlyBrief, isometricReviewProblem, canReuseNarrationTiming } from '../src/main/pipeline/orchestrator'
 import { ProjectStore } from '../src/main/store/projectStore'
 import { mkdtempSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -16,6 +16,35 @@ import sharp from 'sharp'
 const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#123456"/><g id="motion1"><circle cx="50" cy="50" r="20" fill="#fff"/></g></svg>'
 
 describe('custom scene authoring', () => {
+  it('resumes existing isometric scene files without requiring a reviewer or making model calls', async () => {
+    const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'isometric factory', platform: 'tiktok' })
+    const store = new ProjectStore(mkdtempSync(join(tmpdir(), 'isometric-existing-review-')))
+    const project = store.create('isometric factory', 'test')
+    const assetDir = join(store.dir(project.id), 'assets', 'custom')
+    mkdirSync(assetDir, { recursive: true })
+    spec.customVideos = spec.scenes.map((s, i) => {
+      const filename = `scene-${i}.mp4`
+      writeFileSync(join(assetDir, filename), 'saved')
+      return { sceneId: s.id, file: `assets/custom/${filename}`, source: 'saved' }
+    })
+    const generateText = vi.fn()
+    const coder = { id: 'deepseek', generateText } as unknown as LLMProvider
+    const vision = { id: 'deepseek', supportsVision: () => false } as unknown as LLMProvider
+    const orch = new Orchestrator(store, () => coder, () => null, null, () => coder, () => vision)
+    expect(await (orch as any).runCustomScenes(project.id, spec, 'isometric factory', { clips: [], captions: [] }, () => {}, undefined, true)).toBe(spec)
+    expect(generateText).not.toHaveBeenCalled()
+    await expect((orch as any).runCustomScenes(project.id, spec, 'isometric factory', { clips: [], captions: [] }, () => {}, new Map([[spec.scenes[0].id, 'change it']]), true)).rejects.toThrow('cannot inspect images')
+  })
+  it('preflights a paid coder with no image reviewer while allowing free and capable configurations', () => {
+    const mock = new MockProvider()
+    const coder = { id: 'deepseek' } as LLMProvider
+    const unable = { id: 'deepseek', supportsVision: () => false } as LLMProvider
+    const capable = { id: 'selected-vision', supportsVision: () => true } as LLMProvider
+    expect(isometricReviewProblem(coder, mock)).toContain('visual reviewer is required')
+    expect(isometricReviewProblem(coder, unable)).toContain('cannot inspect images')
+    expect(isometricReviewProblem(coder, capable)).toBeUndefined()
+    expect(isometricReviewProblem(mock, mock)).toBeUndefined()
+  })
   it('does not accept unreviewed code for a full isometric film', async () => {
     const spec = await new Planner(new MockProvider()).plan({ userPrompt: 'isometric factory', platform: 'tiktok' })
     const store = new ProjectStore(mkdtempSync(join(tmpdir(), 'isometric-no-review-')))
