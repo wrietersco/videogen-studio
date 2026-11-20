@@ -2,9 +2,12 @@ import { BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { DECIDE_CHANNEL, type CapabilityReport, type DecisionAnswer, type DecisionRequest } from '../../shared/agentBrief'
-import { brandSourceOf, isAppId, isRunId, validateApp, type ReviewEdits, type RunEvent, type RunRecord } from '../../shared/appRecording'
+import { brandSourceOf, isAppId, isRunId, validateApp, type RecordingRevision, type ReviewEdits, type RunEvent, type RunRecord } from '../../shared/appRecording'
+import type { PlatformId } from '../../shared/spec'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { applyReviewEdits, reviewBeats } from './planner'
+import { readPreviousRecording } from './recordingRecord'
+import { ReviseCancelled, editIsEmpty, interpretRevision, needsRerecord, reviseRecording, revisionOf } from './revise'
 import { readStyle, youtubeReadiness } from './style'
 import { RunCancelled, runAppRecording, type MediaTools, type RunHooks, type RunInput, type RunOutput } from './run'
 import { meter, readProjectUsage, type ProjectUsage } from '../usage/meter'
@@ -35,6 +38,18 @@ export interface AppReconIpcDeps {
   capabilities?: () => CapabilityReport
   /** replaceable for tests */
   runner?: (input: RunInput, hooks: RunHooks) => Promise<RunOutput>
+}
+
+interface StartOptions {
+  /** run the saved steps of the last video instead of exploring */
+  reuse?: boolean
+  /** a typed change to an earlier video, added to the brief */
+  extraContext?: string
+  /** length and shape for this run only (the saved app is not changed) */
+  targetSec?: number
+  platform?: PlatformId
+  /** the video this one changes, and the summary shown under it */
+  parent?: { runId: string; revision: RecordingRevision }
 }
 
 const DOC_EXT =new Set(['.txt', '.md', '.markdown', '.csv', '.json'])
@@ -119,11 +134,14 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
     return true
   })
 
-  ipcMain.handle('apprec:start', async (_e, id: unknown, opts?: unknown) => {
+  ipcMain.handle('apprec:start', (_e, id: unknown, opts?: unknown) => startRun(id, { reuse: !!(opts && typeof opts === 'object' && (opts as { reuse?: unknown }).reuse === true) }))
+
+  /** one full run: explore, plan, record, produce. Also how a typed change that alters what is filmed is made (the change is added to the brief). */
+  async function startRun(id: unknown, o: StartOptions) {
     if (!isAppId(id)) return fail('Invalid app')
     const app = d.store.get(id)
     if (!app) return fail('That app no longer exists')
-    const reuse = !!(opts && typeof opts === 'object' && (opts as { reuse?: unknown }).reuse === true)
+    const reuse = o.reuse === true
     const savedPlan = reuse ? d.store.plan(id) : null
     if (reuse && !savedPlan) return fail('There are no saved steps for this app yet. Make a video first.')
     if (current || d.isBusy()) return fail('Another job is running. Wait for it to finish, then try again.')
@@ -133,6 +151,10 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
     const useAi = app.useAi && ai.available
 
     const rec = d.store.newRun(id)
+    if (o.parent) {
+      rec.parentRunId = o.parent.runId
+      d.store.saveRun(rec)
+    }
     const abort = new AbortController()
     const control = { takeover: false }
     current = { runId: rec.id, appId: id, abort, control }
@@ -178,21 +200,23 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
               abort.signal.addEventListener('abort', () => resolveDecide(null), { once: true })
             })
         }
-    const context = app.context + (app.document ? `\n\nAttached notes (information only):\n${app.document.text}` : '')
+    const changes = o.extraContext ? `\n\nChanges to make to the earlier video of this app (they win wherever they differ from the above):\n${o.extraContext}` : ''
+    const context = app.context + (app.document ? `\n\nAttached notes (information only):\n${app.document.text}` : '') + changes
+    const targetSec = o.targetSec ?? app.targetSec
     const base: Omit<RunInput, 'chat' | 'speech'> = {
       runDir: d.store.runDir(rec.id),
       startUrl: app.url,
       context,
       mode: app.mode,
-      launch: app.mode === 'launch' && app.launch ? { ...app.launch, targetSec: app.targetSec } : undefined,
+      launch: app.mode === 'launch' && app.launch ? { ...app.launch, targetSec } : undefined,
       signIn: app.signIn,
       vault: app.signIn === 'saved' ? (login ?? undefined) : undefined,
       revealUsername: app.revealUsername,
       guardrailText: app.guardrailText,
       checks: app.checks,
       depth: app.depth,
-      targetSec: app.targetSec,
-      platform: app.platform,
+      targetSec,
+      platform: o.platform ?? app.platform,
       reviewFirst: app.reviewFirst,
       brand: brandSourceOf(app.brandSource, !!app.brandId) === 'kit' && app.brandId ? (d.brand?.(app.brandId) ?? undefined) : undefined,
       siteBrand: brandSourceOf(app.brandSource, !!app.brandId) === 'site',
@@ -241,7 +265,9 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
           notes: out.plan.notes,
           blockedHosts: out.blockedHosts,
           enforced: out.enforced,
-          advisory: out.advisory
+          advisory: out.advisory,
+          editable: out.editable,
+          ...(o.parent ? { parentRunId: o.parent.runId, revision: o.parent.revision } : {})
         }
         if (out.video) d.store.savePlan(id, out.plan)
         record.notes = [...record.notes, ...(out.brandNotes ?? []), ...(out.mediaNotes ?? []), ...styleNotes]
@@ -260,6 +286,106 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
       }
     })()
     return { ok: true as const, runId: rec.id }
+  }
+
+  /**
+   * Change a finished video by typing what should be different. The request is read, then:
+   *   - it changes what is FILMED (another page, a different click, another shape or length): the app is recorded again with the change added to the brief;
+   *   - anything else (words, voice, language, cards, music, colours, a part cut out): the kept screen recording is edited and produced again,
+   *     only the voice lines whose words changed are said again, and the app is not opened.
+   * Either way the earlier video is kept, and the new one says what was changed, what was kept and what could not be done.
+   */
+  let reviseBusy = false
+  ipcMain.handle('apprec:revise', async (_e, runId: unknown, rawRequest: unknown) => {
+    if (!isRunId(runId)) return fail('Invalid recording')
+    const request = String(rawRequest ?? '').trim().slice(0, 2000)
+    if (!request) return fail('Type what should change first.')
+    if (current || reviseBusy || d.isBusy()) return fail('Another job is running. Wait for it to finish, then try again.')
+    const parent = d.store.runs().find((r) => r.id === runId)
+    if (!parent || parent.status !== 'done' || !parent.video) return fail('Only a finished video can be changed.')
+    const app = d.store.get(parent.appId)
+    if (!app) return fail('That app no longer exists')
+    reviseBusy = true
+    try {
+      const useAi = app.useAi && d.ai().available
+      const login = d.store.secrets(app.id)
+      const secrets = login ? [login.password, login.username] : []
+      const prev = readPreviousRecording(parent.id, d.store.runDir(parent.id))
+      const chat = useAi ? d.providers().chat : null
+      const edit = prev ? await interpretRevision(request, prev, { chat, secrets }) : null
+      if (edit && editIsEmpty(edit) && !edit.cannot.length) return fail('I could not find anything to change in that. Try, for example: “no music”, “cut the second scene”, “make the voice warmer”, “say it in Urdu”, “change the tagline to …”.')
+
+      // a change to what is filmed, or a video made before its pieces were kept: the app is recorded again
+      if (!prev || !edit || needsRerecord(edit)) {
+        const why = !prev ? 'This video was made before its pieces could be kept, so the app is recorded again with your change added to the brief.' : 'Your change alters what is filmed in the app, so the app is recorded again with it added to the brief.'
+        const revision: RecordingRevision = { request, route: 'rerecord', source: edit?.source ?? 'rules', changed: [why, ...(edit?.platform ? [`The video is made for ${edit.platform}.`] : []), ...(edit?.targetSec ? [`The video is aimed at ${edit.targetSec} seconds.`] : [])], kept: ['The app, its login and your other settings'], cannot: edit?.cannot ?? [] }
+        const platform: PlatformId | undefined = edit?.platform
+        return await startRun(app.id, { extraContext: request, targetSec: edit?.targetSec, platform, parent: { runId: parent.id, revision } })
+      }
+
+      // everything else: the kept recording is edited and produced again
+      const rec = d.store.newRun(app.id)
+      rec.parentRunId = parent.id
+      d.store.saveRun(rec)
+      const abort = new AbortController()
+      current = { runId: rec.id, appId: app.id, abort, control: { takeover: false } }
+      d.setBusy(true)
+      send({ kind: 'started', runId: rec.id, appId: app.id })
+      void (async () => {
+        meter.begin('app-recording')
+        let record: RunRecord
+        try {
+          const speech = useAi ? d.providers().speech : null
+          const tools = useAi ? (d.media?.(rec.id) ?? null) : null
+          const make = () =>
+            reviseRecording({
+              prev,
+              edit,
+              runDir: d.store.runDir(rec.id),
+              chat,
+              speech,
+              tools,
+              secrets,
+              signal: abort.signal,
+              progress: (stage, message) => {
+                rec.stage = stage
+                send({ kind: 'stage', runId: rec.id, stage, message })
+              },
+              log: (message) => send({ kind: 'log', runId: rec.id, message })
+            })
+          const out = useAi ? await d.aiJob(`ar-${rec.id}`, `${app.name} (changed)`, make) : await make()
+          record = {
+            ...rec,
+            status: 'done',
+            finishedAt: new Date().toISOString(),
+            video: out.video,
+            durationSec: out.durationSec,
+            pages: parent.pages,
+            actions: parent.actions,
+            notes: [],
+            editable: true,
+            revision: revisionOf(request, 'footage', edit.source, out)
+          }
+          d.store.saveRun(record)
+          send({ kind: 'done', runId: rec.id, run: record })
+          notify('Your changed video is ready', app.name)
+        } catch (err) {
+          const cancelled = err instanceof ReviseCancelled || err instanceof RunCancelled || abort.signal.aborted
+          record = { ...rec, status: cancelled ? 'cancelled' : 'failed', finishedAt: new Date().toISOString(), error: cancelled ? undefined : String((err as Error)?.message ?? err) }
+          d.store.saveRun(record)
+          send({ kind: cancelled ? 'cancelled' : 'failed', runId: rec.id, run: record })
+        } finally {
+          meter.end(d.store.runDir(rec.id))
+          current = null
+          d.setBusy(false)
+        }
+      })()
+      return { ok: true as const, runId: rec.id }
+    } catch (err) {
+      return fail(err)
+    } finally {
+      reviseBusy = false
+    }
   })
 
   ipcMain.handle('apprec:cancel', () => {

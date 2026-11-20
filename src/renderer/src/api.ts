@@ -285,6 +285,8 @@ declare global {
         revealRun: (runId: string) => Promise<boolean>
         runUsage: (runId: string) => Promise<ProjectUsage>
         removeRun: (runId: string) => Promise<{ ok: boolean; error?: string }>
+        /** change a finished video by typing what should be different: the kept recording is edited (words, voice, language, cards, music, colours, parts cut), or, if the change alters what is filmed, the app is recorded again. The earlier video is kept. */
+        revise: (runId: string, request: string) => Promise<{ ok: true; runId: string } | { ok: false; error: string }>
         onEvent: (cb: (event: RunEvent | PariEvent) => void) => () => void
       }
       market: {

@@ -401,7 +401,10 @@ export interface InsertPlan {
 
 export interface ProduceInput {
   dir: string
-  framesList: string
+  /** the recorded pictures, as ffmpeg's concat list (a first recording) */
+  framesList?: string
+  /** or the steady 30 fps screen recording already made from them (a kept one, edited again); wins over `framesList` */
+  rawVideo?: string
   /** seconds from recording start to the first frame (frames are the video's clock) */
   offsetSec: number
   take: Take
@@ -451,8 +454,11 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   mkdirSync(inp.dir, { recursive: true })
   const L = filmLayout(inp.size)
   const { W, H, win: WIN, page: PAGE } = L
-  const raw = join(inp.dir, 'raw.mp4')
-  ffmpeg(['-f', 'concat', '-safe', '0', '-i', inp.framesList, '-vf', 'fps=30,format=yuv420p', '-c:v', 'libx264', '-crf', '14', '-preset', 'veryfast', raw], 'raw video')
+  const raw = inp.rawVideo ?? join(inp.dir, 'raw.mp4')
+  if (!inp.rawVideo) {
+    if (!inp.framesList) throw new Error('produce needs the recorded frames or a kept screen recording')
+    ffmpeg(['-f', 'concat', '-safe', '0', '-i', inp.framesList, '-vf', 'fps=30,format=yuv420p', '-c:v', 'libx264', '-crf', '14', '-preset', 'veryfast', raw], 'raw video')
+  }
 
   const demo = inp.take.durationSec
   const keys = cameraKeys(inp.take, inp.offsetSec, demo)

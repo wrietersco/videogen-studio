@@ -9,6 +9,7 @@ import type { PlatformId } from '@shared/spec'
 import { MAX_STYLE_LINKS, parseYouTubeUrl } from '@shared/youtube'
 import type { AgentMode, CapabilityReport, DecisionRequest, FilmPlan, PariReport, SegmentCheck } from '@shared/agentBrief'
 import { DecisionPanel, PlanPanel, ReportPanel, autopilotLines } from './PariPanels'
+import { ReviseBox, RevisionSummary } from './MarketPanels'
 import { brandSourceOf, DEFAULT_CHECKS, DEPTH_LABELS, type AppChecks, type BrandSource, type Depth } from '@shared/appRecording'
 
 /**
@@ -158,6 +159,14 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
     } finally {
       setSaving(false)
     }
+  }
+
+  /** change a finished video by typing what should be different (the earlier video is kept) */
+  const revise = async (runId: string, request: string): Promise<boolean> => {
+    setError(null)
+    const r = await api.appRec.revise(runId, request)
+    if (!r.ok) setError(r.error)
+    return r.ok
   }
 
   const [linkText, setLinkText] = useState('')
@@ -494,7 +503,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
           )}
         </div>
 
-        {live && <RunPanel live={live} onClose={() => setLive(null)} onReviewAnswered={() => setLive((l) => (l ? { ...l, review: null } : l))} onDecided={() => setLive((l) => (l ? { ...l, decide: null } : l))} onHandoffDone={() => setLive((l) => (l ? { ...l, handoff: null } : l))} />}
+        {live && <RunPanel live={live} onRevise={revise} onClose={() => setLive(null)} onReviewAnswered={() => setLive((l) => (l ? { ...l, review: null } : l))} onDecided={() => setLive((l) => (l ? { ...l, decide: null } : l))} onHandoffDone={() => setLive((l) => (l ? { ...l, handoff: null } : l))} />}
 
         {myRuns.length > 0 && (
           <div className="mt-8">
@@ -530,6 +539,18 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
                   ))}
                 </div>
                 {r.status === 'done' && <CostToggle runId={r.id} />}
+                {r.revision && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-wide text-ink/40">✏️ What was changed from the earlier video</summary>
+                    <RevisionSummary revision={r.revision} />
+                  </details>
+                )}
+                {r.status === 'done' && r.video && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-wide text-ink/40">✏️ Change this video</summary>
+                    <ReviseBox disabled={running} onRevise={(text) => revise(r.id, text)} placeholder={REVISE_PLACEHOLDER} hint={reviseHint(r.editable)} />
+                  </details>
+                )}
                 </div>
               ))}
             </div>
@@ -555,7 +576,14 @@ function TakeOver() {
   )
 }
 
-function RunPanel({ live, onClose, onReviewAnswered, onDecided, onHandoffDone }: { live: Live; onClose: () => void; onReviewAnswered: () => void; onDecided: () => void; onHandoffDone: () => void }) {
+/** under a finished video: say what should change, in your own words */
+const REVISE_PLACEHOLDER = 'Anything, in your own words. For example: no music. Cut the second scene. Make the voice warmer. Say it in Urdu. Change the tagline to “Ready in minutes”. Make the cards green. Also show the reports page. Make it 30 seconds for TikTok.'
+const reviseHint = (editable?: boolean): string =>
+  editable
+    ? 'Words, voice, language, cards, music, colours and cutting a part are changed on the video you already have: minutes, and the app is not opened. Changing what is filmed records the app again. Your earlier video is kept.'
+    : 'This video was made before changes could be kept with it, so the app is recorded again with your change added. Your earlier video is kept.'
+
+function RunPanel({ live, onRevise, onClose, onReviewAnswered, onDecided, onHandoffDone }: { live: Live; onRevise: (runId: string, request: string) => Promise<boolean>; onClose: () => void; onReviewAnswered: () => void; onDecided: () => void; onHandoffDone: () => void }) {
   const idx = STAGES.findIndex((s) => s.id === live.stage)
   const done = live.result
   return (
@@ -616,6 +644,8 @@ function RunPanel({ live, onClose, onReviewAnswered, onDecided, onHandoffDone }:
           {!!done.advisory?.length && <div className="mt-2 text-xs text-ink/55">Not enforced automatically: {done.advisory.join(' | ')}</div>}
           {!!done.blockedHosts?.length && <div className="mt-2 text-xs text-ink/55">The app also tried to reach: {done.blockedHosts.map((h) => `${h.host} (${h.count}×)`).join(', ')}. Untick “Stay on this app's sites” to allow other hosts.</div>}
           <div className="mt-3 text-xs text-ink/50">Watch the video before you share it: we hide what we can recognize as private, and nothing else.</div>
+          {done.revision && <RevisionSummary revision={done.revision} />}
+          <ReviseBox key={`revise-${done.id}`} disabled={false} onRevise={(text) => onRevise(done.id, text)} placeholder={REVISE_PLACEHOLDER} hint={reviseHint(done.editable)} />
         </div>
       )}
       {done && done.status === 'failed' && <div className="mt-3 rounded-xl bg-coral-soft px-3 py-2 text-sm font-semibold text-coral">{done.error}</div>}

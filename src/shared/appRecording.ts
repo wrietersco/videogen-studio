@@ -88,6 +88,25 @@ export interface SavedApp extends Omit<AppInput, 'password'> {
 
 export type RunStatus = 'running' | 'done' | 'failed' | 'cancelled'
 
+/** a finished video made again with the changes the person typed */
+export interface RecordingRevision {
+  /** what the person typed, word for word */
+  request: string
+  /**
+   * how it was made again: 'footage' = the kept screen recording was edited and produced again (minutes, no
+   * browser); 'rerecord' = the request changes what is filmed, so the app was recorded again with it added to the brief
+   */
+  route: 'footage' | 'rerecord'
+  /** what was changed, in plain words */
+  changed: string[]
+  /** what was used again from the earlier video */
+  kept: string[]
+  /** what was asked but could not be done, and why */
+  cannot: string[]
+  /** who read the request: the AI writer or the rules */
+  source: 'ai' | 'rules'
+}
+
 export interface RunRecord {
   id: string
   appId: string
@@ -105,6 +124,11 @@ export interface RunRecord {
   blockedHosts?: Array<{ host: string; count: number }>
   enforced?: string[]
   advisory?: string[]
+  /** the screen recording and everything the video is made of were kept, so changes can be typed and applied without recording again */
+  editable?: boolean
+  /** the video this one was made from by typing changes (that video is kept) */
+  parentRunId?: string
+  revision?: RecordingRevision
 }
 
 export interface ReviewBeat {

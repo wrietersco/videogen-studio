@@ -1,16 +1,17 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Browser, Cookie, Page } from 'puppeteer-core'
 import { type AppMap, type AppPage, type Playbook, type Step, type Take } from '@shared/appRecon'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { asPhone, enforcePolicy, launch } from './browser'
-import { scrubMap } from './detect'
+import { scrubMap, scrubText } from './detect'
 import { parseDirectives, readUseCase } from './directives'
 import { checkCompatibility, explore, openPage, passInterstitial, settle, type Depth, type Exploration } from './explore'
-import { narrate, voiceLine, type LaunchInfo } from './narrate'
+import { narrate, narratorTone, voiceLine, type LaunchInfo } from './narrate'
+import { adoptFile, findVoice, writeRecordingRecord, type RecordedCard } from './recordingRecord'
 import { planBeats, type Plan } from './planner'
 import { interpretGuardrails, PolicyGate, type RestrictionChecks } from './policy'
-import { produce, recordingScreen, type InsertPlan } from './produce'
+import { produce, recordingScreen, type CardPlan, type InsertPlan } from './produce'
 import { performScript, scriptPlan, type ScriptOutcome } from './script'
 import { parseStepScript } from './stepScript'
 import { ambientBrief, chooseMusic, clipSeconds, parseMediaAsk, parseMusicAsk, parseStructure, planMedia, withStyle, withoutProductionSentences, type Placement } from './aiMedia'
@@ -177,6 +178,8 @@ export interface RunOutput {
   aiMusic?: boolean
   /** what was asked, what was done, and what was not (PARI runs only) */
   pari?: PariReport
+  /** everything the video is made of was kept, so it can be changed later without recording again */
+  editable?: boolean
 }
 
 export class RunCancelled extends Error {
@@ -615,6 +618,48 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     if (res.musicSource === 'ambience') mediaNotes.push(`Background sound: ${musicAsk!.sounds.length ? musicAsk!.sounds.join(', ') : 'natural ambience'}, made on this computer with no instruments, as you asked.`)
     if (res.scenes) mediaNotes.push(`The title${narration.problem ? ', problem' : ''} and closing scenes are animated around a "${motif}" motif chosen from what your video is about.`)
     if (narration.problem) mediaNotes.push('Problem statement added after the opening, as you asked (written by the engine from your words).')
+    // ------------------------------------------------------------ keep what the video is made of, so changes can be typed later without recording again
+    let editable = false
+    try {
+      const cardRec = (c: CardPlan | undefined, voice: string): RecordedCard | undefined =>
+        c ? { pill: c.pill, headline: c.headline, sub: c.sub, text: c.text, accent: c.accent, logo: adoptFile(c.logo, inp.runDir), voice: findVoice(inp.runDir, voice) } : undefined
+      writeRecordingRecord(inp.runDir, {
+        version: 1,
+        mode: inp.mode,
+        launch: inp.launch,
+        platform: inp.platform,
+        size: frame,
+        offsetSec: rec.offsetSec(),
+        title: inp.mode === 'launch' && inp.launch ? `${inp.launch.feature} launch` : plan.playbook.title,
+        targetSec: inp.targetSec ?? inp.launch?.targetSec,
+        context: scrubText(ctxClean, { values: secrets }).slice(0, 4000),
+        styleDirection: inp.styleDirection,
+        tone: narratorTone(inp.mode === 'launch'),
+        voiced: narration.plans.some((p) => p.pcm.length > 0),
+        lines: narration.plans.map((p) => ({ beat: p.beat, chapter: p.chapter, text: p.text, voice: findVoice(inp.runDir, `voice-${p.beat}`) })),
+        intro: cardRec(narration.intro, 'voice-intro'),
+        problem: cardRec(narration.problem, 'voice-problem'),
+        outro: cardRec(narration.outro, 'voice-outro'),
+        inserts: inserts
+          .map((ins, k) => ({ at: ins.at, file: adoptFile(ins.file, inp.runDir) ?? '', clipSec: ins.clipSec, text: ins.text, tag: ins.tag, voice: findVoice(inp.runDir, `final/voice-clip-${k}`) }))
+          .filter((i) => i.file),
+        music: {
+          source: res.musicSource,
+          mood: musicChoice?.mood ?? inp.musicMood ?? (inp.mode === 'launch' ? 'upbeat' : 'corporate'),
+          style: planMusic?.description ?? musicChoice?.style,
+          file: res.musicSource === 'ai' && existsSync(join(inp.runDir, 'final', 'ai-music.mp3')) ? 'final/ai-music.mp3' : undefined,
+          sounds: res.musicSource === 'ambience' ? ambience : undefined,
+          model: aiMusicModel,
+          level: musicAsk?.quiet ? 0.45 : undefined
+        },
+        motif,
+        look,
+        raw: 'final/raw.mp4'
+      })
+      editable = true
+    } catch (err) {
+      say(`(This video could not be saved for later changes: ${String((err as Error)?.message ?? err).slice(0, 120)})`)
+    }
     // ------------------------------------------------------------ PARI: review, and the honest report
     let report: PariReport | undefined
     if (fp && inp.pari) {
@@ -628,7 +673,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       writeFileSync(join(inp.runDir, 'pari-report.json'), JSON.stringify(report, null, 2))
       mediaNotes.push(...(pari?.notes ?? []).map((n) => `Choice: ${n}`), ...report.shortfalls)
     }
-    return { ...base, plan, video: res.file, durationSec: res.durationSec, redactionMisses: take.redactionMisses, mediaNotes, aiClips: inserts.length, aiMusic: res.musicSource === 'ai', pari: report }
+    return { ...base, plan, video: res.file, durationSec: res.durationSec, redactionMisses: take.redactionMisses, mediaNotes, aiClips: inserts.length, aiMusic: res.musicSource === 'ai', pari: report, editable }
   } finally {
     inp.signal?.removeEventListener('abort', onAbort)
     await browser.close().catch(() => undefined)

@@ -114,6 +114,10 @@ export function neutralProblemTitle(context: string): string {
   return 'Too much, too scattered'
 }
 
+/** how the narrator is told to sound (the voice model's instructions) */
+export const narratorTone = (launch: boolean): string =>
+  launch ? 'Confident, upbeat product-launch announcer. Warm, energetic, with a clear sense of occasion, at a brisk but natural pace.' : 'Calm, clear, friendly product-demo narrator at an unhurried pace.'
+
 /** one line spoken by the narrator, trimmed of silence (empty when there is no narrator) */
 export async function voiceLine(speech: SpeechProvider | null, dir: string, name: string, text: string, tone: string): Promise<Float32Array> {
   if (!speech) return new Float32Array(0)
@@ -214,7 +218,7 @@ export async function narrate(inp: NarrateInput): Promise<Narration> {
     if (!scanNarration(outroText ?? '', scan).ok) outroText = `${launch.feature}. ${launch.cta}.`
   }
 
-  const tone = launch ? 'Confident, upbeat product-launch announcer. Warm, energetic, with a clear sense of occasion, at a brisk but natural pace.' : 'Calm, clear, friendly product-demo narrator at an unhurried pace.'
+  const tone = narratorTone(!!launch)
   const voiceOf = (name: string, text: string): Promise<Float32Array> => voiceLine(inp.speech, inp.dir, name, text, tone)
 
   const plans: BeatPlan[] = []

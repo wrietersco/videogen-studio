@@ -162,6 +162,7 @@ const api = {
     revealRun: (runId: string) => ipcRenderer.invoke('apprec:revealRun', runId),
     runUsage: (runId: string) => ipcRenderer.invoke('apprec:runUsage', runId),
     removeRun: (runId: string) => ipcRenderer.invoke('apprec:removeRun', runId),
+    revise: (runId: string, request: string) => ipcRenderer.invoke('apprec:revise', runId, request),
     onEvent: (cb: (event: unknown) => void) => {
       const listener = (_e: unknown, payload: unknown) => cb(payload)
       ipcRenderer.on('apprec:event', listener)

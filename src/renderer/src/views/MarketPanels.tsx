@@ -55,7 +55,7 @@ export function MarketPlanPanel({ plan, capabilities, checks }: { plan: MarketPl
 }
 
 /** under a finished film: say what should change, and make it again (the earlier film is kept) */
-export function ReviseBox({ disabled, onRevise }: { disabled: boolean; onRevise: (request: string) => Promise<boolean> }) {
+export function ReviseBox({ disabled, onRevise, placeholder, hint }: { disabled: boolean; onRevise: (request: string) => Promise<boolean>; placeholder?: string; hint?: string }) {
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   return (
@@ -67,11 +67,11 @@ export function ReviseBox({ disabled, onRevise }: { disabled: boolean; onRevise:
         onChange={(e) => setText(e.target.value)}
         rows={2}
         maxLength={2000}
-        placeholder={'Anything, in your own words. For example: make the hook funnier. Use a different picture in the second scene. No music. Say we deliver on Sundays. 15 seconds.'}
+        placeholder={placeholder ?? 'Anything, in your own words. For example: make the hook funnier. Use a different picture in the second scene. No music. Say we deliver on Sundays. 15 seconds.'}
         className="field mt-1 w-full px-3 py-1.5 text-sm"
       />
       <div className="mt-1 flex items-center justify-between gap-2">
-        <span className="text-[11px] text-ink/45">Only what you change is made again. Your earlier film is kept.</span>
+        <span className="text-[11px] text-ink/45">{hint ?? 'Only what you change is made again. Your earlier film is kept.'}</span>
         <button
           disabled={disabled || busy || !text.trim()}
           onClick={async () => {
