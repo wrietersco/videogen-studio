@@ -11,6 +11,7 @@ import { classifyField } from './sensitivity'
 import { asPhone } from './browser'
 import { redactionInitScript, cursorInitScript, verifyScript, type RedactionConfig } from './redact'
 import { findElement, scrollArea } from './resolve'
+import { chooseNative, matchOption, readChoices } from './pick'
 
 /**
  * Recorder — a screencast of the page, plus a timeline of what was done when.
@@ -415,6 +416,37 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           lastSel = step.selector
           focusRect = r
           focusKind = step.focus
+        } else if (step.kind === 'select' && step.text && (step.selector || step.find)) {
+          // choose an entry in a dropdown: the pointer goes to it, then the entry is set (a real <select>'s list is drawn by the
+          // browser itself and cannot be filmed, so the dropdown shows its new value instead)
+          const found = await locate(step)
+          if (found === 'gone') continue
+          const r = found
+          if (!r) return { ok: false, failure: `${step.id}: could not find the dropdown "${step.label ?? step.selector}"`, beats, navigations, log, redactionMisses: misses }
+          const choices = await readChoices(page, step.selector!)
+          await glide(r.x + Math.min(r.w * 0.5, 160), r.y + r.h / 2, 700)
+          await sleep(450 * pace)
+          if (choices.native) {
+            const at = matchOption(choices.entries, step.text)
+            if (at < 0) return { ok: false, failure: `${step.id}: the dropdown has no entry called "${step.text}"`, beats, navigations, log, redactionMisses: misses }
+            const verdict = o.gate.checkClick({ label: choices.entries[at], kind: 'button' })
+            if (!verdict.allow) return { ok: false, failure: `${step.id}: blocked by guardrails — ${verdict.reason}`, beats, navigations, log, redactionMisses: misses }
+            await chooseNative(page, step.selector!, at)
+            say(step.id, `chose "${choices.entries[at]}" in "${step.label ?? step.selector}"`)
+          } else {
+            await page.mouse.click(mouse.x, mouse.y)
+            await sleep(500 * pace)
+            const entry = await findElement(page, { target: step.text, kind: 'click', within: ['suggestion'] }, 4000)
+            if (!entry.found) return { ok: false, failure: `${step.id}: the dropdown has no entry called "${step.text}"`, beats, navigations, log, redactionMisses: misses }
+            const verdict = o.gate.checkClick({ label: entry.found.label || step.text, kind: 'button' })
+            if (!verdict.allow) return { ok: false, failure: `${step.id}: blocked by guardrails — ${verdict.reason}`, beats, navigations, log, redactionMisses: misses }
+            await glide(entry.found.rect.x + entry.found.rect.w / 2, entry.found.rect.y + entry.found.rect.h / 2, 500)
+            await sleep(250 * pace)
+            await page.mouse.click(mouse.x, mouse.y)
+            say(step.id, `chose "${entry.found.label || step.text}" in "${step.label ?? step.selector}"`)
+          }
+          await sleep(pace === 0 ? 300 : 900) // the page redraws for the new entry
+          lastSel = step.selector
         } else if (step.kind === 'press' && step.text) {
           await sleep(200 * pace)
           const nav = page.waitForNavigation({ waitUntil: 'load', timeout: 6000 }).catch(() => null)

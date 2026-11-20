@@ -508,12 +508,15 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
         {myRuns.length > 0 && (
           <div className="mt-8">
             <div className="text-sm font-black">Earlier recordings</div>
-            <div className="mt-2 space-y-2">
+            {/* a grid of cards, each with a small picture from its video */}
+            <div className="mt-2 grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
               {myRuns.slice(0, 8).map((r) => (
-                <div key={r.id} className="card px-4 py-2 text-sm">
-                <div className="flex items-center gap-3">
+                <div key={r.id} className="card overflow-hidden text-sm">
+                <RunPreview run={r} />
+                <div className="px-4 py-3">
+                <div className="flex flex-wrap items-center gap-2">
                   <span>{r.status === 'done' ? '✅' : r.status === 'cancelled' ? '⏹️' : r.status === 'running' ? '⏳' : '⚠️'}</span>
-                  <span className="flex-1 truncate">
+                  <span className="min-w-0 flex-1 truncate" title={r.status === 'done' ? undefined : (r.error ?? r.status)}>
                     {new Date(r.startedAt).toLocaleString()} · {r.status === 'done' ? `${fmtDur(r.durationSec)} · ${r.pages ?? 0} pages explored` : (r.error ?? r.status)}
                   </span>
                   {r.video && <button onClick={() => api.appRec.play(r.id)} className="btn-ghost !px-3 !py-1 !text-xs">▶ Play</button>}
@@ -552,12 +555,41 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
                   </details>
                 )}
                 </div>
+                </div>
               ))}
             </div>
           </div>
         )}
       </div>
     </div>
+  )
+}
+
+/** the small picture at the top of an earlier recording's card; press it to play the video */
+function RunPreview({ run }: { run: RunRecord }) {
+  const [src, setSrc] = useState<string | null>(null)
+  const playable = run.status === 'done' && !!run.video
+  useEffect(() => {
+    let alive = true
+    if (playable) void api.appRec.poster(run.id).then((p) => alive && setSrc(p)).catch(() => undefined)
+    return () => { alive = false }
+  }, [run.id, playable])
+  return (
+    <button
+      type="button"
+      disabled={!playable}
+      onClick={() => void api.appRec.play(run.id)}
+      title={playable ? 'Play this video' : undefined}
+      className="group relative block aspect-video w-full overflow-hidden bg-ink/10 disabled:cursor-default"
+    >
+      {src ? <img src={src} alt="" className="h-full w-full object-cover" /> : <span className="flex h-full w-full items-center justify-center text-3xl opacity-40">{playable ? '🎬' : run.status === 'running' ? '⏳' : '⚠️'}</span>}
+      {playable && (
+        <>
+          <span className="absolute inset-0 flex items-center justify-center bg-ink/0 text-3xl text-white opacity-0 transition group-hover:bg-ink/30 group-hover:opacity-100">▶</span>
+          {run.durationSec ? <span className="absolute bottom-1.5 right-1.5 rounded-md bg-ink/75 px-1.5 py-0.5 text-[11px] font-bold text-white">{fmtDur(run.durationSec)}</span> : null}
+        </>
+      )}
+    </button>
   )
 }
 

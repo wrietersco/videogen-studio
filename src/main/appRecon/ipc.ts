@@ -1,5 +1,6 @@
 import { BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { videoPoster } from '../assets/probe'
 import { join, resolve, sep } from 'node:path'
 import { DECIDE_CHANNEL, type CapabilityReport, type DecisionAnswer, type DecisionRequest } from '../../shared/agentBrief'
 import { brandSourceOf, isAppId, isRunId, validateApp, type RecordingRevision, type ReviewEdits, type RunEvent, type RunRecord } from '../../shared/appRecording'
@@ -445,6 +446,23 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
     if (!f) return false
     shell.showItemInFolder(f)
     return true
+  })
+  /** a small picture from the video for the grid of earlier recordings: taken once from the screen part of the film and kept in the run's folder */
+  ipcMain.handle('apprec:poster', (_e, runId: unknown): string | null => {
+    const f = videoOf(runId)
+    if (!f || !isRunId(runId)) return null
+    const cached = join(d.store.runDir(runId), 'poster.jpg')
+    try {
+      if (!existsSync(cached)) {
+        const rec = d.store.runs().find((r) => r.id === runId)
+        const buf = videoPoster(f, Math.max(1, (rec?.durationSec ?? 10) * 0.55))
+        if (!buf) return null
+        writeFileSync(cached, buf)
+      }
+      return `data:image/jpeg;base64,${readFileSync(cached).toString('base64')}`
+    } catch {
+      return null
+    }
   })
   /** what one recording cost: the receipt filed in its own folder */
   ipcMain.handle('apprec:runUsage', (_e, runId: unknown) => (isRunId(runId) ? readProjectUsage(d.store.runDir(runId)) : { runs: [], totalUsd: 0, savedUsd: 0 }))

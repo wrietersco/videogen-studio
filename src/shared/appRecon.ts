@@ -114,7 +114,7 @@ export type Guardrails = z.infer<typeof Guardrails>
 export const FindSpec = z.object({
   /** the name the person used: visible text, an icon's tooltip or label, or the box's placeholder */
   target: z.string(),
-  kind: z.enum(['click', 'type', 'scroll']),
+  kind: z.enum(['click', 'type', 'scroll', 'select']),
   region: z.enum(['left', 'right', 'top', 'bottom']).optional(),
   /** words for the area it sits in: menu, search, pane, header, dropdown ... */
   within: z.array(z.string()).optional(),
@@ -123,7 +123,7 @@ export const FindSpec = z.object({
 })
 export type FindSpec = z.infer<typeof FindSpec>
 
-export const StepKind = z.enum(['goto', 'type', 'click', 'press', 'wait', 'expect', 'handoff', 'scroll', 'reveal'])
+export const StepKind = z.enum(['goto', 'type', 'click', 'press', 'wait', 'expect', 'handoff', 'scroll', 'reveal', 'select'])
 export const Step = z.object({
   id: z.string(),
   /** which narrated beat of the video this step belongs to */

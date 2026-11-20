@@ -159,6 +159,7 @@ const api = {
     decide: (answers: unknown) => ipcRenderer.invoke('apprec:decide', answers),
     play: (runId: string) => ipcRenderer.invoke('apprec:play', runId),
     reveal: (runId: string) => ipcRenderer.invoke('apprec:reveal', runId),
+    poster: (runId: string) => ipcRenderer.invoke('apprec:poster', runId),
     revealRun: (runId: string) => ipcRenderer.invoke('apprec:revealRun', runId),
     runUsage: (runId: string) => ipcRenderer.invoke('apprec:runUsage', runId),
     removeRun: (runId: string) => ipcRenderer.invoke('apprec:removeRun', runId),

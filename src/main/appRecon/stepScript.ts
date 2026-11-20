@@ -21,7 +21,11 @@ import type { FindSpec } from '@shared/appRecon'
  */
 
 export type Atom =
+  /** go to an address the step names, whole (the #fragment can pick the view the page opens on) */
+  | { action: 'open'; label: string; url: string }
   | { action: 'click'; label: string; find: FindSpec }
+  /** choose one entry in a dropdown ("select Surah An-Nur" in the "Text to Study" dropdown) */
+  | { action: 'select'; label: string; option: string; find: FindSpec }
   | { action: 'type'; label: string; text: string; find: FindSpec }
   | { action: 'scroll'; dir: 'down' | 'up'; find: FindSpec }
 
@@ -44,8 +48,44 @@ export interface StepScript {
   goal: string
 }
 
-const Q = String.raw`["“”'‘’]`
-const QUOTED = new RegExp(`${Q}([^"“”'‘’]{1,100})${Q}`)
+// a name can be quoted with straight or curly quotes or with backticks (`The even-odd circle`)
+const Q = '["“”\'‘’`]'
+const NQ = '[^"“”\'‘’`]'
+const QUOTED = new RegExp(`${Q}(${NQ}{1,100})${Q}`)
+/** an address in a step, with the words that introduce it ("open: https://…", "go to https://…"); its trailing punctuation is not part of it */
+const OPEN_URL = /(?:\b(?:open(?:\s+up)?|go\s+to|navigate\s+to|visit|head\s+to|load|browse\s+to|the\s+(?:url|page|address|link))\b[\s:]*)*(https?:\/\/[^\s`'"<>)\]]+)/gi
+/** "make sure to", "ensure to": filler in front of the real verb */
+const FILLER = /\b(?:ensure|make\s+sure|be\s+sure|remember)\s+(?:to\s+|that\s+you\s+)?/gi
+/** a menu path: "SHAPES -> 05 The even-odd circle" names the last stop */
+const PATH_SEP = /\s*(?:->|→|=>|⇒|➜|›|»)\s*/
+/** "the `Text to Study` dropdown", "dropdown called `X`", "from the surah dropdown": which dropdown a step means */
+const DROPDOWN_QUOTED = new RegExp(`${Q}(${NQ}{1,60})${Q}\\s+(?:drop-?down|select(?:\\s+box)?|menu|list|picker|combo-?box)\\b`, 'i')
+const DROPDOWN_CALLED = new RegExp(`\\b(?:drop-?down|picker|select(?:\\s+box)?)\\s+(?:called|named|labell?ed|titled)?\\s*${Q}(${NQ}{1,60})${Q}`, 'i')
+const DROPDOWN_PLAIN = /\b(?:from|in|on|using|open)\s+(?:the\s+)?([A-Za-z][\w'’ -]{0,40}?)\s+drop-?down\b/i
+const DROPDOWN_ANY = /\bdrop-?down\b|\bpicker\b/i
+/** "select Surah An-Nur,", "switch to surah Ya-Sin, then": the name of the entry that is chosen */
+const PICK = /\b(?:select|choose|pick|switch\s+to|change\s+to)\s+(?:the\s+)?(?:(?:surah|sura|chapter|option|item|value|entry)\s+)?[`"“'‘]?([^,.;:!?\n`"”]+?)[`"”'’]?(?=\s*(?:[,.;:!?]|$)|\s+(?:from|in|on|and|then|to\s+see|so|which|for|with)\b)/gi
+/** "switch to any surah" names no entry */
+const NOT_AN_ENTRY = /^(?:any|another|a|an|some|different|other|each|every|one|it|them|that|this|the\s+next|next|previous)(?:\s|$)/i // not "An-Nur"
+
+/** which dropdown the words mean, when they talk about one */
+function dropdownIn(text: string): { label: string } | null {
+  const m = DROPDOWN_QUOTED.exec(text) ?? DROPDOWN_CALLED.exec(text)
+  if (m) return { label: clean(m[1]) }
+  const p = DROPDOWN_PLAIN.exec(text)
+  if (p) return { label: clean(p[1].replace(ARTICLE, '')) }
+  return DROPDOWN_ANY.test(text) ? { label: '' } : null
+}
+
+/** the entries named in "select X" / "switch to Y", in the order said */
+function picksIn(text: string): string[] {
+  const out: string[] = []
+  for (const m of text.matchAll(PICK)) {
+    const name = clean(m[1])
+    if (name && name.length <= 60 && !NOT_AN_ENTRY.test(name)) out.push(name)
+  }
+  return out
+}
 const BULLET = /^\s*(?:(?:step\s*)?\d{1,2}\s*[.):\-]|[-*•▪●])\s+(.*\S)\s*$/i
 const LOGIN = /^(?:(?:and|then|first|please)\s+)*(?:log\s?-?\s?(?:in|into|on)|sign\s?-?\s?(?:in|into|on)|authenticate|login)\b/i
 const EXPLAIN = /\b(?:(?:to|and|then)\s+)?(explain|describe|tell(?:\s+(?:me|us|the viewer))?|talk\s+about|mention|highlight|discuss|point\s+out|summari[sz]e|cover|narrate|walk\s+(?:me\s+)?through)\b/i
@@ -92,6 +132,8 @@ function clickAtom(raw: string, place: { region?: FindSpec['region']; within: st
     rest = rest.slice(0, tail.index)
   }
   const q = QUOTED.exec(rest)
+  // "SHAPES -> 05 The even-odd circle": the section names the way there, the last stop is what is clicked
+  if (!q && PATH_SEP.test(rest)) rest = rest.split(PATH_SEP).pop() ?? rest
   const before = q ? rest.slice(0, q.index) : rest
   const after = q ? rest.slice(q.index + q[0].length) : ''
   let label = q ? q[1].trim() : clean(clean(before).replace(ARTICLE, '').replace(NOUN_TAIL, '').replace(/\b(?:the\s+)?(?:suggestion|option|result|entry)\b/i, ''))
@@ -108,8 +150,29 @@ function parseLine(n: number, said: string): ScriptItem {
   const item: ScriptItem = { n, said, login: false, atoms: [], notes: [] }
   // quotes are kept whole while the line is split into small actions
   const shield: string[] = []
-  const guarded = said.replace(new RegExp(`${Q}[^"“”'‘’]{1,100}${Q}`, 'g'), (m) => `\u0001${shield.push(m) - 1}\u0001`)
+  // an address is taken out whole first (the dots and the # in it are not sentence breaks), and becomes a step of its own
+  const urls: string[] = []
+  const noUrls = said.replace(OPEN_URL, (_m, u: string) => {
+    const clean1 = u.replace(/[.,;:!?]+$/, '')
+    urls.push(clean1)
+    return ' '
+  })
+  for (const u of urls) item.atoms.push({ action: 'open', label: 'Open page', url: u })
+  const guarded = noUrls
+    .replace(new RegExp(`${Q}${NQ}{1,100}${Q}`, 'g'), (m) => `\u0001${shield.push(m) - 1}\u0001`)
+    .replace(FILLER, '')
   const unshield = (s: string): string => s.replace(/\u0001(\d+)\u0001/g, (_, i: string) => shield[Number(i)])
+
+  // choosing entries in a dropdown ("go to the `Text to Study` dropdown and select Surah An-Nur, then switch to Ya-Sin"): said
+  // in the middle of an explanation just as often as in a plain step, so the whole line is read for it
+  const dd = dropdownIn(noUrls)
+  const picks = dd ? picksIn(noUrls) : []
+  const ddPlace = ((): { region?: FindSpec['region']; within: string[] } => {
+    const s = noUrls.split(/(?<=[.!?])\s+/).find((x) => DROPDOWN_ANY.test(x) || (dd?.label && x.toLowerCase().includes(dd.label.toLowerCase())))
+    if (!s) return { within: [] }
+    const p = placeOf(s)
+    return { ...p, within: p.within.filter((w) => w !== 'suggestion') } // "dropdown" is what it is, not where it sits
+  })()
 
   // "explain ..." takes the rest of the line: it is what to make clear, not something to click
   const ex = EXPLAIN.exec(guarded)
@@ -127,11 +190,13 @@ function parseLine(n: number, said: string): ScriptItem {
     const clause = unshield(raw)
     if (first && LOGIN.test(clause)) { item.login = true; first = false; continue }
     first = false
+    // what is said about the dropdown and the entries is done as the choices below, not clicked
+    if (picks.length && (DROPDOWN_ANY.test(clause) || picksIn(clause).length)) continue
     const lead = /^(?:from|in|on|at|inside|within|under|using)\s+(?:the\s+)?(.+)$/i.exec(clause)
-    const verbHere = TYPE_VERB.test(clause) || CLICK_VERB.test(clause) || SCROLL.test(clause)
-    if (lead && !verbHere) { place = placeOf(lead[1]); continue }
-    // "from the left menu click ontology" (no comma)
+    // "from the left menu click ontology" (no comma): the place and the action in one clause
     const inline = /^(?:from|in|on|at|inside|within)\s+(?:the\s+)?(.+?)\s+((?:click|press|tap|select|choose|open|type|enter|search|scroll|explore)\b.*)$/i.exec(clause)
+    const verbHere = !!inline || TYPE_VERB.test(clause) || CLICK_VERB.test(clause) || SCROLL.test(clause)
+    if (lead && !verbHere) { place = placeOf(lead[1]); continue }
     const text = inline ? inline[2] : clause
     if (inline) place = placeOf(inline[1])
     const sc = SCROLL.exec(text)
@@ -163,12 +228,23 @@ function parseLine(n: number, said: string): ScriptItem {
     }
     item.notes.push(clause)
   }
+  for (const option of picks) {
+    const label = dd?.label ?? ''
+    item.atoms.push({ action: 'select', label: label || 'dropdown', option, find: { target: label, kind: 'select', ...(ddPlace.region ? { region: ddPlace.region } : {}), ...(ddPlace.within.length ? { within: ddPlace.within } : {}) } })
+  }
   return item
 }
 
 /** the person's list of steps, or null when what they wrote is not a list of at least two steps */
 export function parseStepScript(context: string): StepScript | null {
-  const typed = (context.split(/\n\s*Attached notes \(information only\):/)[0] ?? '').replace(/\r/g, '')
+  let typed = (context.split(/\n\s*Attached notes \(information only\):/)[0] ?? '').replace(/\r/g, '')
+  // a video made again with changes: when those changes bring their own list of steps, that list is the script (they win
+  // wherever they differ), not a second run of the steps after the first
+  const marker = /\n\s*Changes to make to the earlier video of this app[^\n]*\n/.exec(typed)
+  if (marker) {
+    const changes = typed.slice(marker.index + marker[0].length)
+    if (changes.split('\n').filter((l) => BULLET.test(l)).length >= 2) typed = typed.slice(0, marker.index).split('\n').filter((l) => !BULLET.test(l) && !/^\s{2,}\S/.test(l)).join('\n') + '\n' + changes
+  }
   const lines = typed.split('\n')
   const listed = lines.filter((l) => BULLET.test(l))
   if (listed.length < 2) return null

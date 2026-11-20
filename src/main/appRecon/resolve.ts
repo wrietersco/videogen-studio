@@ -84,6 +84,18 @@ function locate(spec: FindSpec, minScore: number): Result {
     if (by) { const l = document.getElementById(by.split(' ')[0]); if (l) out.push(textOf(l)) }
     const lab = (el as HTMLInputElement).labels?.[0]
     if (lab) out.push(textOf(lab))
+    // a dropdown is usually named by the small text beside it ("TEXT TO STUDY"), not by its own entries
+    if (el.tagName === 'SELECT' || el.getAttribute('role') === 'combobox' || el.getAttribute('role') === 'listbox') {
+      // the few elements in front of it (a label, then maybe a "previous" arrow)
+      for (let p = el.previousElementSibling, i = 0; p && i < 3; p = p.previousElementSibling, i++) {
+        const t = textOf(p)
+        if (t && t.length <= 60) out.push(t)
+      }
+      const own = Array.from(el.parentElement?.childNodes ?? []).filter((n) => n.nodeType === 3).map((n) => n.textContent ?? '').join(' ').replace(/\s+/g, ' ').trim()
+      if (own && own.length <= 60) out.push(own)
+      const wrap = el.parentElement ? textOf(el.parentElement) : ''
+      if (el.tagName === 'SELECT' && wrap && wrap.length <= 60) out.push(wrap)
+    }
     // a tooltip that lives in a child element
     const tip = el.querySelector('[role=tooltip],.tooltip,[class*=tooltip]')
     if (tip) out.push(textOf(tip))
@@ -140,6 +152,7 @@ function locate(spec: FindSpec, minScore: number): Result {
   for (const el of all) {
     if (/^(HTML|BODY|HEAD|SCRIPT|STYLE|META|LINK|TITLE|NOSCRIPT|BR|HR)$/.test(el.tagName)) continue
     if (spec.kind === 'type') { if (isField(el) && shown(el)) pool.push(el); continue }
+    if (spec.kind === 'select') { if ((el.tagName === 'SELECT' || /^(combobox|listbox)$/.test(el.getAttribute('role') ?? '') || el.getAttribute('aria-haspopup') === 'listbox') && shown(el)) pool.push(el); continue }
     if (!shown(el)) continue
     if (el.matches(INTERACTIVE)) { pool.push(el); continue }
     if (/^(svg|path|g|circle|rect|text|use|i|img|span|div|p|td|th)$/i.test(el.tagName) && el.parentElement) {
@@ -147,7 +160,7 @@ function locate(spec: FindSpec, minScore: number): Result {
       if (cs.cursor === 'pointer' && getComputedStyle(el.parentElement).cursor !== 'pointer') pool.push(el)
     }
   }
-  const clickable = spec.kind === 'type' ? pool : pool.filter((el) => !isField(el))
+  const clickable = spec.kind === 'type' || spec.kind === 'select' ? pool : pool.filter((el) => !isField(el))
 
   const WITHIN: Record<string, RegExp> = {
     menu: /menu|nav|sidebar|side-?bar|drawer|rail|aside/,
@@ -189,7 +202,7 @@ function locate(spec: FindSpec, minScore: number): Result {
   for (const el of clickable) {
     if (el === refs) continue
     let s = scoreText(el, key, spec.target)
-    if (spec.kind === 'type' && s < minScore && !key.length) s = 50
+    if ((spec.kind === 'type' || spec.kind === 'select') && s < minScore && !key.length) s = 50
     if (spec.kind === 'type' && (el as HTMLInputElement).type === 'search') s += 25
     if (spec.kind === 'type' && s < minScore && /search|filter|find|query/.test(`${el.id} ${classTokens(el)} ${el.getAttribute('name') ?? ''} ${el.getAttribute('placeholder') ?? ''}`.toLowerCase()) && key.every((w) => /search|filter|find|query|text|input/.test(w))) s = 60
     if (s <= 0) continue

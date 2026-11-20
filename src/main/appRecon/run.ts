@@ -752,11 +752,15 @@ function displayHost(url: string): string {
   }
 }
 
-/** the same page, whatever the query string or a trailing slash says */
-function sameAddress(a: string, b: string): boolean {
+/**
+ * The same page, whatever the query string or a trailing slash says. A #fragment counts when the wanted address (`b`)
+ * has one: on many apps it picks the view the page opens on, and a sign-in redirect drops it.
+ */
+export function sameAddress(a: string, b: string): boolean {
   try {
     const x = new URL(a)
     const y = new URL(b)
+    if (y.hash.length > 1 && x.hash !== y.hash) return false
     return x.host === y.host && x.pathname.replace(/\/+$/, '') === y.pathname.replace(/\/+$/, '')
   } catch {
     return false

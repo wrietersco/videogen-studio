@@ -4,9 +4,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { canShowWindow, findChrome } from '../src/main/appRecon/browser'
-import { runAppRecording, type RunHooks } from '../src/main/appRecon/run'
+import { runAppRecording, sameAddress, type RunHooks } from '../src/main/appRecon/run'
 import { withoutMediaSentences } from '../src/main/appRecon/aiMedia'
 import { parseStepScript } from '../src/main/appRecon/stepScript'
+import { matchOption } from '../src/main/appRecon/pick'
 
 const STEPS = `1. log into the app
 2. from left menu, click ontology
@@ -59,6 +60,77 @@ describe('reading a list of steps the person wrote', () => {
   })
 })
 
+const MIZAN = `log into the app and then follow the steps to follow for screen recording:
+1. open: https://taaweel.snapkodex.com/numerical_analysis/explore.html#circle
+2. from the left panel ensure to click SHAPES -> 05 \`The even-odd circle\` option
+3. in your own words tell that with the help of mathematics we distributed even verse number ayas on top of the circle and odd at bottom.
+4. then provide a conclusion statement and add CTA`
+
+describe('a step that names an address and a menu path', () => {
+  const s = parseStepScript(MIZAN)!
+  it('opens the whole address, #fragment included, and nothing else from that step', () => {
+    expect(s.items[0].atoms).toEqual([{ action: 'open', label: 'Open page', url: 'https://taaweel.snapkodex.com/numerical_analysis/explore.html#circle' }])
+    expect(s.items[0].notes).toEqual([])
+  })
+  it('clicks the last stop of a menu path, quoted in backticks, on the left even after "ensure to"', () => {
+    expect(s.items[1].atoms).toHaveLength(1)
+    expect(s.items[1].atoms[0]).toMatchObject({ action: 'click', label: 'The even-odd circle', find: { region: 'left', within: ['pane'] } })
+  })
+  it('also reads "go to <address>", a bare address and an unquoted menu path', () => {
+    const t = parseStepScript('1. go to https://example.com/app?x=1#tab.\n2. click Settings -> Billing')!
+    expect(t.items[0].atoms).toEqual([{ action: 'open', label: 'Open page', url: 'https://example.com/app?x=1#tab' }])
+    expect(t.items[1].atoms[0]).toMatchObject({ action: 'click', label: 'Billing' })
+  })
+  it('reads "from the left menu click ontology" with no comma', () => {
+    const t = parseStepScript('1. from the left menu click ontology\n2. click reports')!
+    expect(t.items[0].atoms[0]).toMatchObject({ action: 'click', label: 'ontology', find: { region: 'left', within: ['menu'] } })
+  })
+  it('takes the list in "Changes to make" instead of running the first list again', () => {
+    const t = parseStepScript(`${MIZAN}\n\nChanges to make to the earlier video of this app (they win wherever they differ from the above):\n1. click reports\n2. click customers`)!
+    expect(t.items.map((i) => i.said)).toEqual(['click reports', 'click customers'])
+  })
+})
+
+const MIZAN_PICKS = `1. open: https://taaweel.snapkodex.com/numerical_analysis/explore.html#circle
+2. in your own words tell that with the help of mathematics we distributed even verse number ayas on top of the circle and odd at bottom. you can switch to any surah and visualize it to see the balance. for example, then step 3 comes go to the \`Text to Study\` dropdown in header of the page on top left and select Surah An-Nur, and show the even-odd-structure. then switch to surah Ya-Sin, then show its even odd structure
+3. then provide a conclusion statement and add CTA`
+
+describe('choosing entries in a dropdown', () => {
+  const s = parseStepScript(MIZAN_PICKS)!
+  it('reads the dropdown and every entry named, even in the middle of an explanation', () => {
+    const picks = s.items[1].atoms.filter((a) => a.action === 'select')
+    expect(picks).toHaveLength(2)
+    expect(picks[0]).toMatchObject({ action: 'select', option: 'An-Nur', label: 'Text to Study', find: { kind: 'select', target: 'Text to Study', region: 'left', within: ['header'] } })
+    expect(picks[1]).toMatchObject({ action: 'select', option: 'Ya-Sin', label: 'Text to Study' })
+    expect(s.items[1].explain).toMatch(/mathematics/)
+    // "switch to any surah" names no entry, and nothing in the item is clicked
+    expect(s.items[1].atoms.map((a) => a.action)).toEqual(['select', 'select'])
+  })
+  it('reads a plain step too, and leaves "select" alone when no dropdown is meant', () => {
+    const t = parseStepScript('1. select Ya-Sin from the surah dropdown\n2. select the Reports tab')!
+    expect(t.items[0].atoms).toEqual([{ action: 'select', label: 'surah', option: 'Ya-Sin', find: { target: 'surah', kind: 'select' } }])
+    expect(t.items[1].atoms[0]).toMatchObject({ action: 'click', label: 'Reports' })
+  })
+  const list = ['1 · Al-Fatihah (7 v · Meccan)', '2 · Al-Baqarah (286 v · Medinan)', '24 · An-Nur (64 v · Medinan)', '36 · Ya-Sin (83 v · Meccan)', '114 · An-Nas (6 v · Meccan)']
+  it('finds the entry by its name, whatever the number and brackets around it say', () => {
+    expect(matchOption(list, 'An-Nur')).toBe(2)
+    expect(matchOption(list, 'Surah An-Nur')).toBe(2)
+    expect(matchOption(list, 'ya sin')).toBe(3)
+    expect(matchOption(list, '24')).toBe(2)
+    expect(matchOption(list, 'Nas')).toBe(4)
+    expect(matchOption(list, 'Quantum teleporter')).toBe(-1)
+  })
+})
+
+describe('the address the person gave', () => {
+  it('counts its #fragment: a sign-in redirect drops it, so the page is opened again', () => {
+    expect(sameAddress('https://a.test/x/explore.html', 'https://a.test/x/explore.html#circle')).toBe(false)
+    expect(sameAddress('https://a.test/x/explore.html#circle', 'https://a.test/x/explore.html#circle')).toBe(true)
+    expect(sameAddress('https://a.test/x/explore.html#circle', 'https://a.test/x/explore.html')).toBe(true)
+    expect(sameAddress('https://a.test/x/?next=1', 'https://a.test/x')).toBe(true)
+  })
+})
+
 // a small single-page app with the awkward things the steps talk about
 const APP = `<!doctype html><html><head><meta charset="utf-8"><title>Mini ontology</title><style>
 body{margin:0;font:14px sans-serif;display:flex;height:100vh}
@@ -101,6 +173,24 @@ document.getElementById('t-node').onclick=()=>{document.getElementById('nodebody
 const nb=document.getElementById('nodebody');let sent=false;nb.onscroll=()=>{if(!sent&&nb.scrollTop+nb.clientHeight>=nb.scrollHeight-4){sent=true;e('scrolled-bottom')}};
 </script></body></html>`
 
+// a page like the one the dropdown steps are about: a left menu (with an en dash in a name), a header dropdown, a view picked by #fragment
+const STUDY = `<!doctype html><html><head><meta charset="utf-8"><title>Perspectives</title><style>
+body{margin:0;font:14px sans-serif}header{display:flex;gap:8px;align-items:center;padding:10px;border-bottom:1px solid #ccc}
+.side{position:absolute;left:0;top:50px;width:240px}.side a{display:block;padding:8px;cursor:pointer}.side b{display:block;padding:8px;color:#888}
+main{margin-left:260px;padding:20px}
+</style></head><body>
+<header><span>TEXT TO STUDY</span><button>&lsaquo;</button><select id="s"><option value="0">The whole Quran</option><option value="1">1 · Al-Fatihah (7 v · Meccan)</option><option value="24">24 · An-Nur (64 v · Medinan)</option><option value="36">36 · Ya-Sin (83 v · Meccan)</option></select><button>&rsaquo;</button></header>
+<nav class="side"><b>BEGIN HERE</b><a id="m-map">00 Map of the Quran</a><b>SHAPES</b><a id="m-score">04 Shape scoreboard</a><a id="m-circle">05 The even–odd circle <small>one ring per verse</small></a></nav>
+<main><h2 id="view">Map of the Quran</h2></main>
+<script>
+const e=(n)=>navigator.sendBeacon('/e?n='+encodeURIComponent(n));
+const show=()=>{document.getElementById('view').textContent=location.hash==='#circle'?'The even–odd circle':'Map of the Quran'};
+addEventListener('hashchange',()=>{e('hash:'+location.hash);show()});show();
+document.getElementById('m-circle').onclick=()=>{location.hash='circle';e('menu:circle')};
+document.getElementById('m-score').onclick=()=>e('menu:score');
+document.getElementById('s').onchange=(ev)=>e('picked:'+ev.target.value);
+</script></body></html>`
+
 const hooks = (): RunHooks => ({ progress: () => undefined, handoff: async () => { throw new Error('no hand-off expected') } })
 
 describe.skipIf(!findChrome() || !canShowWindow())('a whole video from the steps a person wrote', () => {
@@ -115,7 +205,7 @@ describe.skipIf(!findChrome() || !canShowWindow())('a whole video from the steps
         res.writeHead(204).end()
         return
       }
-      res.writeHead(200, { 'content-type': 'text/html' }).end(APP)
+      res.writeHead(200, { 'content-type': 'text/html' }).end(req.url?.startsWith('/study') ? STUDY : APP)
     })
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
     url = `http://localhost:${(server.address() as { port: number }).port}/`
@@ -141,6 +231,25 @@ describe.skipIf(!findChrome() || !canShowWindow())('a whole video from the steps
     expect(out.plan.beats.map((b) => b.kind)).toEqual(['step', 'step', 'step', 'step', 'step', 'step'])
     expect(out.plan.playbook.steps.filter((s) => s.kind === 'scroll')).toHaveLength(1)
     expect(out.plan.notes.join(' ')).toMatch(/exactly as written/)
+    expect(out.video).toBeTruthy()
+  }, 300000)
+
+  it('opens the whole address, clicks the menu entry named with another dash, and chooses entries in the dropdown, in both passes', async () => {
+    events = []
+    const study = `${url}study`
+    const steps = `1. open: ${study}#circle
+2. from the left panel ensure to click SHAPES -> 05 \`The even-odd circle\` option
+3. in your own words tell that the verses balance. go to the \`Text to Study\` dropdown in header of the page on top left and select Surah An-Nur, and show the structure. then switch to surah Ya-Sin, then show it
+4. then provide a conclusion statement`
+    const out = await runAppRecording({ ...base('picks', steps), startUrl: study }, hooks())
+    const want = ['hash:#circle', 'picked:24', 'picked:36']
+    // the page already shows the view when the address opens it, so the menu entry is clicked as well but is harmless
+    expect(events.filter((e) => e.startsWith('hash:') || e.startsWith('picked:'))).toEqual([...want, ...want])
+    expect(events.filter((e) => e === 'menu:score').length).toBe(0) // the entry next to it was never pressed
+    expect(events.filter((e) => e === 'menu:circle').length).toBe(2)
+    expect(out.plan.playbook.steps.filter((s) => s.kind === 'select').map((s) => s.text)).toEqual(['An-Nur', 'Ya-Sin'])
+    // one beat for the address, the menu click, the explanation and one for each entry chosen, then the conclusion
+    expect(out.plan.beats.map((b) => b.chapter)).toEqual(['Opening page', 'The even-odd circle', 'Explained', 'Switch to An-Nur', 'Switch to Ya-Sin', 'Step 4'])
     expect(out.video).toBeTruthy()
   }, 300000)
 

@@ -282,6 +282,8 @@ declare global {
         decide: (answers: DecisionAnswer[] | null) => Promise<boolean>
         play: (runId: string) => Promise<boolean>
         reveal: (runId: string) => Promise<boolean>
+        /** a small picture from the finished video (a data URL), or null */
+        poster: (runId: string) => Promise<string | null>
         revealRun: (runId: string) => Promise<boolean>
         runUsage: (runId: string) => Promise<ProjectUsage>
         removeRun: (runId: string) => Promise<{ ok: boolean; error?: string }>
