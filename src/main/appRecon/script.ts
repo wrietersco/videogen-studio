@@ -20,6 +20,15 @@ import { plainStep, type Atom, type ScriptItem, type StepScript } from './stepSc
  */
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+/** where the page is, without the query (it can hold a token) */
+const safeUrl = (page: Page): string => {
+  try {
+    const u = new URL(page.url())
+    return `${u.origin}${u.pathname}${u.hash}`
+  } catch {
+    return 'unknown'
+  }
+}
 
 export interface ItemResult {
   item: ScriptItem
@@ -57,7 +66,7 @@ export async function performScript(inp: ScriptInput): Promise<ScriptOutcome> {
   const fail = (item: ScriptItem, why: string): ScriptOutcome => ({
     results,
     actions,
-    failure: `Step ${item.n} ("${item.said.slice(0, 90)}") could not be done, so no video was made: ${why} Reword the step with the name the page shows, or use Take over to get to the right place first.`
+    failure: `Step ${item.n} ("${item.said.slice(0, 90)}") could not be done, so no video was made: ${why} The page it was on: ${safeUrl(page)}. Reword the step with the name the page shows, check the address, or use Take over to get to the right place first.`
   })
 
   for (const item of inp.script.items) {
@@ -77,6 +86,13 @@ export async function performScript(inp: ScriptInput): Promise<ScriptOutcome> {
         if (!gate.hostAllowed(atom.url)) return fail(item, `${atom.url} is outside the allowed sites.`)
         if (!(await openPage(page, atom.url, 30000).catch(() => false))) return fail(item, `${atom.url} would not open.`)
         await sleep(400)
+        // an address that opens the site's "not found" page is a wrong address, not a page to look for controls on
+        const notFound = await page.evaluate(() => {
+          const title = document.title ?? ''
+          const body = (document.body?.innerText ?? '').replace(/\s+/g, ' ').trim()
+          return /\b404\b|not found|page (?:does not|doesn['’]t) exist/i.test(title) || (body.length < 400 && /\b404\b|page not found|not found/i.test(body)) ? (title || body).slice(0, 80) : ''
+        }).catch(() => '')
+        if (notFound) return fail(item, `${atom.url} opened a "not found" page ("${notFound}"), so the address is probably wrong.`)
         steps.push({ kind: 'goto', url: atom.url, intent: 'navigate', label: 'open page', focus: 'page' })
         actions++
         inp.log(`    opened ${atom.url} (now at ${page.url()})`)

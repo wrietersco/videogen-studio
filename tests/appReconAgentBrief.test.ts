@@ -249,3 +249,40 @@ log into the app and then follow the steps to follow for screen recording:
     expect(plan?.voice.tone).toMatch(/dominating BBC-like voiceover/)
   })
 })
+
+describe('a brief with a structure paragraph and a separate voiceover paragraph', () => {
+  const KAHF = `# overall structure
+Start the intro with a question: do you know you can visualize the Quran by its own mathematical balance? Then show the recorded steps, with a voiceover that tells the audience about the significance of finding the mathematical structure of Surah Al-Kahf, and how it helps us understand its meanings better. End with a short conclusion.
+
+# voiceover
+Voiceover: a deep, commanding, authoritative BBC documentary narrator, calm British English, measured pace, serious and confident. Use this voice for the whole video. Say each Arabic word naturally, then give its English meaning. Describe the findings as the app reports them; where a point is an interpretation rather than a measured result, introduce it with wording such as "this echoes" or "one way to read this".
+
+# recorded steps to show:
+1. log in to the app
+2. open https://taaweel.snapkodex.com/numerical_analysis/explore.html
+3. click "Volcano (2D)" and explain that Allah is avoided`
+
+  it('takes the sentence that says how the voice sounds, with the notes on how to say and word things', () => {
+    const d = voiceDirectionOf(KAHF) ?? ''
+    expect(d).toMatch(/^Voiceover: a deep, commanding, authoritative BBC documentary narrator/)
+    expect(d).toMatch(/Say each Arabic word naturally/)
+    expect(d).toMatch(/introduce it with wording such as/)
+    expect(d).not.toMatch(/tells the audience about the significance/)
+    expect(readBriefByRules(input(KAHF)).voice.tone).toBe(d)
+  })
+
+  it('does not list the intro question or the delivery notes as things it could not place', () => {
+    const q = 'do you know you can visualize the Quran by its own mathematical balance?'
+    const base = readBriefByRules(input(KAHF))
+    // the plan the writer made opens with the question as narration
+    const withIntro: FilmPlan = { ...base, segments: [{ id: 's0', said: q, required: true, kind: 'narration', claims: [q], over: 'find' } as FilmPlan['segments'][number], ...base.segments] }
+    expect(accountFor(KAHF, withIntro).unplaced.filter((u) => /Start the intro|Say each Arabic|Describe the findings/.test(u))).toEqual([])
+    // and without it in the plan, the honest list still has it
+    expect(accountFor(KAHF, base).unplaced.join(' ')).toMatch(/Start the intro with a question/)
+  })
+
+  it('still lists a sentence nothing carries', () => {
+    const typed = `${KAHF}\nInclude a close-up of the sea at sunrise.`
+    expect(accountFor(typed, readBriefByRules(input(typed))).unplaced.join(' ')).toMatch(/close-up of the sea/)
+  })
+})

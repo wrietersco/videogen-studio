@@ -310,3 +310,18 @@ describe.skipIf(!findChrome() || !canShowWindow())('a whole video from the steps
     expect(events).toEqual(['nav-ontology']) // step 3 was not tried
   }, 120000)
 })
+
+describe('names in quotes keep their brackets', () => {
+  it('"Volcano (2D)" is not "Volcano", so the 2D button is told from the 3D one', () => {
+    const s = parseStepScript('1. log in\n2. click "Volcano (2D)" and explain that Allah is avoided\n3. click "Wavelet scalogram (3D)"')!
+    const labels = s.items.flatMap((i) => i.atoms).filter((a) => a.action === 'click').map((a) => (a as { label: string }).label)
+    expect(labels).toEqual(['Volcano (2D)', 'Wavelet scalogram (3D)'])
+  })
+
+  it('a position in brackets after the name is still read as a position', () => {
+    const s = parseStepScript('1. log in\n2. Click the fit to view icon (just right above the pause icon)')!
+    const a = s.items[1].atoms[0] as { label: string; find: { relation?: { rel: string } } }
+    expect(a.label).toMatch(/fit to view/)
+    expect(a.find.relation?.rel).toBe('above')
+  })
+})

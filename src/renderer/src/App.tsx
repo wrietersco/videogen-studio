@@ -27,6 +27,22 @@ const TABS: Array<{ id: Tab; label: string; icon: string; tip: string; on: strin
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('studio')
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('vg.navCollapsed') === '1'
+    } catch {
+      return false
+    }
+  })
+  const toggleNav = () =>
+    setCollapsed((c) => {
+      try {
+        localStorage.setItem('vg.navCollapsed', c ? '0' : '1')
+      } catch {
+        /* not remembered */
+      }
+      return !c
+    })
   const [editorProjectId, setEditorProjectId] = useState<string | null>(null)
   const [account, setAccount] = useAccount()
   const [skipped, setSkipped] = useState(() => {
@@ -59,34 +75,73 @@ export default function App() {
   const activeTab = tab === 'editor' ? 'library' : tab
 
   return (
-    <div className="flex h-full flex-col">
-      {/* title bar */}
-      <div className="titlebar-drag flex h-14 shrink-0 items-center justify-between border-b-2 border-ink/5 bg-white pl-4">
-        <div className="flex items-center gap-2">
+    <div className="flex h-full">
+      {/* left menu */}
+      <aside className={`flex ${collapsed ? 'w-[68px]' : 'w-56'} shrink-0 flex-col border-r-2 border-ink/5 bg-white transition-[width]`}>
+        <div className={`titlebar-drag flex h-14 shrink-0 items-center gap-2 ${collapsed ? 'justify-center px-2' : 'px-4'}`}>
           <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-grape via-berry to-sunny text-base shadow-sm">🎬</span>
-          <span className="text-[15px] font-black tracking-tight">
-            VideoGen <span className="text-berry">Studio</span>
-          </span>
+          {!collapsed && (
+            <span className="text-[15px] font-black leading-tight tracking-tight">
+              VideoGen <span className="text-berry">Studio</span>
+            </span>
+          )}
         </div>
-        <div className="titlebar-nothing flex h-full items-stretch">
-          <div className="flex items-center gap-1.5">
-            <PlanBadge status={account} onClick={() => (account?.signedIn ? setTab('settings') : setSkipped(false))} />
-            {TABS.map((t) => (
+        <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 pb-3">
+          {TABS.filter((t) => t.id !== 'settings').map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              title={t.tip}
+              className={`flex items-center ${collapsed ? 'justify-center px-0' : 'px-3.5'} rounded-xl py-2.5 text-left text-sm font-bold transition-all active:scale-95 ${
+                activeTab === t.id ? t.on : 'text-ink/60 hover:bg-ink/5 hover:text-ink'
+              }`}
+            >
+              <span className={`w-5 text-center ${collapsed ? '' : 'mr-2.5'}`}>{t.icon}</span>
+              {!collapsed && t.label}
+            </button>
+          ))}
+          <div className="mt-auto flex flex-col gap-2 pt-3">
+            {collapsed ? (
+              <button
+                onClick={() => (account?.signedIn ? setTab('settings') : setSkipped(false))}
+                title={account?.signedIn ? 'Your plan' : 'Sign in'}
+                className="flex items-center justify-center rounded-xl bg-gradient-to-r from-grape to-berry py-2.5 text-base text-white"
+              >
+                👑
+              </button>
+            ) : (
+              <PlanBadge status={account} onClick={() => (account?.signedIn ? setTab('settings') : setSkipped(false))} />
+            )}
+            {TABS.filter((t) => t.id === 'settings').map((t) => (
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
                 title={t.tip}
-                className={`rounded-xl px-3.5 py-1.5 text-sm font-bold transition-all active:scale-95 ${
+                className={`flex items-center ${collapsed ? 'justify-center px-0' : 'px-3.5'} rounded-xl py-2.5 text-left text-sm font-bold transition-all active:scale-95 ${
                   activeTab === t.id ? t.on : 'text-ink/60 hover:bg-ink/5 hover:text-ink'
                 }`}
               >
-                <span className="mr-1.5">{t.icon}</span>
-                {t.label}
+                <span className={`w-5 text-center ${collapsed ? '' : 'mr-2.5'}`}>{t.icon}</span>
+                {!collapsed && t.label}
               </button>
             ))}
+            <button
+              onClick={toggleNav}
+              title={collapsed ? 'Expand menu' : 'Collapse menu'}
+              className="flex items-center justify-center rounded-xl py-2 text-sm font-bold text-ink/40 transition-colors hover:bg-ink/5 hover:text-ink"
+            >
+              {collapsed ? '»' : '« Collapse'}
+            </button>
           </div>
+        </nav>
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+      {/* window bar: drag area + controls */}
+      <div className="titlebar-drag flex h-9 shrink-0 items-stretch justify-end">
+        <div className="titlebar-nothing flex items-stretch">
           {/* window controls — Windows style, full-height hit targets */}
-          <div className="ml-4 flex items-stretch">
+          <div className="flex items-stretch">
             <button
               onClick={() => api.windowControls.minimize()}
               title="Minimize"
@@ -116,6 +171,7 @@ export default function App() {
         </div>
       </div>
 
+
       <Updater mode="banner" />
 
       {/* content */}
@@ -135,6 +191,7 @@ export default function App() {
         )}
         {!gate && tab === 'assets' && <Assets />}
         {!gate && tab === 'settings' && <Settings />}
+      </div>
       </div>
     </div>
   )

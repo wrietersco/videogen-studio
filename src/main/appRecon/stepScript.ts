@@ -120,7 +120,10 @@ function clickAtom(raw: string, place: { region?: FindSpec['region']; within: st
   let rest = raw
   let relation: FindSpec['relation']
   // "(just right above the pause icon)" or a trailing "just above the pause icon"
-  const paren = /\(([^)]*)\)/.exec(rest)
+  // (a bracket inside quotes is part of the name: "Volcano (2D)" is not "Volcano" with a note)
+  const masked = rest.replace(new RegExp(`${Q}${NQ}{1,100}${Q}`, 'g'), (m) => ' '.repeat(m.length))
+  const parenAt = /\(([^)]*)\)/.exec(masked)
+  const paren = parenAt ? ([rest.slice(parenAt.index, parenAt.index + parenAt[0].length), parenAt[1]] as [string, string]) : null
   if (paren) {
     const m = REL.exec(paren[1])
     if (m) relation = { rel: REL_MAP[m[1].toLowerCase().replace(/^to the\s+/, '').replace(/\s+/g, ' ')] ?? 'near', to: clean(m[2].replace(NOUN_TAIL, '')) }

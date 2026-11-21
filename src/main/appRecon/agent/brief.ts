@@ -74,7 +74,11 @@ export function isLeadIn(unit: string): boolean {
 const MUSIC_WORD = /\b(?:music|soundtrack|background\s+(?:sounds?|audio|noise)|sound\s*scape|ambien(?:ce|t)|score|nasheed)\b/i
 const VOICE_WORD = /\b(?:voice(?:\s*over)?|narrat\w*|speak\w*|talk\w*)\b/i
 const VOICE_STYLE_WORD = /\b(?:voice[\s-]*over|voiceover|voice|narrator|narration|narrated|announcer|presenter)\b/i
-const NO_VOICE = /\b(?:no|without|skip|don'?t\s+(?:want|use|add))\b[^.!?\n]{0,20}\b(?:voice|narrat\w*)/i
+/** words that describe how a voice sounds */
+const VOICE_SOUND_WORDS = /\b(?:deep|commanding|authoritative|dominat\w*|calm|warm|bbc|documentary|british|american|australian|irish|scottish|accent|tone|paced?|measured|serious|confident|gravitas|soothing|energetic|friendly|formal|whisper\w*|baritone|female|male|woman|man|young|slow|fast|sounding|sounds?|rich|husky|smooth|gentle|powerful|dramatic|cinematic|epic)\b/gi
+/** a sentence about how the lines are to be said or worded */
+const DELIVERY_NOTE = /\b(?:pronounc\w*|say\s+(?:each|every|the)\b|read\s+(?:out|aloud)|wording\s+such\s+as|describe\s+the\s+findings|introduce\s+it\s+with|spell\w*\s+out|speak\s+(?:each|every|slowly|clearly))/i
+const NO_VOICE =/\b(?:no|without|skip|don'?t\s+(?:want|use|add))\b[^.!?\n]{0,20}\b(?:voice|narrat\w*)/i
 
 /**
  * What the person asked the voice to sound like, in their own words ("a dominating BBC-like voiceover"): the first
@@ -82,21 +86,34 @@ const NO_VOICE = /\b(?:no|without|skip|don'?t\s+(?:want|use|add))\b[^.!?\n]{0,20
  * told exactly this, so a style asked for is the style heard.
  */
 export function voiceDirectionOf(typed: string): string | undefined {
+  const sentences: string[] = []
   for (const raw of unitsOf(typed)) {
     if (LIST_LINE.test(raw) || urlsIn(raw).length || isLeadIn(raw)) continue
     const unit = raw.replace(/^[#>*\s-]+/, '').replace(/[`*_]/g, '').trim()
+    if (unit) sentences.push(unit)
+  }
+  // the sentence that says how the voice SOUNDS wins over one that only mentions it ("... with a voiceover that tells the
+  // audience about ..." says what is said, not how)
+  let best: { unit: string; score: number } | undefined
+  for (const unit of sentences) {
     if (!VOICE_STYLE_WORD.test(unit) || NO_VOICE.test(unit) || MUSIC_WORD.test(unit)) continue
     if (/^(?:tell|say|mention|explain|describe|show)\b/i.test(unit)) continue
-    return unit.replace(/[.!\s]+$/, '').slice(0, 240)
+    const score = new Set((unit.match(VOICE_SOUND_WORDS) ?? []).map((w) => w.toLowerCase())).size
+    if (!best || score > best.score) best = { unit, score }
   }
-  return undefined
+  if (!best) return undefined
+  // how the lines are to be said or worded ("Say each Arabic word naturally", "introduce it with wording such as ..."):
+  // the narrator is told these along with the voice
+  const notes = sentences.filter((u) => u !== best!.unit && DELIVERY_NOTE.test(u) && !MUSIC_WORD.test(u) && !/^(?:tell|show)\b/i.test(u))
+  const text = [best.unit, ...notes].map((u) => u.replace(/[.!\s]+$/, '')).join('. ')
+  return text.slice(0, 480)
 }
 
 const NO_ABSTRACT =/\b(?:no|not|don'?t|do\s+not|without|never|avoid)\b[^.!?\n]{0,25}\babstract\w*/i
 
 /** everything the plan says in words, for matching the person's sentences against */
 function planFields(plan: FilmPlan): string[] {
-  const f: string[] = [plan.goal, plan.music.description, plan.product ?? '', plan.heroFeature ?? '', plan.kind === 'launch' ? 'product launch video' : '', ...plan.unplaced]
+  const f: string[] = [plan.goal, plan.music.description, plan.voice.tone ?? '', plan.product ?? '', plan.heroFeature ?? '', plan.kind === 'launch' ? 'product launch video' : '', ...plan.unplaced]
   for (const s of plan.segments) {
     f.push(s.said, ...(s.explain ?? []))
     if (s.kind === 'narration') f.push(...s.claims)
@@ -118,6 +135,10 @@ export function isAccounted(unit: string, plan: FilmPlan, fields: string[] = pla
   // a bare label ("steps:"), a heading ("# recorded steps to show:"), the sentence that introduces a list, or an address on its own
   if (isLeadIn(unit) || /^\W*https?:\/\/\S+\W*$/.test(unit.trim())) return true
   if (VOICE_WORD.test(unit) && (plan.voice.tone || plan.voice.language || plan.voice.none)) return true
+  // "Start the intro with a question: do you know ...?": the directive is the plan's order (what comes first); what is
+  // asked for is the words after it
+  const directive = /^\W*(?:then\s+)?(?:start|begin|open|kick\s+off)\s+(?:the\s+)?(?:intro(?:duction)?|video|film|opening)?\s*(?:with|by)\s+(?:a\s+|an\s+|the\s+)?(?:short\s+)?(?:question|hook|statement|line|sentence)?\s*[:,\-–—]\s*/i.exec(unit)
+  if (directive && directive[0].length < unit.length) return isAccounted(unit.slice(directive[0].length), plan, fields)
   if (NO_ABSTRACT.test(unit) && plan.look.noAbstract) return true
   if (isStyleSentence(unit) && (plan.look.style || plan.look.noAbstract)) return true
   if (isDurationSentence(unit) && (plan.targetSec || plan.segments.some((s) => s.kind === 'ai-clip' && s.seconds))) return true
