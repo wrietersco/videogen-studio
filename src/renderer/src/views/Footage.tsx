@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useInsider } from '../components/Account'
+import { VideoFeedback } from '../components/VideoFeedback'
 import { api, type EditPlan, type EditRecord, type FootageEvent, type FootageProject, type FootageSummary, type PlanRequest, type PlanResult, type UnderstandEstimate } from '../api'
 import { ShapePicker } from '../components/PromptTools'
 import { fmtUsd } from '@shared/pricing'
@@ -661,6 +662,10 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
                   >
                     🗑️
                   </button>
+                  <details className="w-full">
+                    <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-wide text-ink/40">👍 How did it turn out?</summary>
+                    <VideoFeedback mode="footage" videoId={e.id} />
+                  </details>
                 </div>
               ))}
             </div>

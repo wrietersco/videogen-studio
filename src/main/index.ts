@@ -31,6 +31,8 @@ import { luminanceOf } from '@shared/brand'
 import { registerAppReconIpc } from './appRecon/ipc'
 import { capabilitySourceFromApp, readCapabilities } from './appRecon/agent/capabilities'
 import { registerMarketingIpc } from './marketing/ipc'
+import { FeedbackStore } from './feedback/store'
+import { registerFeedbackIpc } from './feedback/ipc'
 import { FootageStore } from './footage/store'
 import { FootageService } from './footage/service'
 import { registerFootageIpc } from './footage/ipc'
@@ -86,6 +88,8 @@ const media = new MediaRouter({
 const footageStore = new FootageStore(footageDir)
 const appReconStore = new AppReconStore(appReconDir, { enc: (s) => encryptKey(s), dec: (s) => decryptKey(s) })
 const marketingStore = new MarketingStore(marketingDir)
+/** what the person thought of finished videos — every mode, kept beyond the videos themselves */
+const feedbackStore = new FeedbackStore(join(app.getPath('userData'), 'feedback.json'))
 const footage = new FootageService({
   store: footageStore,
   provider: () => providerRegistry.forRole('text') ?? providerRegistry.active(),
@@ -1078,6 +1082,7 @@ if (headlessFile) {
         }
       }
     })
+    registerFeedbackIpc(feedbackStore)
     createWindow()
     createTray()
     app.on('activate', () => {

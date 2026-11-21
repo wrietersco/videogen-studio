@@ -3,6 +3,7 @@ import type { PariEvent } from '@shared/agentBrief'
 import { api, type AppInput, type ReviewBeat, type RunEvent, type RunRecord, type SavedApp } from '../api'
 import { Section, fmtDur } from '../components/ui'
 import { CostToggle } from '../components/CostReceipt'
+import { VideoFeedback } from '../components/VideoFeedback'
 import { VideoDescription } from '../components/VideoDescription'
 import { ShapePicker } from '../components/PromptTools'
 import { POST_APPS } from '@shared/shapes'
@@ -561,6 +562,12 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
                     <VideoDescription runId={r.id} />
                   </details>
                 )}
+                {r.status === 'done' && r.video && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-wide text-ink/40">How did it turn out?</summary>
+                    <VideoFeedback mode="app" videoId={r.id} />
+                  </details>
+                )}
                 </div>
                 </div>
               ))}
@@ -686,6 +693,7 @@ function RunPanel({ live, onRevise, onClose, onReviewAnswered, onDecided, onHand
           {done.revision && <RevisionSummary revision={done.revision} />}
           <VideoDescription key={`describe-${done.id}`} runId={done.id} />
           <ReviseBox key={`revise-${done.id}`} disabled={false} onRevise={(text) => onRevise(done.id, text)} placeholder={REVISE_PLACEHOLDER} hint={reviseHint(done.editable)} />
+          <VideoFeedback mode="app" videoId={done.id} key={done.id} />
         </div>
       )}
       {done && done.status === 'failed' && <div className="mt-3 rounded-xl bg-coral-soft px-3 py-2 text-sm font-semibold text-coral">{done.error}</div>}

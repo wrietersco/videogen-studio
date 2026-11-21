@@ -187,6 +187,7 @@ const api = {
     decide: (answers: unknown) => ipcRenderer.invoke('market:decide', answers),
     play: (runId: string) => ipcRenderer.invoke('market:play', runId),
     reveal: (runId: string) => ipcRenderer.invoke('market:reveal', runId),
+    poster: (runId: string) => ipcRenderer.invoke('market:poster', runId),
     runUsage: (runId: string) => ipcRenderer.invoke('market:runUsage', runId),
     removeRun: (runId: string) => ipcRenderer.invoke('market:removeRun', runId),
     remove: (id: string) => ipcRenderer.invoke('market:remove', id),
@@ -195,6 +196,11 @@ const api = {
       ipcRenderer.on('market:event', listener)
       return () => ipcRenderer.removeListener('market:event', listener)
     }
+  },
+  feedback: {
+    save: (mode: unknown, videoId: string, rating: unknown, reasons: unknown, comment: unknown) =>
+      ipcRenderer.invoke('feedback:save', mode, videoId, rating, reasons, comment),
+    get: (videoId: string) => ipcRenderer.invoke('feedback:get', videoId)
   },
   references: {
     inspect: (paths?: string[]) => ipcRenderer.invoke('refs:inspect', paths),

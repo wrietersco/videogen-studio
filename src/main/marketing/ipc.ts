@@ -15,6 +15,7 @@ import { MarketStopped, buildReport, planStage, reviewFilm, type MarketEmit, typ
 import { readPreviousRun, reviseFilm } from './agent/revise'
 import type { CapabilityReport, DecisionAnswer, DecisionRequest } from '../../shared/agentBrief'
 import { mkdirSync } from 'node:fs'
+import { videoPoster } from '../assets/probe'
 import type { MarketingStore } from './store'
 
 /**
@@ -431,6 +432,23 @@ export function registerMarketingIpc(d: MarketingIpcDeps): void {
     if (!f) return false
     shell.showItemInFolder(f)
     return true
+  })
+  /** a small picture from the film for the grid of earlier films: taken once and kept in the run's folder */
+  ipcMain.handle('market:poster', (_e, runId: unknown): string | null => {
+    const f = videoOf(runId)
+    if (!f || !isMarketRunId(runId)) return null
+    const cached = join(d.store.runDir(runId), 'poster.jpg')
+    try {
+      if (!existsSync(cached)) {
+        const rec = d.store.runs().find((r) => r.id === runId)
+        const buf = videoPoster(f, Math.max(1, (rec?.durationSec ?? 10) * 0.4))
+        if (!buf) return null
+        writeFileSync(cached, buf)
+      }
+      return `data:image/jpeg;base64,${readFileSync(cached).toString('base64')}`
+    } catch {
+      return null
+    }
   })
   ipcMain.handle('market:runUsage', (_e, runId: unknown) => (isMarketRunId(runId) ? readProjectUsage(d.store.runDir(runId)) : { runs: [], totalUsd: 0, savedUsd: 0 }))
 

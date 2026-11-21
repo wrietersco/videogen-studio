@@ -5,6 +5,7 @@ import { EnhanceReview, ShapePicker, TemplateBar } from '../components/PromptToo
 import { PLATFORM_PRESETS } from '@shared/presets'
 import { templateSkeleton } from '@shared/promptTemplates'
 import { CostReceipt } from '../components/CostReceipt'
+import { VideoFeedback } from '../components/VideoFeedback'
 import { ErrorCard } from '../components/friendly'
 import { estimateVideoCost, fmtUsd } from '@shared/pricing'
 import type { AccountState, SettingsView } from '../api'
@@ -657,6 +658,7 @@ export default function Studio({ onOpenEditor, onOpenSettings }: { onOpenEditor:
               <div className="mt-4">
                 <CostReceipt projectId={done.projectId} key={done.projectId} />
               </div>
+              <VideoFeedback mode="create" videoId={done.projectId} key={done.projectId} />
             </section>
           )}
           {/* go! — sticks to the bottom so the main action is always in reach */}

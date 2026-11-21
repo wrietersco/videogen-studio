@@ -7,6 +7,7 @@ import type { CapabilityReport, DecisionRequest, SegmentCheck } from '@shared/ag
 import type { MarketPlan, MarketReport } from '@shared/marketBrief'
 import { DecisionPanel, ReportPanel, autopilotLines } from './PariPanels'
 import { MarketPlanPanel, ReviseBox, RevisionSummary } from './MarketPanels'
+import { VideoFeedback } from '../components/VideoFeedback'
 
 /**
  * Market your business: type the website address, and the engine reads the
@@ -338,6 +339,7 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
                         </button>
                       </div>
                       {card.video && card.runId && runs.some((r) => r.id === card.runId && r.status === 'done') && <ReviseBox disabled={running} onRevise={(text) => revise(card.runId!, text)} />}
+                      {card.video && card.runId && runs.some((r) => r.id === card.runId && r.status === 'done') && <VideoFeedback mode="market" videoId={card.runId} />}
                       {live?.cardId === card.id && live.job === 'film' && live.error && <div className="mt-2 rounded-lg bg-coral-soft px-3 py-2 text-xs font-semibold text-ink/80">{live.error}</div>}
                       {live?.cardId === card.id && live.job === 'film' && live.run?.notes.length ? <div className="mt-2 text-xs text-ink/50">{live.run.notes.join(' · ')}</div> : null}
                     </div>
@@ -374,52 +376,61 @@ export default function MarketBusiness({ onOpenSettings }: { onOpenSettings: () 
 
           {profile && runs.filter((r) => r.businessId === profile.id).length > 0 && (
             <Section icon="🎞️" title="Earlier films" hint="Every film made for this business.">
-              <div className="card divide-y divide-ink/5">
+              {/* a grid of cards, each with a small picture from its film */}
+              <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2">
                 {runs
                   .filter((r) => r.businessId === profile.id)
                   .map((r) => (
-                    <div key={r.id} className="flex flex-wrap items-center gap-2 px-4 py-3 text-sm">
-                      <span>{r.status === 'done' ? '✅' : r.status === 'running' ? '⏳' : '❌'}</span>
-                      <span className="font-semibold">{profile.cards.find((c) => c.id === r.cardId)?.title ?? 'A video idea'}</span>
-                      <span className="text-xs text-ink/45">{new Date(r.startedAt).toLocaleString()}</span>
-                      {r.durationSec ? <span className="text-xs text-ink/45">{Math.round(r.durationSec)}s</span> : null}
-                      {r.status === 'done' && (
-                        <span className="ml-auto flex items-center gap-1">
-                          <button onClick={() => void api.market.play(r.id)} className="btn-ghost !px-3 !py-1 !text-xs">▶ Play</button>
-                          <button onClick={() => void api.market.reveal(r.id)} className="btn-ghost !px-3 !py-1 !text-xs">📂 Show</button>
-                          <button
-                            onClick={async () => {
-                              if (!window.confirm('Delete this film and its working files?')) return
-                              const del = await api.market.removeRun(r.id)
-                              if (!del.ok) setError(del.error ?? 'It could not be deleted')
-                              else void refresh()
-                            }}
-                            className="btn-ghost !px-3 !py-1 !text-xs !text-coral"
-                          >
-                            🗑️
-                          </button>
-                        </span>
-                      )}
-                      {r.parentRunId && <span className="text-xs text-ink/45">✏️ changed from an earlier film</span>}
-                      {r.error && <span className="w-full text-xs text-coral">{r.error}</span>}
-                      {r.revision && (
-                        <details className="w-full">
-                          <summary className="cursor-pointer text-xs font-bold text-ink/60">✏️ What was changed</summary>
-                          <RevisionSummary revision={r.revision} />
-                        </details>
-                      )}
-                      {r.status === 'done' && (
-                        <details className="w-full">
-                          <summary className="cursor-pointer text-xs font-bold text-ink/60">✏️ Change this film</summary>
-                          <ReviseBox disabled={running} onRevise={(text) => revise(r.id, text)} />
-                        </details>
-                      )}
-                      {r.shortfalls && r.shortfalls.length > 0 && (
-                        <details className="w-full">
-                          <summary className="cursor-pointer text-xs font-bold text-ink/60">⚠️ What is not in this film ({r.shortfalls.length})</summary>
-                          <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-ink/65">{r.shortfalls.map((s, i) => <li key={i}>{s}</li>)}</ul>
-                        </details>
-                      )}
+                    <div key={r.id} className="card overflow-hidden text-sm">
+                      <FilmPreview run={r} />
+                      <div className="flex flex-wrap items-center gap-2 px-4 py-3">
+                        <span>{r.status === 'done' ? '✅' : r.status === 'running' ? '⏳' : '❌'}</span>
+                        <span className="min-w-0 flex-1 truncate font-semibold" title={profile.cards.find((c) => c.id === r.cardId)?.title ?? 'A video idea'}>{profile.cards.find((c) => c.id === r.cardId)?.title ?? 'A video idea'}</span>
+                        <span className="w-full text-xs text-ink/45">{new Date(r.startedAt).toLocaleString()}{r.durationSec ? ` · ${Math.round(r.durationSec)}s` : ''}</span>
+                        {r.status === 'done' && (
+                          <span className="flex items-center gap-1">
+                            <button onClick={() => void api.market.play(r.id)} className="btn-ghost !px-3 !py-1 !text-xs">▶ Play</button>
+                            <button onClick={() => void api.market.reveal(r.id)} className="btn-ghost !px-3 !py-1 !text-xs">📂 Show</button>
+                            <button
+                              onClick={async () => {
+                                if (!window.confirm('Delete this film and its working files?')) return
+                                const del = await api.market.removeRun(r.id)
+                                if (!del.ok) setError(del.error ?? 'It could not be deleted')
+                                else void refresh()
+                              }}
+                              className="btn-ghost !px-3 !py-1 !text-xs !text-coral"
+                            >
+                              🗑️
+                            </button>
+                          </span>
+                        )}
+                        {r.parentRunId && <span className="text-xs text-ink/45">✏️ changed from an earlier film</span>}
+                        {r.error && <span className="w-full text-xs text-coral">{r.error}</span>}
+                        {r.revision && (
+                          <details className="w-full">
+                            <summary className="cursor-pointer text-xs font-bold text-ink/60">✏️ What was changed</summary>
+                            <RevisionSummary revision={r.revision} />
+                          </details>
+                        )}
+                        {r.status === 'done' && (
+                          <details className="w-full">
+                            <summary className="cursor-pointer text-xs font-bold text-ink/60">✏️ Change this film</summary>
+                            <ReviseBox disabled={running} onRevise={(text) => revise(r.id, text)} />
+                          </details>
+                        )}
+                        {r.status === 'done' && (
+                          <details className="w-full">
+                            <summary className="cursor-pointer text-xs font-bold text-ink/60">👍 How did it turn out?</summary>
+                            <VideoFeedback mode="market" videoId={r.id} />
+                          </details>
+                        )}
+                        {r.shortfalls && r.shortfalls.length > 0 && (
+                          <details className="w-full">
+                            <summary className="cursor-pointer text-xs font-bold text-ink/60">⚠️ What is not in this film ({r.shortfalls.length})</summary>
+                            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs text-ink/65">{r.shortfalls.map((s, i) => <li key={i}>{s}</li>)}</ul>
+                          </details>
+                        )}
+                      </div>
                     </div>
                   ))}
               </div>
@@ -475,5 +486,28 @@ function JobPanel({ live, stages }: { live: Live; stages: Array<{ id: MarketStag
         </details>
       )}
     </div>
+  )
+}
+
+/** the small picture on a card of the grid of earlier films; plays the film when pressed */
+function FilmPreview({ run }: { run: MarketRunRecord }) {
+  const [src, setSrc] = useState<string | null>(null)
+  const playable = run.status === 'done' && !!run.video
+  useEffect(() => {
+    let alive = true
+    if (playable) void api.market.poster(run.id).then((p) => alive && setSrc(p)).catch(() => undefined)
+    return () => { alive = false }
+  }, [run.id, playable])
+  return (
+    <button
+      type="button"
+      disabled={!playable}
+      onClick={() => void api.market.play(run.id)}
+      title={playable ? 'Play this film' : undefined}
+      className="group relative block aspect-video w-full overflow-hidden bg-ink/10 disabled:cursor-default"
+    >
+      {src ? <img src={src} alt="" className="h-full w-full object-contain" /> : <span className="flex h-full w-full items-center justify-center text-3xl opacity-40">{playable ? '🎬' : run.status === 'running' ? '⏳' : '⚠️'}</span>}
+      {playable && <span className="absolute inset-0 flex items-center justify-center bg-ink/0 text-3xl text-white opacity-0 transition group-hover:bg-ink/30 group-hover:opacity-100">▶</span>}
+    </button>
   )
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type ProjectMeta } from '../api'
+import { VideoFeedback } from '../components/VideoFeedback'
 import { EmptyState } from '../components/ui'
 import { CostToggle } from '../components/CostReceipt'
 import { useInsider } from '../components/Account'
@@ -156,6 +157,13 @@ export default function Library({ onOpenEditor }: { onOpenEditor: (id?: string) 
                   )}
 
                   <CostToggle projectId={p.id} />
+
+                  {play && (
+                    <details className="mt-1">
+                      <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-wide text-ink/40">👍 How did it turn out?</summary>
+                      <VideoFeedback mode="create" videoId={p.id} />
+                    </details>
+                  )}
 
                   {busyHere && (
                     <div className="mt-3">

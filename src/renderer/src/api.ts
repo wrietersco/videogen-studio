@@ -21,6 +21,7 @@ import type { AppInput, ReviewBeat, ReviewEdits, RunEvent, RunRecord, SavedApp }
 import type { DecisionAnswer, PariEvent } from '@shared/agentBrief'
 export type { AppInput, ReviewBeat, ReviewEdits, RunEvent, RunRecord, SavedApp }
 import type { BusinessProfile, MarketEvent, MarketJob, MarketRunRecord, MarketStage, VideoCard } from '@shared/marketing'
+import type { FeedbackEntry, FeedbackMode, FeedbackRating } from '@shared/feedback'
 export type { BusinessProfile, MarketEvent, MarketJob, MarketRunRecord, MarketStage, VideoCard }
 import type { RefRole, VideoBrief } from '@shared/spec'
 
@@ -310,10 +311,17 @@ declare global {
         decide: (answers: DecisionAnswer[] | null) => Promise<boolean>
         play: (runId: string) => Promise<boolean>
         reveal: (runId: string) => Promise<boolean>
+        poster: (runId: string) => Promise<string | null>
         runUsage: (runId: string) => Promise<ProjectUsage>
         removeRun: (runId: string) => Promise<{ ok: boolean; error?: string }>
         remove: (id: string) => Promise<{ ok: true } | { ok: false; error: string }>
         onEvent: (cb: (event: MarketEvent) => void) => () => void
+      }
+      feedback: {
+        /** save (or replace) the person's opinion of one finished video, with everything it was made of */
+        save: (mode: FeedbackMode, videoId: string, rating: FeedbackRating, reasons: string[], comment: string) => Promise<{ ok: true; entry: FeedbackEntry } | { ok: false; error: string }>
+        /** the opinion already saved for this video, to fill the box with (null = none yet) */
+        get: (videoId: string) => Promise<FeedbackEntry | null>
       }
       references: {
         /** no paths opens a picker; dropped files pass their paths */

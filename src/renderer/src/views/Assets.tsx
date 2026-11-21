@@ -5,6 +5,7 @@ import { fmtUsd } from '@shared/pricing'
 import { api, type Orientation, type StockResult } from '../api'
 import { Chip, EmptyState, SourceBadge, Toast, fmtBytes, fmtDur } from '../components/ui'
 import { friendlyError } from '../components/friendly'
+import { VideoFeedback } from '../components/VideoFeedback'
 
 /**
  * Asset library — everything the app can reuse: built-in pack, AI-made
@@ -264,6 +265,8 @@ function AssetDrawer({ a, onClose, onChanged, onDeleted }: { a: AssetMeta; onClo
             </div>
           )}
         </div>
+
+        {a.source === 'generated' && <VideoFeedback mode="asset" videoId={a.id} key={a.id} noun="picture, clip or sound" />}
 
         {editable ? (
           <input
