@@ -482,6 +482,34 @@ const strs = (v: unknown, max = 12): string[] => (Array.isArray(v) ? v.map((x) =
 const bool = (v: unknown, d: boolean): boolean => (typeof v === 'boolean' ? v : d)
 const pick = <T extends string>(v: unknown, allowed: readonly T[]): T | undefined => (typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : undefined)
 
+/**
+ * A numbered list of steps is a script: it is filmed as one exact script, whatever the reader made of it. A reader that
+ * split the list into several pages (one per address in it) would lose every click and dropdown choice in the steps,
+ * so those pages become one `script` page, where the first of them stood.
+ */
+export function scriptFromList(segs: Segment[], typed: string): void {
+  const script = parseStepScript(typed)
+  if (!script || segs.some((s) => s.kind === 'page' && s.how === 'script')) return
+  const lines = unitsOf(typed).filter((u) => LIST_LINE.test(u))
+  const rawLinks = lines.flatMap(urlsIn)
+  const links = rawLinks.map((u) => u.replace(/\/+$/, ''))
+  const fromList = (s: Segment): s is PageSegment =>
+    s.kind === 'page' && ((!!s.url && links.includes(s.url.replace(/\/+$/, ''))) || (s.said.length > 20 && lines.some((l) => l.includes(s.said.slice(0, 40)))))
+  const pages = segs.filter(fromList)
+  if (!pages.length) return
+  const merged: PageSegment = {
+    id: pages[0].id, kind: 'page', said: lines.join('\n'), required: true, how: 'script', emphasis: 'normal',
+    ...(rawLinks[0] ? { url: rawLinks[0] } : {}),
+    actions: script.items.filter((i) => !i.login).map((i) => i.said),
+    ...(script.items.some((i) => i.explain) ? { explain: script.items.flatMap((i) => (i.explain ? [i.explain] : [])) } : {})
+  }
+  const gone = new Set(pages.map((p) => p.id))
+  segs.splice(segs.indexOf(pages[0]), 1, merged)
+  for (let i = segs.length - 1; i >= 0; i--) if (segs[i] !== merged && segs[i].kind === 'page' && gone.has(segs[i].id)) segs.splice(i, 1)
+  // a narration that was laid over one of those pages is laid over the script now
+  for (const s of segs) if (s.kind === 'narration' && typeof s.over === 'object' && gone.has(s.over.segment)) s.over = { segment: merged.id }
+}
+
 /** validate and normalise what the AI returned; null when nothing usable came back */
 export function normalisePlan(raw: unknown, input: BriefInput, deps: { secrets: string[] }): FilmPlan | null {
   if (!raw || typeof raw !== 'object') return null
@@ -539,6 +567,7 @@ export function normalisePlan(raw: unknown, input: BriefInput, deps: { secrets: 
     const target = idMap.get(old)
     if (target && segs.some((x) => x.id === target && x.kind === 'page')) n.over = { segment: target }
   }
+  scriptFromList(segs, typed)
   const m = (r.music && typeof r.music === 'object' ? r.music : {}) as Record<string, unknown>
   const music: MusicSpec = {
     none: bool(m.none, false),

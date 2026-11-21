@@ -133,9 +133,42 @@ export async function passInterstitial(page: Page, ms = 25000): Promise<boolean>
 }
 
 /** open an address and wait until the app itself is on screen; false when a browser check never went away */
+/** a failure of the connection itself (the address could not be looked up, the network dropped), often gone a moment later */
+const NET_FAILURE = /net::ERR_(NAME_NOT_RESOLVED|INTERNET_DISCONNECTED|NETWORK_CHANGED|CONNECTION_(?:RESET|CLOSED|REFUSED)|ADDRESS_UNREACHABLE|NAME_RESOLUTION_FAILED)/
+
+/** the connection problem in plain words, or null when the error is something else */
+export function describeNetFailure(message: string, url: string): string | null {
+  const m = NET_FAILURE.exec(message)
+  if (!m) return null
+  let host = url
+  try {
+    host = new URL(url).hostname
+  } catch {
+    /* keep as given */
+  }
+  const why = /NAME_(?:NOT_RESOLVED|RESOLUTION_FAILED)/.test(m[1]) ? 'this computer could not look up its address' : /INTERNET_DISCONNECTED|NETWORK_CHANGED/.test(m[1]) ? 'the internet connection dropped' : 'the connection was refused or cut'
+  return `${host} could not be reached: ${why}. Check the internet connection and make the video again.`
+}
+
+/** goes to the address; a dropped connection is tried again a few times before it is given up on */
+async function gotoWithRetry(page: Page, url: string, options: { waitUntil: 'load' | 'domcontentloaded'; timeout: number }): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await page.goto(url, options)
+      return
+    } catch (err) {
+      const msg = String((err as Error)?.message ?? err)
+      const plain = describeNetFailure(msg, url)
+      if (!plain) throw err
+      if (attempt >= 4) throw new Error(plain)
+      await new Promise((r) => setTimeout(r, attempt * 3000))
+    }
+  }
+}
+
 export async function openPage(page: Page, url: string, timeout = 20000): Promise<boolean> {
   try {
-    await page.goto(url, { waitUntil: 'load', timeout })
+    await gotoWithRetry(page, url, { waitUntil: 'load', timeout })
   } catch (err) {
     // a slow ad, font or live connection can keep the 'load' event from firing for a page that is already usable:
     // carry on when the page is on screen, else try once more waiting only for the document

@@ -8,6 +8,9 @@ import { runAppRecording, sameAddress, type RunHooks } from '../src/main/appReco
 import { withoutMediaSentences } from '../src/main/appRecon/aiMedia'
 import { parseStepScript } from '../src/main/appRecon/stepScript'
 import { matchOption } from '../src/main/appRecon/pick'
+import { scriptFromList } from '../src/main/appRecon/agent/brief'
+import { describeNetFailure } from '../src/main/appRecon/explore'
+import type { Segment } from '../src/shared/agentBrief'
 
 const STEPS = `1. log into the app
 2. from left menu, click ontology
@@ -119,6 +122,54 @@ describe('choosing entries in a dropdown', () => {
     expect(matchOption(list, '24')).toBe(2)
     expect(matchOption(list, 'Nas')).toBe(4)
     expect(matchOption(list, 'Quantum teleporter')).toBe(-1)
+  })
+})
+
+describe('a list of steps the reader split into pages', () => {
+  const BRIEF = `# overall structure
+start intro with a question, do you know you can visualize quran by its own mathematical balance?
+# recorded steps to show:
+log into the app and then follow the steps to follow for screen recording:
+${MIZAN_PICKS}
+--
+simple outro cover with brand logo and CTA.`
+  const url = 'https://taaweel.snapkodex.com/numerical_analysis/explore.html#circle'
+  const page = (id: string): Segment => ({ id, kind: 'page', said: `open: ${url}`, required: true, url, how: 'steps', emphasis: 'normal' })
+  it('is filmed as one exact script again, where the first page stood, and the narration follows it', () => {
+    const segs: Segment[] = [
+      { id: 's1', kind: 'ai-clip', said: 'question', required: true, subject: 'q', purpose: 'intro', style: null },
+      page('s2'),
+      { id: 's3', kind: 'narration', said: 'n', required: true, claims: ['a'], over: { segment: 's2' } },
+      page('s4'),
+      { id: 's5', kind: 'narration', said: 'n2', required: true, claims: ['b'], over: { segment: 's4' } },
+      { id: 's6', kind: 'card', said: 'outro', required: true, card: 'outro' }
+    ]
+    scriptFromList(segs, BRIEF.replace('3. then provide', '4. then provide'))
+    expect(segs.map((s) => s.id)).toEqual(['s1', 's2', 's3', 's5', 's6'])
+    const script = segs[1] as Extract<Segment, { kind: 'page' }>
+    expect(script).toMatchObject({ kind: 'page', how: 'script', url })
+    expect(script.actions?.length).toBeGreaterThan(1)
+    expect((segs[2] as Extract<Segment, { kind: 'narration' }>).over).toEqual({ segment: 's2' })
+    expect((segs[3] as Extract<Segment, { kind: 'narration' }>).over).toEqual({ segment: 's2' })
+  })
+  it('leaves a plan alone that already has the script, and pages that are not in the list', () => {
+    const have: Segment[] = [{ ...page('s1'), how: 'script' }, page('s2')]
+    scriptFromList(have, BRIEF)
+    expect(have).toHaveLength(2)
+    const other: Segment[] = [{ id: 's1', kind: 'page', said: 'show the pricing page', required: true, url: 'https://x.test/pricing', how: 'tour', emphasis: 'normal' }]
+    scriptFromList(other, BRIEF)
+    expect(other).toHaveLength(1)
+    expect((other[0] as Extract<Segment, { kind: 'page' }>).how).toBe('tour')
+  })
+})
+
+describe('a connection that drops while opening the app', () => {
+  it('is said in plain words, not as a browser error code', () => {
+    const msg = describeNetFailure('net::ERR_NAME_NOT_RESOLVED at https://taaweel.snapkodex.com/numerical_analysis/explore.html#circle', 'https://taaweel.snapkodex.com/x')!
+    expect(msg).toMatch(/^taaweel\.snapkodex\.com could not be reached: this computer could not look up its address/)
+    expect(msg).not.toMatch(/net::/)
+    expect(describeNetFailure('net::ERR_INTERNET_DISCONNECTED at https://a.test/', 'https://a.test/')).toMatch(/internet connection dropped/)
+    expect(describeNetFailure('Navigation timeout of 20000 ms exceeded', 'https://a.test/')).toBeNull()
   })
 })
 
