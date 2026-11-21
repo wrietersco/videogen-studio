@@ -284,6 +284,8 @@ declare global {
         reveal: (runId: string) => Promise<boolean>
         /** a small picture from the finished video (a data URL), or null */
         poster: (runId: string) => Promise<string | null>
+        /** the title, text and hashtags to post with a finished video, written for one platform */
+        describe: (runId: string, platform: string, custom?: string, extra?: string) => Promise<{ ok: true; description: import('@shared/videoDescription').VideoDescription } | { ok: false; error: string }>
         revealRun: (runId: string) => Promise<boolean>
         runUsage: (runId: string) => Promise<ProjectUsage>
         removeRun: (runId: string) => Promise<{ ok: boolean; error?: string }>

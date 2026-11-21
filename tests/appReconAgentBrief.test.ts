@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { LLMProvider } from '../src/main/providers/types'
 import type { FilmPlan, PageSegment, BriefInput } from '../src/shared/agentBrief'
-import { accountFor, readBrief, readBriefByRules } from '../src/main/appRecon/agent/brief'
+import { accountFor, isLeadIn, normalisePlan, readBrief, readBriefByRules, voiceDirectionOf } from '../src/main/appRecon/agent/brief'
 
 const TAAWEEL = `create a product launch video on Taaweel starting off from clear problem statement and presenting Taaweel as a solution.  Use arabic music with vocals and duff only, no song, just arabic vocals and duff.
 steps:
@@ -214,5 +214,38 @@ describe('honesty pass with an AI writer that rewords', () => {
     expect(accountFor(typed, plan).unplaced).toEqual([])
     // a sentence the plan does NOT carry is still flagged
     expect(accountFor('create a video and add a cooking recipe segment about pasta.', plan).unplaced.length).toBeGreaterThan(0)
+  })
+})
+
+describe('lead-in lines, and the voice the person asked for', () => {
+  const BRIEF = `# overall structure
+intro: a 40 second AI video. Use a dominating BBC-like voiceover for the whole film. Music: arabic vocals aided with soft duff music.
+# recorded steps to show:
+log into the app and then follow the steps to follow for screen recording:
+1. open: https://taaweel.snapkodex.com/numerical_analysis/explore.html#circle in your own words tell that this is the even-odd circle
+2. go to the \`Text to Study\` dropdown in header of the page on top left and select Surah An-Nur
+3. provide a conclusion statement and add CTA`
+
+  it('does not list a heading or the sentence that introduces a list as something it could not place', () => {
+    const plan = accountFor(BRIEF, readBriefByRules(input(BRIEF)))
+    expect(plan.unplaced.filter((u) => /recorded steps to show|follow the steps/.test(u))).toEqual([])
+    expect(isLeadIn('# recorded steps to show:')).toBe(true)
+    expect(isLeadIn('log into the app and then follow the steps to follow for screen recording:')).toBe(true)
+    expect(isLeadIn('1. open: https://a.com/x')).toBe(false)
+    expect(isLeadIn('Show the dashboard.')).toBe(false)
+  })
+
+  it('keeps the person\'s own words about the voice-over, not the music and not a step', () => {
+    expect(voiceDirectionOf(BRIEF)).toBe('Use a dominating BBC-like voiceover for the whole film')
+    expect(voiceDirectionOf('Music: arabic vocals and duff. Show the dashboard.')).toBeUndefined()
+    expect(voiceDirectionOf('No voiceover please.')).toBeUndefined()
+    expect(voiceDirectionOf('1. tell the voice of the app is calm')).toBeUndefined()
+  })
+
+  it('puts it in the plan from the rules reader and from the AI reader, whatever the writer paraphrased', () => {
+    expect(readBriefByRules(input(BRIEF)).voice.tone).toMatch(/dominating BBC-like voiceover/)
+    const raw = { segments: [{ kind: 'page', said: 'Show the dashboard', url: 'https://taaweel.snapkodex.com/', how: 'tour' }], music: {}, voice: { tone: 'confident', language: 'arabic' } }
+    const plan = normalisePlan(raw, input(BRIEF), { secrets: [] })
+    expect(plan?.voice.tone).toMatch(/dominating BBC-like voiceover/)
   })
 })

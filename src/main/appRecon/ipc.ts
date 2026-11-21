@@ -7,7 +7,8 @@ import { brandSourceOf, isAppId, isRunId, validateApp, type RecordingRevision, t
 import type { PlatformId } from '../../shared/spec'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { applyReviewEdits, reviewBeats } from './planner'
-import { readPreviousRecording } from './recordingRecord'
+import { readPreviousRecording, readRecordingRecord } from './recordingRecord'
+import { describeVideo, platformOf } from './description'
 import { ReviseCancelled, editIsEmpty, interpretRevision, needsRerecord, reviseRecording, revisionOf } from './revise'
 import { readStyle, youtubeReadiness } from './style'
 import { RunCancelled, runAppRecording, type MediaTools, type RunHooks, type RunInput, type RunOutput } from './run'
@@ -462,6 +463,25 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
       return `data:image/jpeg;base64,${readFileSync(cached).toString('base64')}`
     } catch {
       return null
+    }
+  })
+  /** the text to post with a finished video, written for the platform the person chose (any name can be typed) */
+  ipcMain.handle('apprec:describe', async (_e, runId: unknown, platformId: unknown, custom?: unknown, extra?: unknown) => {
+    if (!isRunId(runId)) return fail('Invalid recording')
+    const platform = platformOf(platformId, custom)
+    if (!platform) return fail('Pick a platform, or type the name of one.')
+    const run = d.store.runs().find((r) => r.id === runId)
+    if (!run || run.status !== 'done') return fail('Only a finished video can be described.')
+    const rec = readRecordingRecord(d.store.runDir(runId))
+    if (!rec) return fail('This video was made before its words could be kept, so it cannot be described. Make it again, or change it once, and try again.')
+    const app = d.store.get(run.appId)
+    const useAi = !!app?.useAi && d.ai().available
+    const login = app ? d.store.secrets(app.id) : null
+    try {
+      const description = await describeVideo({ record: rec, platform, chat: useAi ? d.providers().chat : null, secrets: login ? [login.password, login.username] : [], extra: typeof extra === 'string' ? extra : undefined })
+      return { ok: true as const, description }
+    } catch (err) {
+      return fail(err)
     }
   })
   /** what one recording cost: the receipt filed in its own folder */

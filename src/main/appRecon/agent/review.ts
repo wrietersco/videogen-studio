@@ -69,7 +69,14 @@ const words = (s: string): string[] => s.toLowerCase().normalize('NFKD').match(/
 const stem = (w: string): string => w.replace(/(ing|ed|es|s)$/, '')
 
 /** the share (0..1) of a claim's meaningful words found in the best-matching line */
+const CTA_CLAIM = /\b(?:cta|call[\s-]+to[\s-]+action)\b/i
+const CTA_SAID = /\b(?:try|visit|start|join|sign|explore|discover|learn|begin|click|open|go\s+to|head\s+to|get\s+started|today|now|yourself|waiting|await\w*|ready)\b|https?:\/\/|\.(?:com|app|org|io)\b/i
+const CLOSING_CLAIM = /\b(?:conclusion|conclude|concluding|wrap(?:ping)?[\s-]+up|closing|summary|summari[sz]e)\b/i
+
 export function claimCoverage(claim: string, lines: string[]): number {
+  // a claim about the KIND of line ("add a call to action", "give a conclusion") is met by the film's closing words, not by matching its words
+  if (CTA_CLAIM.test(claim)) return lines.slice(-3).some((l) => CTA_SAID.test(l)) ? 1 : 0
+  if (CLOSING_CLAIM.test(claim) && words(claim.replace(CLOSING_CLAIM, ' ')).length <= 2) return lines.length >= 2 ? 1 : 0
   const want = [...new Set(words(claim).map(stem))]
   if (!want.length) return 1
   let best = 0

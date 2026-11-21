@@ -7,7 +7,7 @@ import { asPhone, enforcePolicy, launch } from './browser'
 import { scrubMap, scrubText } from './detect'
 import { parseDirectives, readUseCase } from './directives'
 import { checkCompatibility, explore, openPage, passInterstitial, settle, type Depth, type Exploration } from './explore'
-import { narrate, narratorTone, voiceLine, type LaunchInfo } from './narrate'
+import { narrate, voiceLine, voiceTone, type LaunchInfo } from './narrate'
 import { adoptFile, findVoice, writeRecordingRecord, type RecordedCard } from './recordingRecord'
 import { planBeats, type Plan } from './planner'
 import { interpretGuardrails, PolicyGate, type RestrictionChecks } from './policy'
@@ -477,7 +477,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     const clipsPossible = !!inp.media?.tools && !ask.declined
     const clipPlaces: Placement[] = !clipsPossible ? [] : ask.requests.length ? [...new Set(ask.requests.map((r) => r.placement))] : inp.media?.clips && !fp ? ['start'] : []
     const problemAsked = fp ? wantsProblemCard(fp, clipsPossible && ask.requests.some((r) => r.part === 'problem')) : structure.problem
-    const narration = await narrate({ chat: inp.chat, speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: fp ? narrationBrief(fp) : ctxClean, secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, problem: problemAsked, clips: clipPlaces, product: inp.launch?.feature.split(/\s+/)[0]?.replace(/['\u2019]s$/i, ''), dir: inp.runDir, say })
+    const narration = await narrate({ chat: inp.chat, speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: fp ? narrationBrief(fp) : ctxClean, secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, problem: problemAsked, clips: clipPlaces, voiceStyle: fp?.voice.tone, product: inp.launch?.feature.split(/\s+/)[0]?.replace(/['\u2019]s$/i, ''), dir: inp.runDir, say })
     // a result the person asked to see stays on screen long enough to be taken in, whatever the narration length
     for (const b of plan.beats) if ((b.kind === 'result' || b.kind === 'detail') && (narration.minSec.get(b.beat) ?? 0) < RESULT_HOLD_SEC) narration.minSec.set(b.beat, RESULT_HOLD_SEC)
     check()
@@ -527,7 +527,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       const planned = await planMedia({ chat: inp.chat, requests: ask.requests, auto: !!inp.media?.clips, appName: displayHost(inp.startUrl), topic, brand: look ? { accent: look.accent.replace('#', ''), backdrop: look.backdrop } : brand?.accent ? { accent: brand.accent } : undefined, motif, lines: narration.clipLines, facts: clipFacts, subjectHint: inp.launch ? `${inp.launch.feature}: ${inp.launch.tagline}` : undefined, style: ask.style, noAbstract: ask.noAbstract, context: ctxClean, mode: inp.mode, secrets, say })
       const totalClipSec = planned.reduce((a, c) => a + (c.seconds ?? clipLength(sec, planned.length, lengthSec)), 0)
       say(`AI video: ${planned.length} clip${planned.length === 1 ? '' : 's'}, about ${totalClipSec} seconds in all (roughly $${(totalClipSec * 0.1).toFixed(2)})${ask.style ? `, in the ${ask.style} look you asked for` : ''}.`)
-      const tone = inp.mode === 'launch' ? 'Confident, upbeat product-launch announcer. Warm, energetic, with a clear sense of occasion, at a brisk but natural pace.' : 'Calm, clear, friendly product-demo narrator at an unhurried pace.'
+      const tone = voiceTone(inp.mode === 'launch', fp?.voice.tone)
       const middle = (): number => plan.beats[Math.max(0, Math.ceil(plan.beats.length / 2) - 1)]?.beat ?? 0
       const where = (p: Placement): InsertPlan['at'] => (p === 'start' ? { kind: 'start' } : p === 'end' ? { kind: 'end' } : { kind: 'afterBeat', beat: middle() })
       const clipSec1 = clipLength(sec, planned.length, lengthSec)
@@ -634,7 +634,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
         targetSec: inp.targetSec ?? inp.launch?.targetSec,
         context: scrubText(ctxClean, { values: secrets }).slice(0, 4000),
         styleDirection: inp.styleDirection,
-        tone: narratorTone(inp.mode === 'launch'),
+        tone: voiceTone(inp.mode === 'launch', fp?.voice.tone),
         voiced: narration.plans.some((p) => p.pcm.length > 0),
         lines: narration.plans.map((p) => ({ beat: p.beat, chapter: p.chapter, text: p.text, voice: findVoice(inp.runDir, `voice-${p.beat}`) })),
         intro: cardRec(narration.intro, 'voice-intro'),
@@ -663,10 +663,10 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     // ------------------------------------------------------------ PARI: review, and the honest report
     let report: PariReport | undefined
     if (fp && inp.pari) {
-      const lines = [...narration.lines.map((l) => l.text), narration.problem?.text ?? '', ...inserts.map((i) => i.text ?? '')].filter(Boolean)
+      const lines = [narration.introText ?? '', ...narration.lines.map((l) => l.text), narration.problem?.text ?? '', ...inserts.map((i) => i.text ?? ''), narration.outroText ?? ''].filter(Boolean)
       const planClips = fp.segments.some((s) => s.kind === 'ai-clip')
       const clipsSkipped = !planClips ? undefined : assigned.video === 'none' || assigned.video === 'skip' ? 'you chose not to make AI clips' : !tools ? 'AI clips are not available on this account' : undefined
-      const checks = reviewStage({ plan: fp, acted, take, clipsMade, clipsSkipped, lines, problemDrawn: !!narration.problem })
+      const checks = reviewStage({ plan: fp, acted, take, clipsMade, clipsSkipped, lines, problemDrawn: !!narration.problem, scripted: scriptOut ? { said: scriptOut.results.filter((r) => !r.item.login).map((r) => r.item.said), actions: scriptOut.actions, choices: scriptOut.results.reduce((n, r) => n + r.picks.length, 0) } : undefined })
       for (const c of checks) inp.pari.emit({ kind: 'pari-check', check: c })
       report = buildReport(fp, pari, checks)
       inp.pari.emit({ kind: 'pari-report', report })

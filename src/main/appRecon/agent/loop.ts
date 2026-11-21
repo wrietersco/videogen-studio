@@ -306,10 +306,33 @@ export interface ReviewInput {
   clipsSkipped?: string
   lines: string[]
   problemDrawn: boolean
+  /** the typed steps were performed exactly (the exact-steps path): the words of each step done, and how much was done */
+  scripted?: { said: string[]; actions: number; choices: number }
+}
+
+const flat = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+
+/** a page segment the exact-steps run filmed: it is judged by what that run did, not reported as skipped */
+function scriptedCheck(seg: PageSegment, s: NonNullable<ReviewInput['scripted']>): SegmentCheck | null {
+  const mine = flat(seg.said)
+  const done = s.said.filter((w) => {
+    const f = flat(w)
+    return f.length > 6 && (mine.includes(f.slice(0, 60)) || f.includes(mine.slice(0, 60)))
+  })
+  if (seg.how !== 'script' && !done.length) return null
+  const proof = [`${s.said.length} typed step${s.said.length === 1 ? '' : 's'} done in order`, `${s.actions} action${s.actions === 1 ? '' : 's'} performed`]
+  if (s.choices) proof.push(`${s.choices} dropdown choice${s.choices === 1 ? '' : 's'} made`)
+  return { segment: seg.id, status: 'done', evidence: proof, note: 'Done by the exact-steps run: every step was performed on the real page, then filmed.', attempts: 1 }
 }
 
 export function reviewStage(r: ReviewInput): SegmentCheck[] {
-  return r.plan.segments.map((seg) => reviewSegment(seg, evidenceFor(seg, r)))
+  return r.plan.segments.map((seg) => {
+    if (seg.kind === 'page' && r.scripted && !r.acted) {
+      const c = scriptedCheck(seg, r.scripted)
+      if (c) return c
+    }
+    return reviewSegment(seg, evidenceFor(seg, r))
+  })
 }
 
 function evidenceFor(seg: Segment, r: ReviewInput): Evidence {

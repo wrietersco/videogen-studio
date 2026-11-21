@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { CapabilityReport, DecisionRequest, FilmPlan, PariEvent } from '../src/shared/agentBrief'
 import { readBriefByRules } from '../src/main/appRecon/agent/brief'
 import { planSegment } from '../src/main/appRecon/agent/act'
-import { agentFilmsPages, attachClaims, partsBudget, buildReport, clipRequests, narrationBrief, planStage, PariStopped, wantsProblemCard, type PariHooks } from '../src/main/appRecon/agent/loop'
+import { agentFilmsPages, attachClaims, partsBudget, buildReport, clipRequests, narrationBrief, planStage, PariStopped, reviewStage, wantsProblemCard, type PariHooks } from '../src/main/appRecon/agent/loop'
 
 const BRIEF = `create a product launch video on Taaweel starting off from clear problem statement and presenting Taaweel as a solution.  Use arabic music with vocals and duff only, no song, just arabic vocals and duff.
 steps:
@@ -97,5 +97,30 @@ describe('PARI loop', () => {
     const act = planSegment(seg, page, { startBeat: 1, idPrefix: 'p2-', maxParts: 4 })
     expect(act.planned.map((p) => p.label)).toEqual(['Stage 1', 'Stage 4', 'Stage 7', 'Stage 10'])
     expect(act.notes.join(' ')).toMatch(/4 of the 10 stages/)
+  })
+})
+
+describe('reviewing a film made from typed steps', () => {
+  const page = { id: 's1', kind: 'page', said: '1. open: https://x.test/a#circle\n2. select Surah An-Nur', required: true, how: 'script', emphasis: 'normal', url: 'https://x.test/a' } as const
+  const plan = { goal: '', kind: 'walkthrough', segments: [page, { id: 's2', kind: 'narration', said: 'provide a conclusion statement and add CTA', required: true, claims: ['provide a conclusion statement', 'add call to action'], over: 'find' }], music: { none: false, description: '', vocals: 'any', instruments: [], exclude: [], ambience: [], quiet: false }, voice: {}, look: { style: null, noAbstract: false }, unplaced: [], source: 'ai' } as unknown as FilmPlan
+  const lines = ['The circle shows the verses.', 'Switching to An-Nur.', 'Taaweel is ready for your own research. Try it today.']
+
+  it('counts a page the exact-steps run filmed as done, not as not attempted', () => {
+    const checks = reviewStage({ plan, acted: null, take: null, clipsMade: new Map(), lines, problemDrawn: false, scripted: { said: ['open: https://x.test/a#circle', 'select Surah An-Nur'], actions: 5, choices: 1 } })
+    expect(checks[0].status).toBe('done')
+    expect(checks[0].evidence.join(' ')).toMatch(/dropdown choice/)
+    expect(buildReport(plan, null, checks).shortfalls).toEqual([])
+  })
+
+  it('still says so when the steps were not run at all', () => {
+    const checks = reviewStage({ plan, acted: null, take: null, clipsMade: new Map(), lines, problemDrawn: false })
+    expect(checks[0].status).toBe('skipped')
+  })
+
+  it('meets "a conclusion" and "a call to action" with the closing words of the film', () => {
+    const checks = reviewStage({ plan, acted: null, take: null, clipsMade: new Map(), lines, problemDrawn: false, scripted: { said: [], actions: 0, choices: 0 } })
+    expect(checks[1].status).toBe('done')
+    const none = reviewStage({ plan, acted: null, take: null, clipsMade: new Map(), lines: ['The circle shows the verses.'], problemDrawn: false })
+    expect(none[1].status).not.toBe('done')
   })
 })

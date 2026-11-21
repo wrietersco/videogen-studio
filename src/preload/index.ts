@@ -160,6 +160,7 @@ const api = {
     play: (runId: string) => ipcRenderer.invoke('apprec:play', runId),
     reveal: (runId: string) => ipcRenderer.invoke('apprec:reveal', runId),
     poster: (runId: string) => ipcRenderer.invoke('apprec:poster', runId),
+    describe: (runId: string, platform: string, custom?: string, extra?: string) => ipcRenderer.invoke('apprec:describe', runId, platform, custom, extra),
     revealRun: (runId: string) => ipcRenderer.invoke('apprec:revealRun', runId),
     runUsage: (runId: string) => ipcRenderer.invoke('apprec:runUsage', runId),
     removeRun: (runId: string) => ipcRenderer.invoke('apprec:removeRun', runId),

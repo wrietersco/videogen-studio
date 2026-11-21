@@ -3,6 +3,7 @@ import type { PariEvent } from '@shared/agentBrief'
 import { api, type AppInput, type ReviewBeat, type RunEvent, type RunRecord, type SavedApp } from '../api'
 import { Section, fmtDur } from '../components/ui'
 import { CostToggle } from '../components/CostReceipt'
+import { VideoDescription } from '../components/VideoDescription'
 import { ShapePicker } from '../components/PromptTools'
 import { POST_APPS } from '@shared/shapes'
 import type { PlatformId } from '@shared/spec'
@@ -554,6 +555,12 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
                     <ReviseBox disabled={running} onRevise={(text) => revise(r.id, text)} placeholder={REVISE_PLACEHOLDER} hint={reviseHint(r.editable)} />
                   </details>
                 )}
+                {r.status === 'done' && r.video && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-wide text-ink/40">✍️ Description for posting</summary>
+                    <VideoDescription runId={r.id} />
+                  </details>
+                )}
                 </div>
                 </div>
               ))}
@@ -677,6 +684,7 @@ function RunPanel({ live, onRevise, onClose, onReviewAnswered, onDecided, onHand
           {!!done.blockedHosts?.length && <div className="mt-2 text-xs text-ink/55">The app also tried to reach: {done.blockedHosts.map((h) => `${h.host} (${h.count}×)`).join(', ')}. Untick “Stay on this app's sites” to allow other hosts.</div>}
           <div className="mt-3 text-xs text-ink/50">Watch the video before you share it: we hide what we can recognize as private, and nothing else.</div>
           {done.revision && <RevisionSummary revision={done.revision} />}
+          <VideoDescription key={`describe-${done.id}`} runId={done.id} />
           <ReviseBox key={`revise-${done.id}`} disabled={false} onRevise={(text) => onRevise(done.id, text)} placeholder={REVISE_PLACEHOLDER} hint={reviseHint(done.editable)} />
         </div>
       )}
