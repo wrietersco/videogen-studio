@@ -1,0 +1,112 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>chapterTitle</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  canvas { display: block; position: fixed; inset: 0; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script>
+(function () {
+  'use strict'
+  var params = window.__params || {}
+  var meta = window.__meta || { width: 1080, height: 1920, durationSec: 4 }
+  var W = Math.max(2, Math.round(meta.width))
+  var H = Math.max(2, Math.round(meta.height))
+  var D = Math.max(0.1, Number(meta.durationSec) || 4)
+  var canvas = document.getElementById('stage')
+  canvas.width = W
+  canvas.height = H
+  var ctx = canvas.getContext('2d')
+  var SANS = "-apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+
+  function fade(t) {
+    return Math.max(0, Math.min(1, t / 0.3, (D - t) / 0.3))
+  }
+  function easeOut(p) {
+    p = Math.max(0, Math.min(1, p))
+    return 1 - Math.pow(1 - p, 3)
+  }
+  function clean(v) {
+    return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, 160)
+  }
+  function wrap(value, font, maxW, maxLines) {
+    ctx.font = font
+    var words = value.split(' ').filter(Boolean)
+    var lines = []
+    var cur = ''
+    for (var i = 0; i < words.length; i++) {
+      var test = cur ? cur + ' ' + words[i] : words[i]
+      if (cur && ctx.measureText(test).width > maxW) {
+        lines.push(cur)
+        cur = words[i]
+      } else cur = test
+      if (lines.length === maxLines) break
+    }
+    if (lines.length < maxLines && cur) lines.push(cur)
+    else if (lines.length === maxLines && cur) {
+      var last = lines[maxLines - 1]
+      while (last && ctx.measureText(last + '…').width > maxW) last = last.slice(0, -1).trim()
+      lines[maxLines - 1] = last + '…'
+    }
+    return lines.filter(Boolean)
+  }
+
+  var text = clean(params.text).toUpperCase()
+
+  window.renderAt = function (t) {
+    ctx.clearRect(0, 0, W, H)
+    if (!text) return
+    var a = fade(t)
+    if (a <= 0) return
+
+    var grow = easeOut(Math.min(1, t / 0.6))
+    var settle = easeOut(Math.min(1, t / 0.5))
+    var maxW = W * 0.8
+    var titleSize = H * 0.058
+    var font = '700 ' + titleSize + 'px ' + SANS
+    var lines = wrap(text, font, maxW, 2)
+    var lineH = titleSize * 1.22
+    var blockH = lines.length * lineH
+    var kickSize = H * 0.018
+    var gap = H * 0.03
+    var cy = H * 0.46 - (blockH + gap + kickSize) / 2
+
+    ctx.save()
+    ctx.globalAlpha = a
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'top'
+
+    // kicker above the title
+    ctx.font = '600 ' + kickSize + 'px ' + SANS
+    ctx.fillStyle = 'rgba(255,255,255,0.62)'
+    ctx.fillText('C H A P T E R', W / 2, cy + (1 - settle) * H * 0.008)
+    cy += kickSize + gap
+
+    // the title settles from a barely larger scale
+    ctx.save()
+    ctx.translate(W / 2, cy)
+    var s = 1 + (1 - settle) * 0.03
+    ctx.scale(s, s)
+    ctx.font = font
+    ctx.shadowColor = 'rgba(0,0,0,0.55)'
+    ctx.shadowBlur = titleSize * 0.16
+    ctx.fillStyle = '#ffffff'
+    for (var i = 0; i < lines.length; i++) ctx.fillText(lines[i], 0, i * lineH)
+    ctx.restore()
+
+    // thin rules that grow out from the centre under the title
+    var ruleY = cy + blockH + gap * 0.8
+    var half = (W * 0.16) * grow
+    ctx.fillStyle = 'rgba(255,255,255,0.4)'
+    ctx.fillRect(W / 2 - half, ruleY, half * 2, Math.max(1, H * 0.0015))
+    ctx.restore()
+  }
+})()
+</script>
+</body>
+</html>

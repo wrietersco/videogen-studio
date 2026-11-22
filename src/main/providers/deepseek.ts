@@ -85,7 +85,7 @@ export class DeepseekProvider implements LLMProvider {
   }
 
   async generateJSON<T>(req: GenerateJSONRequest): Promise<T> {
-    const model = resolveChatModel(this.modelOverride?.())
+    const model = resolveChatModel(req.model ?? this.modelOverride?.())
     if (req.images?.length && !this.supportsVision()) throw new ProviderError(`Selected model ${model} cannot review images. Choose an image-capable model for this role in Settings.`, this.id, 'invalid-request')
     const text = await this.chat(model, {
       system: `${req.system}\n\nRespond with ONLY a JSON value matching this schema (no prose, no code fences):\n${JSON.stringify(req.jsonSchema)}`,
@@ -99,7 +99,7 @@ export class DeepseekProvider implements LLMProvider {
   }
 
   async generateText(req: GenerateTextRequest): Promise<string> {
-    const model = resolveChatModel(this.modelOverride?.())
+    const model = resolveChatModel(req.model ?? this.modelOverride?.())
     if (req.images?.length && !this.supportsVision()) throw new ProviderError(`Selected model ${model} cannot review images. Choose an image-capable model for this role in Settings.`, this.id, 'invalid-request')
     return this.chat(model, {
       system: req.system,

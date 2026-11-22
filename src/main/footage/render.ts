@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { FADE_SEC, planDuration, shapeSize, type EditPlan, type FootageClip, type PlanSegment } from '../../shared/footage'
+import { FADE_SEC, planDuration, shapeSize, type EditPlan, type FootageClip, type OverlayPlan, type PlanSegment, type SegmentFixes } from '../../shared/footage'
 import type { VideoSpec } from '../../shared/spec'
 import { writeWav } from '../audio/pcm'
 import { scoreMusic } from '../audio/score'
@@ -8,6 +8,7 @@ import { subjectFocus } from './focus'
 import { probeFile } from './scan'
 import { buildAss, captionCues, clampToLength, filterPath } from './captions'
 import { ffmpegReason, runFfmpeg } from './ffmpeg'
+import { canRenderOverlays, renderOverlayFrames, validateOverlay } from './overlays/index'
 
 /**
  * Cuts the plan into one video with a single ffmpeg graph: trim → fit to the
@@ -28,9 +29,20 @@ function atempoChain(speed: number): string {
   const parts: number[] = []
   let s = speed
   while (s > 2) { parts.push(2); s /= 2 }
-  while (s < 0.5) { parts.push(0.5); s /= 0.5 }
+  while (s < 0.5) { parts.push(0.5); s /= 2 }
   parts.push(s)
   return parts.map((p) => `atempo=${num(p)}`).join(',') + ','
+}
+
+/** the corrective filters for a shot's measured problems, '' when there are none */
+export function fixesChain(fixes?: SegmentFixes): string {
+  if (!fixes) return ''
+  const parts: string[] = []
+  if (fixes.exposure !== undefined) parts.push(`eq=brightness:${(0.35 * fixes.exposure).toFixed(3)}`)
+  if (fixes.contrast !== undefined) parts.push(`eq=contrast:${(1 + 0.6 * fixes.contrast).toFixed(3)}`)
+  if (fixes.warmth !== undefined) parts.push(`colorbalance=rs:${(0.25 * fixes.warmth).toFixed(3)}:bs:${(-0.25 * fixes.warmth).toFixed(3)}`)
+  if (fixes.stabilize) parts.push('deshake=rx=16:ry=16')
+  return parts.join(',')
 }
 
 export function shouldBlur(plan: EditPlan, clip: FootageClip, target: { width: number; height: number }): boolean {
@@ -58,8 +70,15 @@ export interface SegmentGraph {
   totalSec: number
 }
 
+/** one rendered overlay PNG sequence, timed on the finished video */
+export interface OverlayUse {
+  inputIndex: number
+  startSec: number
+  endSec: number
+}
+
 /** the whole cut as one filter graph with outputs [outv] and [outa] */
-export function buildSegmentGraph(plan: EditPlan, clips: Map<string, FootageClip>, subtitleFile?: string): SegmentGraph {
+export function buildSegmentGraph(plan: EditPlan, clips: Map<string, FootageClip>, subtitleFile?: string, overlays?: OverlayUse[]): SegmentGraph {
   const { width: W, height: H } = shapeSize(plan.shape)
   const inputs: string[] = []
   const lines: string[] = []
@@ -71,19 +90,21 @@ export function buildSegmentGraph(plan: EditPlan, clips: Map<string, FootageClip
     const out = segmentSeconds(seg)
     lens.push(out)
     const setpts = `setpts=(PTS-STARTPTS)/${num(seg.speed)},fps=${FPS}`
+    const fix = fixesChain(seg.fixes)
+    const fixPre = fix ? `${fix},` : ''
     const tail = `trim=duration=${num(out)},setpts=PTS-STARTPTS,setsar=1,format=yuv420p,settb=AVTB`
     if (shouldBlur(plan, clip, { width: W, height: H })) {
       lines.push(
         `[${i}:v:0]${setpts},split=2[bg${i}][fg${i}]`,
         `[bg${i}]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=24:3[bb${i}]`,
         `[fg${i}]scale=${W}:${H}:force_original_aspect_ratio=decrease[fs${i}]`,
-        `[bb${i}][fs${i}]overlay=(W-w)/2:(H-h)/2,${tail}[v${i}]`
+        `[bb${i}][fs${i}]overlay=(W-w)/2:(H-h)/2,${fixPre}${tail}[v${i}]`
       )
     } else {
       // keep the part of the picture where the subject is, rather than always the middle
       const f = seg.focus
       const at = f ? `:x='min(max(${num(f.x)}*iw-ow/2,0),iw-ow)':y='min(max(${num(f.y)}*ih-oh/2,0),ih-oh)'` : ''
-      lines.push(`[${i}:v:0]${setpts},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}${at},${tail}[v${i}]`)
+      lines.push(`[${i}:v:0]${setpts},scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}${at},${fixPre}${tail}[v${i}]`)
     }
     if (seg.keepAudio && clip.hasAudio) {
       const gain = stemGainDb(clip)
@@ -118,9 +139,15 @@ export function buildSegmentGraph(plan: EditPlan, clips: Map<string, FootageClip
   }
   const edgeV = plan.fadeInOut ? `,fade=t=in:st=0:d=0.3,fade=t=out:st=${num(Math.max(0, length - 0.45))}:d=0.45` : ''
   const edgeA = plan.fadeInOut ? `,afade=t=in:st=0:d=0.3,afade=t=out:st=${num(Math.max(0, length - 0.45))}:d=0.45` : ''
+  // rendered overlay effects go on over the joined picture, before text and the fade
+  let baseV = cv
+  ;(overlays ?? []).forEach((o, k) => {
+    lines.push(`[${baseV}][${o.inputIndex}:v]overlay=0:0:enable='between(t,${num(o.startSec)},${num(o.endSec)})'[ov${k}]`)
+    baseV = `ov${k}`
+  })
   // text goes on before the fade, so it fades with the picture
   const subs = subtitleFile ? `,subtitles=filename='${filterPath(subtitleFile)}'` : ''
-  lines.push(`[${cv}]null${subs}${edgeV}[outv]`, `[${ca}]anull${edgeA}[outa]`)
+  lines.push(`[${baseV}]null${subs}${edgeV}[outv]`, `[${ca}]anull${edgeA}[outa]`)
   return { inputs, filter: lines.join(';\n'), totalSec: length }
 }
 
@@ -131,6 +158,8 @@ export interface RenderJob {
   outFile: string
   /** makes an AI scene and returns the mp4 path (only needed when the plan has AI segments) */
   makeClip?: (prompt: string, aspect: '9:16' | '16:9', sec: number) => Promise<string>
+  /** composes an AI music track for the style brief and returns its file path (null = could not be made) */
+  aiMusic?: (styleBrief: string, mood: string, totalSec: number) => Promise<string | null>
   isCancelled: () => boolean
   onProgress: (pct: number, phase: string) => void
 }
@@ -190,14 +219,46 @@ export async function renderPlan(job: RenderJob): Promise<RenderOutcome> {
   rmSync(work, { recursive: true, force: true })
   mkdirSync(work, { recursive: true })
   try {
-    let graph = buildSegmentGraph(plan, byId)
+    // ---- overlay effects (rendered to transparent PNG sequences first) ----
+    const overlayInputs: string[] = []
+    const overlayUses: OverlayUse[] = []
+    if (plan.overlays?.length) {
+      if (!canRenderOverlays()) {
+        notes.push('Overlays need the desktop app, so they were left out.')
+      } else {
+        let inputIndex = plan.segments.length
+        for (const [k, ov] of plan.overlays.entries()) {
+          if (job.isCancelled()) throw new RenderCancelled()
+          let valid: OverlayPlan
+          try {
+            valid = validateOverlay(ov)
+          } catch (err) {
+            notes.push(`The ${ov.effect} overlay was left out: ${(err as Error).message}`)
+            continue
+          }
+          const duration = Math.min(12, Math.max(0.5, valid.endSec - valid.startSec))
+          const dir = join(work, `overlay-${k}`)
+          job.onProgress(1, `Making the ${valid.effect} overlay (${k + 1} of ${plan.overlays.length})`)
+          try {
+            await renderOverlayFrames({ effect: valid.effect, params: valid.params, width: target.width, height: target.height, durationSec: duration, outDir: dir, cancelled: job.isCancelled })
+          } catch (err) {
+            if (job.isCancelled()) throw new RenderCancelled()
+            notes.push(`The ${valid.effect} overlay could not be made, so it was left out.`)
+            continue
+          }
+          overlayInputs.push('-framerate', '30', '-i', join(dir, '%05d.png'))
+          overlayUses.push({ inputIndex: inputIndex++, startSec: valid.startSec, endSec: valid.endSec })
+        }
+      }
+    }
+    let graph = buildSegmentGraph(plan, byId, undefined, overlayUses)
     const cues = plan.captions === 'off' ? [] : clampToLength(captionCues(plan, byId), graph.totalSec)
     const titles = clampToLength(plan.titles, graph.totalSec)
     if (plan.captions !== 'off' && !cues.length) notes.push('There was no transcribed speech in the kept parts, so no captions were added. Let the AI listen to your videos first.')
     if (cues.length || titles.length) {
       const ass = join(work, 'text.ass')
       writeFileSync(ass, buildAss(plan, cues, titles))
-      graph = buildSegmentGraph(plan, byId, ass)
+      graph = buildSegmentGraph(plan, byId, ass, overlayUses)
     }
     const scriptFile = join(work, 'graph.txt')
     writeFileSync(scriptFile, graph.filter)
@@ -205,7 +266,7 @@ export async function renderPlan(job: RenderJob): Promise<RenderOutcome> {
     const stem = join(work, 'stem.wav')
     job.onProgress(1, 'Cutting the clips together')
     const cut = await runFfmpeg(
-      ['-v', 'error', '-y', ...graph.inputs, '-filter_complex_script', scriptFile,
+      ['-v', 'error', '-y', ...graph.inputs, ...overlayInputs, '-filter_complex_script', scriptFile,
         '-map', '[outv]', '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '19', '-pix_fmt', 'yuv420p', '-r', String(FPS), '-movflags', '+faststart', videoOnly,
         '-map', '[outa]', '-c:a', 'pcm_s16le', '-ar', '48000', stem],
       { totalSec: graph.totalSec, onProgress: (p) => job.onProgress(Math.round(p * 0.8), 'Cutting the clips together'), isCancelled: job.isCancelled }
@@ -216,7 +277,7 @@ export async function renderPlan(job: RenderJob): Promise<RenderOutcome> {
     // ---- music ----
     job.onProgress(81, 'Adding music and balancing sound')
     const total = graph.totalSec
-    const musicFile = await prepareMusic(plan, total, work, notes)
+    const musicFile = await prepareMusicFor(plan, total, work, notes, job.aiMusic)
     const hasSpeech = plan.segments.some((s) => s.keepAudio && byId.get(s.clipId)?.hasAudio && byId.get(s.clipId)!.lufs !== undefined)
     const mixed = join(work, 'mix.wav')
     if (musicFile) {
@@ -251,12 +312,29 @@ export async function renderPlan(job: RenderJob): Promise<RenderOutcome> {
   }
 }
 
-async function prepareMusic(plan: EditPlan, total: number, work: string, notes: string[]): Promise<string | null> {
+/**
+ * Music for the finished edit: the person's own file, an AI-composed Lyra track
+ * (falling back to the built-in score when it cannot be made) or the built-in
+ * score. Exported so tests can drive the Lyra branch without Electron.
+ */
+export async function prepareMusicFor(plan: EditPlan, total: number, work: string, notes: string[], aiMusic?: RenderJob['aiMusic']): Promise<string | null> {
   if (plan.music.mode === 'none') return null
   if (plan.music.mode === 'file') {
     if (plan.music.file && existsSync(plan.music.file)) return plan.music.file
     notes.push('Your music file could not be found, so the video has no music.')
     return null
+  }
+  if (plan.music.mode === 'lyra') {
+    let track: string | null = null
+    if (aiMusic) {
+      try {
+        track = await aiMusic(plan.music.styleBrief ?? '', plan.music.mood, total)
+      } catch {
+        track = null /* the AI track could not be made — use the built-in score below */
+      }
+    }
+    if (track && existsSync(track)) return track
+    notes.push('The AI track could not be made, so the built-in score was used.')
   }
   const starts: number[] = []
   let at = 0

@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>lowerThird</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  canvas { display: block; position: fixed; inset: 0; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script>
+(function () {
+  'use strict'
+  var params = window.__params || {}
+  var meta = window.__meta || { width: 1080, height: 1920, durationSec: 4 }
+  var W = Math.max(2, Math.round(meta.width))
+  var H = Math.max(2, Math.round(meta.height))
+  var D = Math.max(0.1, Number(meta.durationSec) || 4)
+  var canvas = document.getElementById('stage')
+  canvas.width = W
+  canvas.height = H
+  var ctx = canvas.getContext('2d')
+  var SANS = "-apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+
+  function fade(t) {
+    return Math.max(0, Math.min(1, t / 0.3, (D - t) / 0.3))
+  }
+  function easeOut(p) {
+    p = Math.max(0, Math.min(1, p))
+    return 1 - Math.pow(1 - p, 3)
+  }
+  function text(v) {
+    return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, 160)
+  }
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath()
+    ctx.moveTo(x + r, y)
+    ctx.arcTo(x + w, y, x + w, y + h, r)
+    ctx.arcTo(x + w, y + h, x, y + h, r)
+    ctx.arcTo(x, y + h, x, y, r)
+    ctx.arcTo(x, y, x + w, y, r)
+    ctx.closePath()
+  }
+  function fitSize(value, want, max) {
+    // shrink until the line fits inside the safe width
+    var size = want
+    while (size > want * 0.55) {
+      ctx.font = '700 ' + size + 'px ' + SANS
+      if (ctx.measureText(value).width <= max) break
+      size -= 2
+    }
+    return size
+  }
+
+  var name = text(params.name)
+  var role = text(params.role)
+
+  window.renderAt = function (t) {
+    ctx.clearRect(0, 0, W, H)
+    if (!name) return
+    var a = fade(t)
+    if (a <= 0) return
+    var slide = (1 - easeOut(t / 0.5)) * -W * 0.04
+    var rise = (1 - easeOut(t / 0.5)) * H * 0.012
+
+    var left = W * 0.07
+    var maxW = W * 0.86
+    var nameSize = H * 0.042
+    var roleSize = H * 0.026
+    var gap = H * 0.012
+    var blockH = nameSize + (role ? gap + roleSize : 0)
+    var top = H * 0.86 - blockH - rise
+
+    ctx.save()
+    ctx.globalAlpha = a
+    ctx.translate(slide, 0)
+
+    // accent bar with a soft shadow for legibility over any footage
+    var barW = Math.max(4, W * 0.006)
+    ctx.save()
+    ctx.shadowColor = 'rgba(0,0,0,0.45)'
+    ctx.shadowBlur = barW * 1.5
+    ctx.fillStyle = '#e0aa3e'
+    roundRect(left, top, barW, blockH, barW / 2)
+    ctx.fill()
+    ctx.restore()
+
+    var tx = left + barW + W * 0.025
+    ctx.textBaseline = 'top'
+    ctx.save()
+    ctx.shadowColor = 'rgba(0,0,0,0.55)'
+    ctx.shadowBlur = Math.max(4, nameSize * 0.14)
+    ctx.shadowOffsetY = 1
+    var nameFont = fitSize(name, nameSize, maxW - barW - W * 0.025)
+    ctx.font = '700 ' + nameFont + 'px ' + SANS
+    ctx.fillStyle = '#ffffff'
+    ctx.fillText(name, tx, top)
+    if (role) {
+      ctx.font = '400 ' + roleSize + 'px ' + SANS
+      ctx.fillStyle = 'rgba(255,255,255,0.78)'
+      ctx.fillText(role, tx, top + nameSize + gap)
+    }
+    ctx.restore()
+
+    // hairline underline that grows in behind the text
+    var lineY = top + blockH + H * 0.012
+    var lineLen = maxW * easeOut(Math.min(1, t / 0.7))
+    ctx.fillStyle = 'rgba(255,255,255,0.28)'
+    ctx.fillRect(tx, lineY, lineLen, Math.max(1, H * 0.0015))
+    ctx.restore()
+  }
+})()
+</script>
+</body>
+</html>

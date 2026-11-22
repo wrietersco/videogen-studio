@@ -42,7 +42,7 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   async generateJSON<T>(req: GenerateJSONRequest): Promise<T> {
-    const model = this.modelOverride?.() ?? DEFAULT_MODEL
+    const model = req.model ?? this.modelOverride?.() ?? DEFAULT_MODEL
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: req.prompt }]
     for (const img of req.images ?? []) {
       content.push({
@@ -78,7 +78,7 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   async generateText(req: GenerateTextRequest): Promise<string> {
-    const model = this.modelOverride?.() ?? DEFAULT_MODEL
+    const model = req.model ?? this.modelOverride?.() ?? DEFAULT_MODEL
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: req.prompt }]
     for (const img of req.images ?? []) {
       content.push({

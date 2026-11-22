@@ -1,7 +1,8 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { existsSync, statSync } from 'node:fs'
-import { resolve, sep } from 'node:path'
-import { aiClipsIn, EditPlan, type FootageEvent, type FootageProject, type PlanRequest } from '../../shared/footage'
+import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { basename, join, resolve, sep } from 'node:path'
+import { aiClipsIn, EditPlan, FOOTAGE_DECIDE_CHANNEL, type FootageBrief, type FootageEvent, type FootageProject, type PlanRequest } from '../../shared/footage'
+import type { DecisionAnswer, DecisionRequest } from '../../shared/agentBrief'
 import { meter } from '../usage/meter'
 import { FootageCancelled, type FootageService } from './service'
 import { dedupe, type FootageStore } from './store'
@@ -183,7 +184,127 @@ export function registerFootageIpc(d: FootageIpcDeps): void {
 
   ipcMain.handle('footage:cancel', () => {
     d.service.cancel()
+    // a pending question is answered "stop" so the agent ends cleanly instead of waiting forever
+    if (agentCtl?.decide) {
+      const resolve = agentCtl.decide
+      agentCtl.decide = null
+      resolve(null)
+    }
     return true
+  })
+
+  // ---------------------------------------------------------------- the PARI agent
+
+  /** the agent run's live channel: the pending decision's answer and the midway instructions queue */
+  let agentCtl: { decide: ((answers: DecisionAnswer[] | null) => void) | null; instructions: string[] } | null = null
+
+  ipcMain.handle(FOOTAGE_DECIDE_CHANNEL, (_e, raw: unknown) => {
+    if (!agentCtl?.decide) return false
+    const resolve = agentCtl.decide
+    agentCtl.decide = null
+    const answers =
+      raw === null
+        ? null
+        : (Array.isArray(raw) ? raw : [])
+            .filter((a): a is DecisionAnswer => !!a && typeof (a as DecisionAnswer).id === 'string' && typeof (a as DecisionAnswer).option === 'string')
+            .map((a) => ({ id: a.id, option: a.option, auto: Boolean(a.auto) }))
+    resolve(answers?.length ? answers : null)
+    return true
+  })
+
+  ipcMain.handle('footage:instruct', (_e, text: string) => {
+    const t = String(text ?? '').trim().slice(0, 1000)
+    if (!t) return { ok: false, error: 'Type an instruction first.' }
+    if (!agentCtl) return { ok: false, error: 'The agent is not running right now.' }
+    agentCtl.instructions.push(t)
+    return { ok: true, queued: agentCtl.instructions.length }
+  })
+
+  ipcMain.handle('footage:run', (_e, id: string, rawReq: unknown) => {
+    const req = (rawReq ?? {}) as PlanRequest
+    const prompt = typeof req.prompt === 'string' ? req.prompt.trim().slice(0, 4000) : ''
+    if (!prompt) return { ok: false, error: 'Describe the video you want first.' }
+    const projectId = String(id)
+    agentCtl = { decide: null, instructions: [] }
+    const ctl = {
+      decide: (requests: DecisionRequest[]) => new Promise<DecisionAnswer[] | null>((resolve) => { agentCtl!.decide = resolve }),
+      takeInstructions: () => {
+        const queue = [...agentCtl!.instructions]
+        agentCtl!.instructions.length = 0
+        return queue
+      }
+    }
+    return background(
+      projectId,
+      'render',
+      async () => {
+        try {
+          await d.service.runAgent(projectId, { ...req, prompt }, ctl)
+        } finally {
+          if (agentCtl?.decide) {
+            const resolve = agentCtl.decide
+            agentCtl.decide = null
+            resolve(null)
+          }
+          agentCtl = null
+        }
+      },
+      true
+    )
+  })
+
+  ipcMain.handle('footage:pariReport', (_e, id: string) => {
+    try {
+      return d.service.pariReport(String(id))
+    } catch {
+      return null
+    }
+  })
+
+  ipcMain.handle('footage:setAgentMode', (_e, id: string, mode: unknown) => {
+    try {
+      return { ok: true, project: d.store.update(String(id), (p) => { p.agentMode = mode === 'autopilot' ? 'autopilot' : 'ask' }) }
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  ipcMain.handle('footage:pickReferences', async () => {
+    const win = d.window()
+    const pick = await dialog.showOpenDialog(win!, { title: 'Choose reference files', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Notes and pictures', extensions: ['md', 'txt', 'jpg', 'jpeg', 'png'] }] })
+    return pick.canceled ? [] : pick.filePaths
+  })
+
+  /** the person's standing brief, validated and stored; reference files are copied into the project so later edits still find them */
+  ipcMain.handle('footage:setBrief', (_e, id: string, raw: unknown) => {
+    try {
+      const src = (raw ?? {}) as Partial<FootageBrief>
+      const words = (xs: unknown): string[] =>
+        (Array.isArray(xs) ? xs : [])
+          .filter((x): x is string => typeof x === 'string')
+          .map((x) => x.trim().slice(0, 40))
+          .filter(Boolean)
+          .slice(0, 20)
+      const brief: FootageBrief = { focus: words(src.focus), avoid: words(src.avoid), references: String(src.references ?? '').slice(0, 8000), referenceFiles: [] }
+      const files = (Array.isArray(src.referenceFiles) ? src.referenceFiles : []).filter((x): x is string => typeof x === 'string').slice(0, 12)
+      for (const f of files) {
+        try {
+          const refsDir = join(d.store.dir(String(id)), 'refs')
+          const target = join(refsDir, basename(f))
+          if (!existsSync(target)) {
+            mkdirSync(refsDir, { recursive: true })
+            copyFileSync(f, target)
+          }
+          const rel = `refs/${basename(f)}`
+          if (!brief.referenceFiles.includes(rel)) brief.referenceFiles.push(rel)
+        } catch {
+          /* a file that could not be copied is simply left out of the brief */
+        }
+      }
+      return { ok: true, project: d.store.update(String(id), (p) => { p.brief = brief }) }
+    } catch (err) {
+      return fail(err)
+    }
   })
 
   ipcMain.handle('footage:removeEdit', (_e, id: string, editId: string) => {

@@ -178,7 +178,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async generateJSON<T>(req: GenerateJSONRequest): Promise<T> {
-    const model = resolveChatModel(this.modelOverride?.())
+    const model = resolveChatModel(req.model ?? this.modelOverride?.())
     const reasoning = isReasoningModel(model)
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: req.prompt }]
     for (const img of req.images ?? []) {
@@ -215,7 +215,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async generateText(req: GenerateTextRequest): Promise<string> {
-    const model = resolveChatModel(this.modelOverride?.())
+    const model = resolveChatModel(req.model ?? this.modelOverride?.())
     const reasoning = isReasoningModel(model)
     const content: Array<Record<string, unknown>> = [{ type: 'text', text: req.prompt }]
     for (const img of req.images ?? []) {

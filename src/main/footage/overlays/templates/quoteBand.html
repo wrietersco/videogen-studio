@@ -1,0 +1,108 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>quoteBand</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  canvas { display: block; position: fixed; inset: 0; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script>
+(function () {
+  'use strict'
+  var params = window.__params || {}
+  var meta = window.__meta || { width: 1080, height: 1920, durationSec: 4 }
+  var W = Math.max(2, Math.round(meta.width))
+  var H = Math.max(2, Math.round(meta.height))
+  var D = Math.max(0.1, Number(meta.durationSec) || 4)
+  var canvas = document.getElementById('stage')
+  canvas.width = W
+  canvas.height = H
+  var ctx = canvas.getContext('2d')
+  var SERIF = "Georgia, 'Times New Roman', serif"
+
+  function fade(t) {
+    return Math.max(0, Math.min(1, t / 0.3, (D - t) / 0.3))
+  }
+  function easeOut(p) {
+    p = Math.max(0, Math.min(1, p))
+    return 1 - Math.pow(1 - p, 3)
+  }
+  function clean(v) {
+    return String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, 300)
+  }
+  function wrap(value, font, maxW, maxLines) {
+    ctx.font = font
+    var words = value.split(' ').filter(Boolean)
+    var lines = []
+    var cur = ''
+    for (var i = 0; i < words.length; i++) {
+      var test = cur ? cur + ' ' + words[i] : words[i]
+      if (cur && ctx.measureText(test).width > maxW) {
+        lines.push(cur)
+        cur = words[i]
+      } else cur = test
+      if (lines.length === maxLines) break
+    }
+    if (lines.length < maxLines && cur) lines.push(cur)
+    else if (lines.length === maxLines && cur) {
+      var last = lines[maxLines - 1]
+      while (last && ctx.measureText(last + '…').width > maxW) last = last.slice(0, -1).trim()
+      lines[maxLines - 1] = last + '…'
+    }
+    return lines.filter(Boolean)
+  }
+
+  var quote = clean(params.text)
+
+  window.renderAt = function (t) {
+    ctx.clearRect(0, 0, W, H)
+    if (!quote) return
+    var a = fade(t)
+    if (a <= 0) return
+
+    var pad = H * 0.045
+    var quoteSize = H * 0.036
+    var font = 'italic 400 ' + quoteSize + 'px ' + SERIF
+    var maxW = W * 0.76
+    var lines = wrap('\u201C' + quote + '\u201D', font, maxW, 3)
+    var lineH = quoteSize * 1.42
+    var bandH = lines.length * lineH + pad * 2
+    var y = H * 0.5 - bandH / 2
+    var drift = (1 - easeOut(t / 0.5)) * W * 0.015
+
+    ctx.save()
+    ctx.globalAlpha = a
+    ctx.translate(drift, 0)
+
+    // translucent band across the middle
+    ctx.fillStyle = 'rgba(10,12,16,0.76)'
+    ctx.fillRect(0, y, W, bandH)
+    ctx.fillStyle = 'rgba(255,255,255,0.18)'
+    ctx.fillRect(0, y, W, Math.max(1, H * 0.0012))
+    ctx.fillRect(0, y + bandH - Math.max(1, H * 0.0012), W, Math.max(1, H * 0.0012))
+
+    // large decorative quote mark hanging into the band
+    ctx.font = '700 ' + H * 0.085 + 'px ' + SERIF
+    ctx.fillStyle = 'rgba(224,170,62,0.5)'
+    ctx.textBaseline = 'top'
+    ctx.fillText('\u201C', W * 0.08, y + pad * 0.25)
+
+    ctx.font = font
+    ctx.fillStyle = 'rgba(255,255,255,0.94)'
+    ctx.shadowColor = 'rgba(0,0,0,0.35)'
+    ctx.shadowBlur = quoteSize * 0.12
+    var ty = y + pad
+    for (var i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], W * 0.12, ty)
+      ty += lineH
+    }
+    ctx.restore()
+  }
+})()
+</script>
+</body>
+</html>

@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain, safeStorage, shell, Tray, Menu, nativeImag
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { tmpdir } from 'node:os'
 
 // ESM output: derive the directory from import.meta.url
 const moduleDir = dirname(fileURLToPath(import.meta.url))
@@ -93,6 +95,8 @@ const feedbackStore = new FeedbackStore(join(app.getPath('userData'), 'feedback.
 const footage = new FootageService({
   store: footageStore,
   provider: () => providerRegistry.forRole('text') ?? providerRegistry.active(),
+  /** every provider with a key, so the footage routing can hop to the nearest capable model on another one */
+  providers: () => (['openai', 'anthropic', 'gemini', 'deepseek'] as const).filter((id) => providerRegistry.hasKey(id)).map((id) => providerRegistry.get(id)),
   visionProvider: () => providerRegistry.forRole('image-process') ?? providerRegistry.active(),
   whisperKey: () => (providerRegistry.roleEnabled('openai', 'audio-process') ? keyOf('openai') : ''),
   chatModel: () => effective.models[effective.provider] || ({ openai: 'gpt-6-luna', anthropic: 'claude-sonnet-5-5', gemini: 'gemini-3.8-flash', deepseek: 'deepseek-flash' } as Record<string, string>)[effective.provider],
@@ -103,6 +107,19 @@ const footage = new FootageService({
     const file = library.path(asset.id)
     if (!file) throw new Error('The AI scene was made but could not be found in the library')
     return file
+  },
+  aiMusicReady: () => (mode === 'plan' ? true : keyOf('gemini').length > 0 || keyOf('elevenlabs').length > 0),
+  /** one AI-composed track (Lyra, or ElevenLabs when that is what Settings say); a temp file the render loop-trims like any track */
+  aiMusic: async (styleBrief, mood, totalSec) => {
+    try {
+      const brief = `${styleBrief} ${mood} background score for a personal video, about ${Math.max(5, Math.round(totalSec))} seconds long. Instrumental, no vocals.`
+      const audio = await composeMusic(brief)
+      const file = join(tmpdir(), `vg-footage-music-${randomUUID().slice(0, 8)}.mp3`)
+      writeFileSync(file, audio)
+      return file
+    } catch {
+      return null // the render falls back to the built-in score and says so in its notes
+    }
   }
 })
 

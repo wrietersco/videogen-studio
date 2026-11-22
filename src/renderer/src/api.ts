@@ -11,7 +11,7 @@ import type { KeyId, MediaSettings } from '../../main/settings'
 import type { ProviderRole, RoleRouting } from '@shared/providerRoles'
 
 import type { UpdateInfo } from '../../main/updater'
-import type { EditPlan, EditRecord, FootageEvent, FootageProject, FootageSummary, PlanRequest, PlanResult, UnderstandEstimate } from '@shared/footage'
+import type { EditPlan, EditRecord, FootageBrief, FootageEvent, FootagePariReport, FootageProject, FootageSummary, PlanRequest, PlanResult, UnderstandEstimate } from '@shared/footage'
 import type { EnhancedPrompt, PromptSection, PromptTemplate } from '@shared/promptTemplates'
 import type { AccountStatus } from '../../main/license/session'
 import type { AccessMode } from '../../main/license/access'
@@ -262,6 +262,14 @@ declare global {
         plan: (id: string, req: PlanRequest) => Promise<{ ok: true; result: PlanResult } | { ok: false; error: string }>
         tighten: (id: string, plan: EditPlan) => Promise<{ ok: true; result: { plan: EditPlan; removedSec: number; thumbs: string[] } } | { ok: false; error: string }>
         render: (id: string, plan: EditPlan, prompt: string) => Promise<{ ok: boolean; error?: string }>
+        /** the PARI editing agent: understand → plan → decide → render → review → report */
+        run: (id: string, req: PlanRequest) => Promise<{ ok: boolean; error?: string }>
+        decide: (answers: DecisionAnswer[] | null) => Promise<boolean>
+        instruct: (text: string) => Promise<{ ok: boolean; queued: number; error?: string }>
+        pariReport: (id: string) => Promise<FootagePariReport | null>
+        setBrief: (id: string, brief: FootageBrief) => Promise<{ ok: true; project: FootageProject } | { ok: false; error: string }>
+        setAgentMode: (id: string, mode: 'ask' | 'autopilot') => Promise<{ ok: true; project: FootageProject } | { ok: false; error: string }>
+        pickReferences: () => Promise<string[]>
         cancel: () => Promise<boolean>
         removeEdit: (id: string, editId: string) => Promise<boolean>
         remove: (id: string) => Promise<{ ok: boolean; error?: string }>

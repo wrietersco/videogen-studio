@@ -1,0 +1,137 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>refCard</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  canvas { display: block; position: fixed; inset: 0; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<script>
+(function () {
+  'use strict'
+  var params = window.__params || {}
+  var meta = window.__meta || { width: 1080, height: 1920, durationSec: 4 }
+  var W = Math.max(2, Math.round(meta.width))
+  var H = Math.max(2, Math.round(meta.height))
+  var D = Math.max(0.1, Number(meta.durationSec) || 4)
+  var canvas = document.getElementById('stage')
+  canvas.width = W
+  canvas.height = H
+  var ctx = canvas.getContext('2d')
+  var SANS = "-apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+
+  function fade(t) {
+    return Math.max(0, Math.min(1, t / 0.3, (D - t) / 0.3))
+  }
+  function easeOut(p) {
+    p = Math.max(0, Math.min(1, p))
+    return 1 - Math.pow(1 - p, 3)
+  }
+  function clean(v) {
+    return String(v == null ? '' : v).replace(/[ \t]+/g, ' ').trim()
+  }
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath()
+    ctx.moveTo(x + r, y)
+    ctx.arcTo(x + w, y, x + w, y + h, r)
+    ctx.arcTo(x + w, y + h, x, y + h, r)
+    ctx.arcTo(x, y + h, x, y, r)
+    ctx.arcTo(x, y, x + w, y, r)
+    ctx.closePath()
+  }
+  function wrap(value, font, maxW, maxLines) {
+    ctx.font = font
+    var words = value.split(' ').filter(Boolean)
+    var lines = []
+    var cur = ''
+    for (var i = 0; i < words.length; i++) {
+      var test = cur ? cur + ' ' + words[i] : words[i]
+      if (cur && ctx.measureText(test).width > maxW) {
+        lines.push(cur)
+        cur = words[i]
+      } else cur = test
+      if (lines.length === maxLines) break
+    }
+    if (lines.length < maxLines && cur) lines.push(cur)
+    else if (lines.length === maxLines && cur) {
+      // clamp the last line with an ellipsis so nothing overflows
+      var last = lines[maxLines - 1]
+      while (last && ctx.measureText(last + '…').width > maxW) last = last.slice(0, -1).trim()
+      lines[maxLines - 1] = last + '…'
+    }
+    return lines.filter(Boolean)
+  }
+
+  var title = clean(params.title).slice(0, 160)
+  var body = clean(params.text).slice(0, 600)
+
+  window.renderAt = function (t) {
+    ctx.clearRect(0, 0, W, H)
+    if (!title && !body) return
+    var a = fade(t)
+    if (a <= 0) return
+
+    var pad = H * 0.034
+    var kickSize = H * 0.016
+    var titleSize = H * 0.034
+    var bodySize = H * 0.0235
+    var lead = H * 0.014
+    var lineH = bodySize * 1.42
+    var cardW = W * 0.84
+    var innerW = cardW - pad * 2
+    var titleFont = '700 ' + titleSize + 'px ' + SANS
+    var bodyFont = '400 ' + bodySize + 'px ' + SANS
+    var titleLines = title ? wrap(title.toUpperCase(), titleFont, innerW, 2) : []
+    var bodyLines = body ? wrap(body, bodyFont, innerW, 5) : []
+    var contentH = (title ? kickSize + lead + titleLines.length * titleSize * 1.18 + lead : 0) + bodyLines.length * lineH
+    var cardH = contentH + pad * 2
+    var x = (W - cardW) / 2
+    var y = H * 0.82 - cardH + (1 - easeOut(t / 0.5)) * H * 0.015
+
+    ctx.save()
+    ctx.globalAlpha = a
+    // dark glass card
+    ctx.save()
+    ctx.shadowColor = 'rgba(0,0,0,0.4)'
+    ctx.shadowBlur = H * 0.03
+    ctx.shadowOffsetY = H * 0.006
+    ctx.fillStyle = 'rgba(12,16,22,0.78)'
+    roundRect(x, y, cardW, cardH, H * 0.014)
+    ctx.fill()
+    ctx.restore()
+    // accent rule along the top of the card
+    ctx.fillStyle = '#e0aa3e'
+    roundRect(x + pad, y + pad * 0.35, cardW - pad * 2, Math.max(2, H * 0.0035), H * 0.002)
+    ctx.fill()
+
+    var ty = y + pad + pad * 0.35 + Math.max(2, H * 0.0035) + lead * 0.6
+    ctx.textBaseline = 'top'
+    if (title) {
+      ctx.font = '600 ' + kickSize + 'px ' + SANS
+      ctx.fillStyle = 'rgba(224,170,62,0.95)'
+      ctx.fillText('R E F E R E N C E', x + pad, ty)
+      ty += kickSize + lead
+      ctx.font = titleFont
+      ctx.fillStyle = '#ffffff'
+      for (var i = 0; i < titleLines.length; i++) {
+        ctx.fillText(titleLines[i], x + pad, ty)
+        ty += titleSize * 1.18
+      }
+      ty += lead
+    }
+    ctx.font = bodyFont
+    ctx.fillStyle = 'rgba(255,255,255,0.82)'
+    for (var j = 0; j < bodyLines.length; j++) {
+      ctx.fillText(bodyLines[j], x + pad, ty)
+      ty += lineH
+    }
+    ctx.restore()
+  }
+})()
+</script>
+</body>
+</html>

@@ -4,9 +4,11 @@ import { VideoFeedback } from '../components/VideoFeedback'
 import { api, type EditPlan, type EditRecord, type FootageEvent, type FootageProject, type FootageSummary, type PlanRequest, type PlanResult, type UnderstandEstimate } from '../api'
 import { ShapePicker } from '../components/PromptTools'
 import { fmtUsd } from '@shared/pricing'
-import { AI_CLIP_MAX, AI_CLIP_MAX_SEC, AI_CLIP_MIN_SEC, AI_CLIP_USD_PER_SEC, aiClipsIn, aiCostUsd, fmtClock, planDuration, segmentStarts, MUSIC_MOODS, type MusicChoice, type PlanSegment, type PlanTitle } from '@shared/footage'
+import { AI_CLIP_MAX, AI_CLIP_MAX_SEC, AI_CLIP_MIN_SEC, AI_CLIP_USD_PER_SEC, aiClipsIn, aiCostUsd, fmtClock, OVERLAY_EFFECTS, planDuration, segmentStarts, MUSIC_MOODS, type FootageBrief, type FootageCheck, type FootagePariReport, type MusicChoice, type OverlayEffect, type OverlayPlan, type PlanSegment, type PlanTitle } from '@shared/footage'
 import { shapeOf, type ShapeId } from '@shared/shapes'
 import type { PlatformId } from '@shared/spec'
+import type { AgentMode, DecisionRequest } from '@shared/agentBrief'
+import { DecisionPanel, ReportPanel, STATUS, autopilotLines } from './PariPanels'
 
 /** the apps people know; each one implies a shape */
 const APPS: Array<{ id: PlatformId; label: string; emoji: string }> = [
@@ -28,6 +30,40 @@ const LENGTHS: Array<{ sec: number; label: string }> = [
 ]
 
 const IDEAS = ['The best moments, fast and fun, with upbeat music', 'A calm story of the whole day in order', 'A 30-second highlight reel for social media', 'Only the parts where someone is talking, cleaned up']
+
+/** live state of one PARI agent run: its notes, its checks, any question it is asking, its final report */
+interface PariLive {
+  notes: string[]
+  checks: Record<string, FootageCheck>
+  pendingDecide: DecisionRequest[] | null
+  report: FootagePariReport | null
+  agentRunning: boolean
+}
+const EMPTY_PARI: PariLive = { notes: [], checks: {}, pendingDecide: null, report: null, agentRunning: false }
+
+/** the overlay effects the editor can add, each with a friendly label */
+const EFFECT_META: Record<OverlayEffect, string> = {
+  lowerThird: '🏷️ Name tag',
+  refCard: '📇 Reference card',
+  chapterTitle: '📑 Chapter title',
+  quoteBand: '💬 Quote',
+  statChip: '📊 Stat',
+  emotionAccent: '🎨 Emotion accent'
+}
+
+/** sensible starting content for each overlay effect */
+const EFFECT_DEFAULTS: Record<OverlayEffect, OverlayPlan['params']> = {
+  lowerThird: { name: 'Name', role: 'Who they are' },
+  refCard: { title: 'Title', text: 'The fact' },
+  chapterTitle: { text: 'Chapter' },
+  quoteBand: { text: '“A striking line”' },
+  statChip: { stat: '3×', label: 'What it measures' },
+  emotionAccent: { emotion: 'joy' }
+}
+
+/** limits on the Cast & focus chip lists */
+const BRIEF_TAG_MAX = 20
+const BRIEF_TAG_LEN = 40
 
 type Job = 'scan' | 'understand' | 'plan' | 'render' | null
 type MusicMode = 'editor' | 'none' | 'file'
@@ -171,6 +207,19 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
   const [aiScenes, setAiScenes] = useState(false)
   const [caps, setCaps] = useState<{ ai: boolean }>({ ai: false })
 
+  // the standing brief ("Cast & focus") and the agent's temperament
+  const [focusList, setFocusList] = useState<string[]>([])
+  const [avoidList, setAvoidList] = useState<string[]>([])
+  const [references, setReferences] = useState('')
+  const [refFiles, setRefFiles] = useState<string[]>([])
+  const [briefSaved, setBriefSaved] = useState(false)
+  const [agentMode, setAgentMode] = useState<AgentMode>('ask')
+  const seeded = useRef(false)
+
+  // the PARI agent run
+  const [pari, setPari] = useState<PariLive>(EMPTY_PARI)
+  const [instructText, setInstructText] = useState('')
+
   // the plans being reviewed (several when shorts were asked for) and the render
   const [planned, setPlanned] = useState<{ n: number; shorts: Array<{ plan: EditPlan; thumbs: string[] }>; source: PlanResult['source']; prompt: string } | null>(null)
   /** what each review currently holds, so "make all" uses the person's changes */
@@ -187,6 +236,15 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
     if (p) {
       setPosters(await api.footage.posters(id))
       setEstimate(await api.footage.estimate(id))
+      // the brief is seeded once, so later reloads do not wipe what the person is typing
+      if (!seeded.current) {
+        seeded.current = true
+        setFocusList(p.brief?.focus ?? [])
+        setAvoidList(p.brief?.avoid ?? [])
+        setReferences(p.brief?.references ?? '')
+        setRefFiles(p.brief?.referenceFiles ?? [])
+        setAgentMode(p.agentMode ?? 'ask')
+      }
     }
   }, [id])
 
@@ -231,7 +289,7 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
             else if (e.note) setNotice(e.note)
             void load()
           }
-        } else {
+        } else if (e.kind === 'render') {
           if (e.status === 'started') {
             setJob('render')
             setRenderPct({ pct: 0, phase: 'Starting' })
@@ -248,6 +306,24 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
             if (next) startRender(next, queue.current.prompt)
             void load()
           }
+        } else if (e.kind === 'pari-plan') {
+          setPari((s) => ({ ...s, agentRunning: true }))
+        } else if (e.kind === 'pari-decide') {
+          setPari((s) =>
+            e.auto
+              ? { ...s, agentRunning: true, notes: [...s.notes, ...autopilotLines(e.requests)].slice(-30) }
+              : { ...s, agentRunning: true, pendingDecide: e.requests }
+          )
+        } else if (e.kind === 'pari-check') {
+          setPari((s) => ({ ...s, checks: { ...s.checks, [e.check.id]: e.check } }))
+        } else if (e.kind === 'pari-note') {
+          setPari((s) => ({ ...s, notes: [...s.notes, e.text].slice(-30) }))
+        } else if (e.kind === 'pari-report') {
+          const rep = e.report
+          const edit = rep.edit
+          setPari((s) => ({ ...s, agentRunning: false, pendingDecide: null, report: rep }))
+          if (edit) setMadeList((l) => (l.some((m) => m.id === edit.id) ? l : [...l, edit]))
+          void load()
         }
       }),
     [id, load]
@@ -268,6 +344,7 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
     setNotice(null)
     const res = await fn()
     if (!res.ok) setError(res.error ?? 'Could not start')
+    return res
   }
 
   const makePlan = async () => {
@@ -291,6 +368,55 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
       setMusicFile(f)
       setMusicMode('file')
     }
+  }
+
+  /** 🙋 ask · 🤖 autopilot — kept with the project so every run uses it */
+  const changeAgentMode = async (mode: AgentMode) => {
+    const before = agentMode
+    if (mode === before) return
+    setAgentMode(mode)
+    const res = await api.footage.setAgentMode(id, mode)
+    if (!res.ok) {
+      setAgentMode(before)
+      setError(res.error)
+    }
+  }
+
+  const attachRefs = async () => {
+    const picked = await api.footage.pickReferences()
+    if (picked.length) setRefFiles((all) => [...new Set([...all, ...picked])])
+  }
+
+  const saveBrief = async () => {
+    setError(null)
+    const brief: FootageBrief = { focus: focusList, avoid: avoidList, references, referenceFiles: refFiles }
+    const res = await api.footage.setBrief(id, brief)
+    if (!res.ok) return setError(res.error)
+    seeded.current = true
+    setProject(res.project)
+    setBriefSaved(true)
+    window.setTimeout(() => setBriefSaved(false), 2500)
+  }
+
+  /** hand the whole job to the PARI agent: it understands, plans, asks (or decides), renders and reviews */
+  const runAgent = async () => {
+    setMadeList([])
+    queue.current.plans = []
+    setPari({ ...EMPTY_PARI, agentRunning: true })
+    const music: PlanRequest['music'] = musicMode === 'editor' ? 'auto-mood' : musicMode === 'none' ? { mode: 'none', mood: 'upbeat' } : { mode: 'file', mood: 'upbeat', file: musicFile ?? undefined }
+    const res = await run(() =>
+      api.footage.run(id, { prompt: prompt.trim(), shape, durationSec: seconds || undefined, music, loudness, captions, titles: wantTitles, overlays: true, tighten, shorts: shortsN, aiClips: aiScenes && caps.ai })
+    )
+    if (!res.ok) setPari((s) => ({ ...s, agentRunning: false }))
+  }
+
+  /** a midway instruction for the running agent; its reply arrives as a pari-note */
+  const sendInstruct = async () => {
+    const text = instructText.trim()
+    if (!text) return
+    const res = await api.footage.instruct(text)
+    if (res.ok) setInstructText('')
+    else setError(res.error ?? 'Could not send')
   }
 
   return (
@@ -426,14 +552,70 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
         {error && <div className="mt-4 rounded-2xl border-2 border-coral/30 bg-coral-soft p-4 text-sm font-semibold text-coral">⚠️ {error}</div>}
         {notice && <div className="slide-up mt-4 rounded-2xl border-2 border-sky/30 bg-sky-soft p-4 text-sm font-semibold text-ink/80">💡 {notice}</div>}
 
-        {/* 2 · brief */}
+        {/* 2 · cast & focus */}
         <section className="card mt-4 p-5">
-          <StepTitle n={2} color="bg-grape" title="What video should we make?" />
+          <StepTitle n={2} color="bg-mint" title="Cast & focus" />
+          <p className="mt-2 max-w-3xl text-xs leading-relaxed text-ink/60">
+            Standing notes for this project: who and what the edit is about, what to keep out, and facts the editor may show on screen. Both you and the agent work from them.
+          </p>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <span className="mr-1 text-sm font-bold">The agent</span>
+            <Chip on={agentMode === 'ask'} onClick={() => void changeAgentMode('ask')}>
+              🙋 Ask me when unsure
+            </Chip>
+            <Chip on={agentMode === 'autopilot'} onClick={() => void changeAgentMode('autopilot')}>
+              🤖 Decide for me
+            </Chip>
+            <span className="text-xs text-ink/50">{agentMode === 'ask' ? 'It puts its quick choices to you.' : 'It chooses itself and tells you what it picked.'}</span>
+          </div>
+
+          <div className="mt-4 space-y-4">
+            <TagInput label="🌟 Build the edit around" hint="People or objects to build the edit around, e.g. “grandma”, “the surfboard”." placeholder="e.g. grandma" items={focusList} onItems={setFocusList} />
+            <TagInput label="🚫 Keep out of the edit" hint="Distractions to cut out, e.g. “the neighbour”, “the empty parking lot”." placeholder="e.g. the neighbour" items={avoidList} onItems={setAvoidList} />
+          </div>
+
+          <div className="mt-4">
+            <div className="text-sm font-bold">📚 Reference notes</div>
+            <textarea
+              value={references}
+              onChange={(e) => setReferences(e.target.value)}
+              placeholder={'Names, designations, facts and quotes the editor may show on screen — keep it short, e.g.\n- Grandma June, 81, retired teacher\n- “The best day of the whole summer”'}
+              className="field mt-2 h-24 w-full resize-y p-3 text-sm leading-relaxed"
+              aria-label="Reference notes"
+            />
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button onClick={() => void attachRefs()} className="btn-ghost !px-3 !py-1.5 !text-xs">
+                📎 Attach files
+              </button>
+              {refFiles.map((f) => (
+                <span key={f} className="inline-flex items-center gap-1.5 rounded-full border-2 border-sky/40 bg-sky-soft px-3 py-1 text-xs font-semibold" title={f}>
+                  📄 {folderName(f)}
+                  <button onClick={() => setRefFiles((all) => all.filter((x) => x !== f))} className="text-ink/40 hover:text-coral" aria-label={`Remove ${folderName(f)}`}>
+                    ✕
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <button onClick={() => void saveBrief()} disabled={busy} className="btn-primary !px-5 !py-2 !text-sm">
+              💾 Save these notes
+            </button>
+            {briefSaved && <span className="pop-in text-xs font-bold text-mint">✅ Saved</span>}
+            <span className="text-xs text-ink/50">Saved with the project — every future edit reads them.</span>
+          </div>
+        </section>
+
+        {/* 3 · brief */}
+        <section className="card mt-4 p-5">
+          <StepTitle n={3} color="bg-grape" title="What video should we make?" />
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && prompt.trim() && !busy && ok.length) void makePlan()
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && prompt.trim() && !busy && !pari.agentRunning && ok.length) void makePlan()
             }}
             placeholder="e.g. A 30-second highlight reel of the best beach moments, fun and fast, with upbeat music"
             className="field mt-3 h-24 w-full resize-y p-4 text-[15px] leading-relaxed"
@@ -538,14 +720,81 @@ function ProjectView({ id, onBack, onOpenSettings }: { id: string; onBack: () =>
           </div>
 
           <div className="mt-5 flex flex-wrap items-center gap-3">
-            <button onClick={makePlan} disabled={!prompt.trim() || busy || !ok.length || (musicMode === 'file' && !musicFile)} className="btn-primary !px-6 !py-3">
+            <button onClick={makePlan} disabled={!prompt.trim() || busy || pari.agentRunning || !ok.length || (musicMode === 'file' && !musicFile)} className="btn-primary !px-6 !py-3">
               {job === 'plan' ? '⏳ The editor is choosing shots…' : '🪄 Plan my edit'}
             </button>
-            <span className="text-xs text-ink/50">{!ok.length ? 'Add a folder with videos first.' : 'You can review and change the plan before anything is rendered.'}</span>
+            <button onClick={() => void runAgent()} disabled={!prompt.trim() || busy || pari.agentRunning || !ok.length || (musicMode === 'file' && !musicFile)} className="btn-ghost !py-3">
+              {pari.agentRunning ? '⏳ The agent is making it…' : '🤖 Let the agent make it'}
+            </button>
+            <span className="text-xs text-ink/50">{!ok.length ? 'Add a folder with videos first.' : 'Plan it yourself and review every part, or let the agent run the whole thing.'}</span>
           </div>
         </section>
 
-        {/* 3 · plan */}
+        {/* the PARI agent at work */}
+        {(pari.agentRunning || !!pari.report || !!pari.pendingDecide) && (
+          <section className="card slide-up mt-4 p-5" aria-label="The editing agent">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <div className="text-base font-black">{pari.agentRunning ? '🤖 Agent at work' : '🤖 The agent finished'}</div>
+              {pari.agentRunning && <span className="text-xs text-ink/55">It watches, plans, makes and checks the video — you can steer it below at any time.</span>}
+            </div>
+
+            {pari.notes.length > 0 && (
+              <div className="mt-3 max-h-44 overflow-y-auto rounded-xl bg-ink/5 px-3 py-2 text-xs leading-relaxed text-ink/70" aria-label="What the agent says">
+                {pari.notes.map((n, i) => (
+                  <div key={i}>💬 {n}</div>
+                ))}
+              </div>
+            )}
+
+            {Object.keys(pari.checks).length > 0 && (
+              <div className="mt-3 space-y-1.5">
+                {Object.values(pari.checks).map((c) => {
+                  const st = STATUS[c.status]
+                  return (
+                    <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-xl border-2 border-ink/5 bg-paper px-3 py-1.5 text-xs">
+                      <span className="font-bold">{c.label}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${st.cls}`}>{st.label}</span>
+                      {c.note && <span className="min-w-0 flex-1 text-ink/60">{c.note}</span>}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {pari.pendingDecide && (
+              <DecisionPanel
+                key={pari.pendingDecide.map((r) => r.id).join('|')}
+                requests={pari.pendingDecide}
+                onAnswered={() => setPari((s) => ({ ...s, pendingDecide: null }))}
+                send={(answers) => api.footage.decide(answers) as unknown as Promise<unknown>}
+              />
+            )}
+
+            {pari.report && <ReportPanel report={{ shortfalls: pari.report.shortfalls }} />}
+
+            <div className="mt-3 flex gap-2">
+              <input
+                value={instructText}
+                onChange={(e) => setInstructText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void sendInstruct()
+                  }
+                }}
+                disabled={!pari.agentRunning}
+                placeholder={pari.agentRunning ? 'Tell the agent something, e.g. “keep it under 30 seconds”' : 'You can write to the agent while it is running'}
+                className="field min-w-0 flex-1 px-3 py-2 text-sm"
+                aria-label="Send the agent an instruction"
+              />
+              <button onClick={() => void sendInstruct()} disabled={!pari.agentRunning || !instructText.trim()} className="btn-ghost !px-4 !py-2 !text-sm">
+                Send ➤
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* 4 · plan */}
         {planned && (
           <div ref={planRef}>
             {planned.shorts.map((sh, i) => (
@@ -743,6 +992,15 @@ function PlanReview({
       const at = Math.min(Math.max(0, total - 2.5), p.titles.reduce((m, t) => Math.max(m, t.endSec), 0))
       return { ...p, titles: [...p.titles, { text: 'Your title', startSec: Math.round(at * 10) / 10, endSec: Math.round(Math.min(total, at + 2.5) * 10) / 10, position: 'center' }] }
     })
+  const setOverlay = (i: number, change: Partial<OverlayPlan>) => setPlan((p) => ({ ...p, overlays: p.overlays.map((o, j) => (j === i ? { ...o, ...change } : o)) }))
+  const addOverlay = (effect: OverlayEffect) =>
+    setPlan((p) => {
+      if (p.overlays.length >= 6) return p
+      // after the current last overlay (or 0), kept inside the finished video
+      const at = Math.round(Math.max(0, Math.min(p.overlays.reduce((m, o) => Math.max(m, o.endSec), 0), Math.max(0, total - 3))) * 10) / 10
+      const end = Math.round(Math.max(at + 0.5, Math.min(Math.max(total, at + 0.5), at + 3)) * 10) / 10
+      return { ...p, overlays: [...p.overlays, { id: `ov-${p.overlays.length + 1}`, effect, startSec: at, endSec: end, params: { ...EFFECT_DEFAULTS[effect] }, why: '' }] }
+    })
   const starts = segmentStarts(plan)
   const lines = plan.segments.reduce((n, s) => n + (s.keepAudio ? (clips.get(s.clipId)?.transcript?.length ?? 0) : 0), 0)
   const setMusic = (m: Partial<MusicChoice>) => setPlan((p) => ({ ...p, music: { ...p.music, ...m } }))
@@ -750,7 +1008,7 @@ function PlanReview({
   return (
     <section className="card slide-up mt-4 p-5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <StepTitle n={3} color="bg-berry" title={heading ? `Review: ${heading}` : 'Review the edit'} />
+        <StepTitle n={4} color="bg-berry" title={heading ? `Review: ${heading}` : 'Review the edit'} />
         <div className="text-xs text-ink/55">
           {initial.source === 'ai' ? '🤖 Chosen by the AI editor' : '📐 Spread evenly across your footage'} · change anything, then make it
         </div>
@@ -877,6 +1135,11 @@ function PlanReview({
                 </button>
               )}
               <span className="text-[11px] font-bold text-ink/50">{fmtClock((s.endSec - s.startSec) / s.speed)}</span>
+              {!!fixesTitle(s.fixes) && (
+                <span className="rounded-full border-2 border-sky/40 bg-sky-soft px-2 py-0.5 text-[11px] font-bold text-ink/70" title={fixesTitle(s.fixes)}>
+                  🛠
+                </span>
+              )}
               <div className="flex gap-0.5">
                 <button onClick={() => move(i, -1)} disabled={i === 0} className="rounded px-1.5 text-ink/50 hover:bg-ink/5 disabled:opacity-25" aria-label="Move up">
                   ↑
@@ -902,6 +1165,7 @@ function PlanReview({
           🎵 Music
           <select value={plan.music.mode} onChange={(e) => setMusic({ mode: e.target.value as MusicChoice['mode'] })} className="field px-1.5 py-1 text-xs">
             <option value="auto">Original score</option>
+            <option value="lyra">✨ AI-composed (about $0.08)</option>
             <option value="none">None</option>
             {plan.music.file && <option value="file">My track</option>}
           </select>
@@ -983,6 +1247,60 @@ function PlanReview({
             </div>
           ))}
         </div>
+        <div>
+          <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
+            🧩 Overlays on screen
+            <select
+              value=""
+              onChange={(e) => {
+                const ef = e.target.value as OverlayEffect
+                if (ef) addOverlay(ef)
+              }}
+              disabled={plan.overlays.length >= 6}
+              className="field px-2 py-0.5 text-[11px] font-bold"
+              aria-label="Add an overlay"
+            >
+              <option value="">+ Add overlay</option>
+              {OVERLAY_EFFECTS.map((ef) => (
+                <option key={ef} value={ef}>
+                  {EFFECT_META[ef]}
+                </option>
+              ))}
+            </select>
+            <span className="font-normal text-ink/45">{plan.overlays.length}/6</span>
+          </div>
+          {plan.overlays.map((o, i) => (
+            <div key={o.id || `ov-${i}`} className="mt-1.5 flex flex-wrap items-center gap-2 rounded-xl bg-white px-2 py-1.5" title={o.why}>
+              <span className="text-xs font-bold">{EFFECT_META[o.effect]}</span>
+              <label className="text-[11px] font-semibold text-ink/55">
+                from
+                <input type="number" step={0.1} min={0} max={total} value={o.startSec} onChange={(e) => setOverlay(i, { startSec: clampNum(e.target.value, 0, Math.max(0, o.endSec - 0.5)) })} className="field ml-1 w-16 px-1.5 py-1 text-xs" />
+              </label>
+              <label className="text-[11px] font-semibold text-ink/55">
+                to
+                <input type="number" step={0.1} min={0} max={total} value={o.endSec} onChange={(e) => setOverlay(i, { endSec: clampNum(e.target.value, o.startSec + 0.5, Math.max(o.startSec + 0.5, total)) })} className="field ml-1 w-16 px-1.5 py-1 text-xs" />
+              </label>
+              {Object.entries(o.params).map(([k, v]) => (
+                <label key={k} className="text-[11px] font-semibold text-ink/55">
+                  {k}
+                  <input
+                    value={String(v)}
+                    onChange={(e) => {
+                      const raw = e.target.value
+                      const num = Number(raw)
+                      setOverlay(i, { params: { ...o.params, [k]: raw !== '' && Number.isFinite(num) ? num : raw } })
+                    }}
+                    className="field ml-1 w-28 px-1.5 py-1 text-xs"
+                    aria-label={`${EFFECT_META[o.effect]} — ${k}`}
+                  />
+                </label>
+              ))}
+              <button onClick={() => setPlan((p) => ({ ...p, overlays: p.overlays.filter((_, j) => j !== i) }))} className="rounded px-1.5 text-ink/40 hover:bg-coral-soft hover:text-coral" aria-label="Remove this overlay">
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="mt-4 flex flex-wrap gap-2">
@@ -1021,6 +1339,52 @@ function Chip({ on, onClick, children }: { on: boolean; onClick: () => void; chi
   )
 }
 
+/** chips + a small text input: the brief's focus and avoid lists */
+function TagInput({ label, hint, placeholder, items, onItems }: { label: string; hint: string; placeholder: string; items: string[]; onItems: (v: string[]) => void }) {
+  const [text, setText] = useState('')
+  const full = items.length >= BRIEF_TAG_MAX
+  const add = () => {
+    const v = text.trim().slice(0, BRIEF_TAG_LEN)
+    setText('')
+    if (!v || full || items.includes(v)) return
+    onItems([...items, v])
+  }
+  return (
+    <div>
+      <div className="text-sm font-bold">{label}</div>
+      <div className="mt-0.5 text-xs text-ink/50">{hint}</div>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        {items.map((it) => (
+          <span key={it} className="inline-flex items-center gap-1.5 rounded-full border-2 border-mint/50 bg-mint-soft px-3 py-1 text-xs font-semibold">
+            {it}
+            <button onClick={() => onItems(items.filter((x) => x !== it))} className="text-ink/40 hover:text-coral" aria-label={`Remove ${it}`}>
+              ✕
+            </button>
+          </span>
+        ))}
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              add()
+            }
+          }}
+          disabled={full}
+          maxLength={BRIEF_TAG_LEN}
+          placeholder={full ? `Up to ${BRIEF_TAG_MAX}` : placeholder}
+          className="field w-52 px-3 py-1.5 text-xs"
+          aria-label={label}
+        />
+        <button onClick={add} disabled={full} className="btn-ghost !px-3 !py-1.5 !text-xs">
+          Add
+        </button>
+      </div>
+    </div>
+  )
+}
+
 /** AI scenes need unique ids in order (parts may have been moved or removed) */
 const cleanPlan = (plan: EditPlan): EditPlan => {
   let n = 0
@@ -1029,3 +1393,14 @@ const cleanPlan = (plan: EditPlan): EditPlan => {
 const LISTENING = 'Listening for silent pauses…'
 const folderName = (p?: string) => (p ? p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p : '')
 const clampNum = (v: string, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round((parseFloat(v) || 0) * 10) / 10))
+
+/** what a segment's corrective fixes mean, for the 🛠 chip's tooltip */
+const fixesTitle = (f?: PlanSegment['fixes']): string => {
+  if (!f) return ''
+  const parts: string[] = []
+  if (f.exposure != null) parts.push(`${f.exposure >= 0 ? 'brightened +' : 'darkened '}${f.exposure}`)
+  if (f.contrast != null) parts.push(`contrast ${f.contrast >= 0 ? '+' : ''}${f.contrast}`)
+  if (f.warmth != null) parts.push(`${f.warmth >= 0 ? 'warmed +' : 'cooled '}${f.warmth}`)
+  if (f.stabilize) parts.push('stabilized')
+  return parts.join(' · ')
+}

@@ -32,6 +32,8 @@ export interface GenerateJSONRequest {
   images?: Array<{ mimeType: string; base64: string }>
   temperature?: number
   maxTokens?: number
+  /** per-call model override (cost/quality routing); absent = the provider's configured model */
+  model?: string
 }
 
 export interface GenerateTextRequest {
@@ -40,6 +42,8 @@ export interface GenerateTextRequest {
   images?: Array<{ mimeType: string; base64: string }>
   temperature?: number
   maxTokens?: number
+  /** per-call model override (cost/quality routing); absent = the provider's configured model */
+  model?: string
 }
 
 export interface TTSRequest {
