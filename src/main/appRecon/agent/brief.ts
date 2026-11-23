@@ -519,7 +519,7 @@ const PLAN_SCHEMA = {
 const SYSTEM = [
   'You read a video brief for a screen-recorded product film and turn it into a plan. Read the WHOLE brief; every sentence matters.',
   'Output segments IN THE ORDER the person wrote them. Segment kinds:',
-  '- "page": a part of the real app filmed in the browser. Put the exact address in `url` ONLY if it appears in the brief, character for character. `how`: "tour" (scroll through the sections: "show sections of the homepage"), "steps" ("go through the steps"), "glance" ("briefly show", emphasis "brief"), "features" ("show different features of X"), "script" (a numbered list of actions to perform exactly; put them in `actions`, in the person\'s words).',
+  '- "page": a part of the real app filmed in the browser. Put the exact address in `url` ONLY if it appears in the brief, character for character. `how`: "tour" (scroll through the sections: "show sections of the homepage"), "steps" ("go through the steps"), "glance" ("briefly show", emphasis "brief"), "features" ("show different features of X"), "script" (a numbered list of actions to perform exactly; put them in `actions`, in the person\'s words). An address the person pastes in their own words is a page of the app to film, and when a page offers several parts (tabs, sections), the person\'s words say which one to show.',
   '- "ai-clip": an AI-generated video the person asked for (problem statement, intro, outro…). `purpose` and `style` ("infographic" when they said so, otherwise "none"), `subject` in plain words.',
   '- "narration": something to SAY that has no page of its own ("tell that you can refine the research by chatting"); `claims` holds each claim; `over` is "find" (default) or "card".',
   '- "card": a drawn scene (title, problem, solution, outro) with optional `text`.',
@@ -664,6 +664,7 @@ export async function readBrief(input: BriefInput, deps: { chat: LLMProvider | n
         prompt: [
           `Film mode: ${input.mode}${input.launch ? ` (launch: feature "${scrubText(input.launch.feature, { values: deps.secrets })}", tagline "${scrubText(input.launch.tagline, { values: deps.secrets })}")` : ''}.`,
           `App start address: ${input.startUrl}`,
+          input.startUrls && input.startUrls.length > 1 ? `More addresses of this app (the video may go to any of them): ${input.startUrls.slice(1).join(', ')}` : '',
           input.targetSec ? `Target length: ${input.targetSec} seconds.` : '',
           '',
           'THE BRIEF (the person\'s own words):',

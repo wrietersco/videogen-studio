@@ -12,7 +12,7 @@ import { MAX_STYLE_LINKS, parseYouTubeUrl } from '@shared/youtube'
 import type { AgentMode, CapabilityReport, DecisionRequest, FilmPlan, PariReport, SegmentCheck } from '@shared/agentBrief'
 import { DecisionPanel, PlanPanel, ReportPanel, autopilotLines } from './PariPanels'
 import { ReviseBox, RevisionSummary } from './MarketPanels'
-import { brandSourceOf, DEFAULT_CHECKS, DEPTH_LABELS, type AppChecks, type BrandSource, type Depth } from '@shared/appRecording'
+import { brandSourceOf, DEFAULT_CHECKS, DEPTH_LABELS, MAX_EXTRA_URLS, type AppChecks, type BrandSource, type Depth } from '@shared/appRecording'
 
 /**
  * Record an app — one page: tell it where the app is and what the video should
@@ -25,6 +25,8 @@ interface Form {
   id?: string
   name: string
   url: string
+  /** the extra addresses, one per row below the main one */
+  urls: string[]
   context: string
   document: { name: string; text: string } | null
   signIn: SignIn
@@ -56,21 +58,25 @@ interface Form {
 }
 
 const blank = (): Form => ({
-  name: '', url: '', context: '', document: null, signIn: 'saved', username: '', password: '', hasPassword: false, guardrailText: '', checks: { ...DEFAULT_CHECKS }, depth: 'standard',
+  name: '', url: '', urls: [], context: '', document: null, signIn: 'saved', username: '', password: '', hasPassword: false, guardrailText: '', checks: { ...DEFAULT_CHECKS }, depth: 'standard',
   revealUsername: false, mode: 'walkthrough', feature: '', tagline: 'Simple. Fast. Safe.', closing: 'Try it today', cta: 'Available now', targetSec: 44, platform: 'youtube', useAi: true, aiMedia: false, aiMusic: false, reviewFirst: false, agentMode: 'ask', brandId: '', brandSource: 'none', styleImages: [], styleVideo: '', styleLinks: [], styleNotes: ''
 })
 
 const fromApp = (a: SavedApp): Form => ({
-  id: a.id, name: a.name, url: a.url, context: a.context, document: a.document ?? null, signIn: a.signIn, username: a.username ?? '', password: '', hasPassword: a.hasPassword, guardrailText: a.guardrailText,
+  id: a.id, name: a.name, url: a.url, urls: a.urls ?? [], context: a.context, document: a.document ?? null, signIn: a.signIn, username: a.username ?? '', password: '', hasPassword: a.hasPassword, guardrailText: a.guardrailText,
   checks: a.checks, depth: a.depth, revealUsername: a.revealUsername, mode: a.mode, feature: a.launch?.feature ?? '', tagline: a.launch?.tagline ?? 'Simple. Fast. Safe.', closing: a.launch?.closing ?? 'Try it today',
   cta: a.launch?.cta ?? 'Available now', targetSec: a.targetSec, platform: a.platform ?? 'youtube', useAi: a.useAi, aiMedia: a.aiMedia === true, aiMusic: a.aiMusic === true, reviewFirst: a.reviewFirst, agentMode: a.agentMode === 'autopilot' ? 'autopilot' : 'ask', brandId: a.brandId ?? '', brandSource: brandSourceOf(a.brandSource, !!a.brandId), styleImages: a.styleImages ?? [], styleVideo: a.styleVideo ?? '', styleLinks: a.styleLinks ?? [], styleNotes: a.styleNotes ?? ''
 })
 
-const toInput = (f: Form): AppInput => ({
-  id: f.id, name: f.name, url: f.url, context: f.context, document: f.document, signIn: f.signIn, username: f.username || undefined, password: f.password || undefined, guardrailText: f.guardrailText,
-  checks: f.checks, depth: f.depth, revealUsername: f.revealUsername, mode: f.mode,
-  launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, platform: f.platform, useAi: f.useAi, aiMedia: f.aiMedia, aiMusic: f.aiMusic, reviewFirst: f.reviewFirst, agentMode: f.agentMode, brandId: f.brandSource === 'kit' ? f.brandId || undefined : undefined, brandSource: f.brandSource === 'kit' && !f.brandId ? 'none' : f.brandSource, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined, styleLinks: f.styleLinks, styleNotes: f.styleNotes
-})
+const toInput = (f: Form): AppInput => {
+  // blank rows are skipped, and no urls key at all means the plain single-address app
+  const urls = f.urls.map((u) => u.trim()).filter(Boolean)
+  return {
+    id: f.id, name: f.name, url: f.url, ...(urls.length ? { urls } : {}), context: f.context, document: f.document, signIn: f.signIn, username: f.username || undefined, password: f.password || undefined, guardrailText: f.guardrailText,
+    checks: f.checks, depth: f.depth, revealUsername: f.revealUsername, mode: f.mode,
+    launch: f.mode === 'launch' ? { feature: f.feature, tagline: f.tagline, closing: f.closing, cta: f.cta } : undefined, targetSec: f.targetSec, platform: f.platform, useAi: f.useAi, aiMedia: f.aiMedia, aiMusic: f.aiMusic, reviewFirst: f.reviewFirst, agentMode: f.agentMode, brandId: f.brandSource === 'kit' ? f.brandId || undefined : undefined, brandSource: f.brandSource === 'kit' && !f.brandId ? 'none' : f.brandSource, styleImages: f.styleImages, styleVideo: f.styleVideo || undefined, styleLinks: f.styleLinks, styleNotes: f.styleNotes
+  }
+}
 
 const STAGES: Array<{ id: string; label: string }> = [
   { id: 'explore', label: 'Exploring the app' },
@@ -143,6 +149,9 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => ({ ...f, [k]: v }))
   const setCheck = (k: keyof AppChecks, v: boolean) => setForm((f) => ({ ...f, checks: { ...f.checks, [k]: v } }))
+  const setExtraUrl = (i: number, v: string) => setForm((f) => ({ ...f, urls: f.urls.map((x, j) => (j === i ? v : x)) }))
+  const removeExtraUrl = (i: number) => setForm((f) => ({ ...f, urls: f.urls.filter((_, j) => j !== i) }))
+  const addExtraUrl = () => setForm((f) => (f.urls.length >= MAX_EXTRA_URLS ? f : { ...f, urls: [...f.urls, ''] }))
   const running = !!live && !live.result
   const noRestrictions = !form.checks.readOnly && !form.checks.noDelete && !form.checks.noSpend && !form.checks.noSettings
 
@@ -236,11 +245,18 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
         </div>
 
         <div className="mt-5 space-y-5">
-          <Section icon="🌐" title="Your app" hint="The web address where it starts, usually its sign-in page.">
+          <Section icon="🌐" title="Your app" hint="The first address is where the video starts, usually its sign-in page. Any addresses you add are visited too.">
             <div className="grid gap-3 md:grid-cols-2">
               <input aria-label="App name" value={form.name} onChange={(e) => set('name', e.target.value)} maxLength={80} placeholder="Name, e.g. Acme dashboard" className="field px-4 py-2.5 text-sm" />
               <input aria-label="App address" value={form.url} onChange={(e) => set('url', e.target.value)} placeholder="https://app.example.com/login" className="field px-4 py-2.5 text-sm" />
             </div>
+            {form.urls.map((u, i) => (
+              <div key={i} className="mt-3 flex gap-2">
+                <input aria-label="Another app address" value={u} onChange={(e) => setExtraUrl(i, e.target.value)} placeholder="https://app.example.com/reports" className="field min-w-0 flex-1 px-4 py-2.5 text-sm" />
+                <button onClick={() => removeExtraUrl(i)} aria-label={`Remove extra address ${i + 1}`} className="shrink-0 px-2 text-ink/40 hover:text-coral">✕</button>
+              </div>
+            ))}
+            <button onClick={addExtraUrl} disabled={form.urls.length >= MAX_EXTRA_URLS || running} className="btn-ghost mt-3 !px-3 !py-1 !text-xs">➕ Add another address</button>
           </Section>
 
           <Section icon="📝" title="What should the video show?" hint="Type it in your own words, and attach notes if you have them. Notes are read as information only. Write a numbered list of steps (1. log in, 2. click “Ontology” in the left menu, 3. type “psychology” in the search bar ...) and they are done exactly as written, in order, with nothing else added; if one cannot be done the video is not made and you are told which. You can also ask for AI-made footage here, e.g. “add an AI video that illustrates the workflow as a beautiful motion diagram”: the engine makes that clip with your video model and cuts it in.">

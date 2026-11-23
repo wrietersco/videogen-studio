@@ -90,6 +90,20 @@ export function readUseCase(context: string): { steps: Directive[]; goal: string
   return { steps, goal, topics: topics.slice(0, 12) }
 }
 
+/**
+ * The addresses the person pasted into their brief ("What should the video show?"): each one is a page
+ * of the app to film, wherever else the engine goes. Deduped, in the order first mentioned; the
+ * punctuation a sentence ends with is not part of the address.
+ */
+export function readUrls(text: string): string[] {
+  const out: string[] = []
+  for (const m of text.matchAll(/https?:\/\/[^\s`'"<>)\]]+/gi)) {
+    const u = m[0].replace(/[.,;:!?]+$/, '')
+    if (u && !out.includes(u)) out.push(u)
+  }
+  return out
+}
+
 const GENERIC_BOX =new Set(['filter', 'search', 'box', 'field', 'input', 'bar', 'text', 'query', 'find', 'the', 'here'])
 const tokens = (s: string): string[] => s.toLowerCase().normalize('NFKD').match(/[a-z0-9]{3,}/g) ?? []
 

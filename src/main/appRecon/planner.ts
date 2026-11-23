@@ -3,6 +3,7 @@ import { PlaybookSchemaCheck } from './schemaCheck'
 import { scrubText } from './detect'
 import { readUseCase } from './directives'
 import type { ExploredStep, Exploration, Interaction, Visit } from './explore'
+import { POSSIBILITY_PREFIX } from './scout'
 
 /**
  * The planner: chooses what the video shows.
@@ -87,10 +88,10 @@ function chapterOf(p: AppPage, n: number, secrets: string[]): string {
   return w.length ? titleCase(w.join(' ')) : `Page ${n}`
 }
 
-/** how much a page is worth showing: relevance to the request first, then how much there is to see */
+/** how much a page is worth showing: relevance to the request first (its own words and the things a person could be pointing at there), then how much there is to see */
 export function scoreVisit(v: Visit, keywords: Set<string>, writeIntent: boolean): number {
   const p = v.page
-  const text = words([p.title, ...p.headings, ...p.controls.map((c) => c.label), v.fromLabel ?? ''].join(' '))
+  const text = words([p.title, ...p.headings, ...p.controls.map((c) => c.label), ...(p.possibilities ?? []).map((l) => l.replace(POSSIBILITY_PREFIX, '')), v.fromLabel ?? ''].join(' '))
   const hits = text.filter((w) => keywords.has(w)).length
   const changed = v.interactions.filter((i) => i.changed && (writeIntent || !i.writes)).length
   const writes = v.interactions.some((i) => i.writes && !writeIntent)

@@ -80,6 +80,8 @@ export interface ExploreInput {
   page: Page
   gate: PolicyGate
   startUrl: string
+  /** more addresses the person gave ("Your app", or pasted into the brief); each is visited as if linked from the start */
+  extraStarts?: string[]
   outDir: string
   depth: Depth
   revealIdentifiers: boolean
@@ -232,6 +234,8 @@ export async function explore(inp: ExploreInput): Promise<Exploration> {
     inp.signal?.aborted ? 'cancelled' : Date.now() - t0 > lim.ms ? 'time' : visits.length >= lim.pages ? 'pages' : actions >= lim.actions ? 'actions' : null
 
   const queue: Array<{ url: string; from?: string }> = [{ url: /^https?:/.test(page.url()) ? page.url() : inp.startUrl }]
+  // the other addresses the person gave come right after the page it opened on, before any link found on it
+  for (const url of inp.extraStarts ?? []) queue.push({ url, from: 'the addresses you gave' })
   const asked: AskedStep[] = (inp.directives ?? []).map((directive) => ({ directive, done: false }))
   const allDone = () => asked.length > 0 && asked.every((a) => a.done)
 

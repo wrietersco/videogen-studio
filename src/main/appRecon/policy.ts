@@ -303,9 +303,16 @@ export interface RestrictionChecks {
  * sites, unless that box is unticked). Anything we cannot turn into a rule
  * (e.g. "only customer01 in the ABC module") is kept as advice for the planner
  * and shown back to the person as *not enforced*, never silently implied.
+ * Every address the person gave (and every one pasted into the brief) counts as
+ * the app's own site: the accepted hosts are their hostnames, each unique.
  */
-export function interpretGuardrails(text: string, startUrl: string, checks: RestrictionChecks = {}): { guardrails: Guardrails; enforced: string[]; advisory: string[] } {
-  const host = new URL(startUrl).hostname
+export function interpretGuardrails(text: string, startUrl: string | string[], checks: RestrictionChecks = {}): { guardrails: Guardrails; enforced: string[]; advisory: string[] } {
+  const hosts: string[] = []
+  for (const u of Array.isArray(startUrl) ? startUrl : [startUrl]) {
+    const h = new URL(u).hostname // a bad address throws, as it always did
+    if (!hosts.includes(h.toLowerCase())) hosts.push(h.toLowerCase())
+  }
+  const hostList = hosts.join(' and ')
   const r: Restrictions = { ...NO_RESTRICTIONS, ...Object.fromEntries(Object.entries(checks).filter(([, v]) => v !== undefined)) } as Restrictions
   const advisory: string[] = []
   const blocked: string[] = []
@@ -330,7 +337,7 @@ export function interpretGuardrails(text: string, startUrl: string, checks: Rest
     }
   }
   const enforced: string[] = []
-  if (r.stayOnSites) enforced.push(`Only pages on ${host} (and sign-in or API hosts it needs) are opened.`)
+  if (r.stayOnSites) enforced.push(`Only pages on ${hostList} (and sign-in or API hosts ${hosts.length > 1 ? 'they need' : 'it needs'}) are opened.`)
   if (r.readOnly) enforced.push('Nothing that changes data is sent (the sign-in itself is the one exception).')
   if (r.noDelete) enforced.push('Nothing is deleted or removed.')
   if (r.noSpend) enforced.push('Nothing is bought, paid for, sent or published.')
@@ -338,7 +345,7 @@ export function interpretGuardrails(text: string, startUrl: string, checks: Rest
   if (r.privacyMode) enforced.push('Personal data in tables and lists is hidden.')
   if (blocked.length) enforced.push(`Never presses: ${blocked.join(', ')}.`)
   return {
-    guardrails: { allowedHosts: [host], readOnly: r.readOnly, stayOnSites: r.stayOnSites, noDelete: r.noDelete, noSpend: r.noSpend, noSettings: r.noSettings, privacyMode: r.privacyMode, blockedWords: [...new Set(blocked)], advisory },
+    guardrails: { allowedHosts: hosts, readOnly: r.readOnly, stayOnSites: r.stayOnSites, noDelete: r.noDelete, noSpend: r.noSpend, noSettings: r.noSettings, privacyMode: r.privacyMode, blockedWords: [...new Set(blocked)], advisory },
     enforced: [...new Set(enforced)],
     advisory
   }

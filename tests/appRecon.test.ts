@@ -7,6 +7,8 @@ import { interpretGuardrails, PolicyGate } from '../src/main/appRecon/policy'
 import { addressTimeline, cameraKeys, viewFor } from '../src/main/appRecon/produce'
 import { redactionInitScript, verifyScript } from '../src/main/appRecon/redact'
 import { findChrome, launch } from '../src/main/appRecon/browser'
+import { AppReconStore } from '../src/main/appRecon/store'
+import { validateApp } from '../src/shared/appRecording'
 import { AppMap, Playbook, type Guardrails, type Take } from '../src/shared/appRecon'
 
 describe('field sensitivity', () => {
@@ -245,6 +247,75 @@ describe('saved files are valid', () => {
     expect(() => Playbook.parse({ version: 1, title: 't', startUrl: 'https://a/', steps: [{ id: 's1', beat: 0, kind: 'type', selector: '#u', text: '{{secret:username}}', focus: 'target' }] })).not.toThrow()
     expect(() => Playbook.parse({ version: 1, title: 't', startUrl: 'https://a/', steps: [{ id: 's1', beat: 0, kind: 'teleport' }] })).toThrow()
     expect(() => AppMap.parse({ version: 1, startUrl: 'https://a/', host: 'a', scoutedAt: 'now', pages: [], login: { detected: false, otpLikely: false }, sensitiveSelectors: [] })).not.toThrow()
+  })
+})
+
+describe('several addresses on one app', () => {
+  const base = { name: 'Acme', url: 'https://app.example.com/login', context: '', signIn: 'none', guardrailText: '', checks: {}, depth: 'standard', targetSec: 44 }
+
+  it('keeps the extra addresses, cleaned like the main one', () => {
+    const r = validateApp({ ...base, urls: ['  https://app.example.com/reports  ', 'app.example.com/admin', ''] })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.value.urls).toEqual(['https://app.example.com/reports', 'https://app.example.com/admin'])
+  })
+
+  it('refuses a bad extra address and names it', () => {
+    const scheme = validateApp({ ...base, urls: ['https://app.example.com/reports', 'ftp://other.example.com'] })
+    expect(scheme.ok).toBe(false)
+    if (scheme.ok) return
+    expect(scheme.error).toContain('ftp://other.example.com')
+    const junk = validateApp({ ...base, urls: ['not a web address'] })
+    expect(junk.ok).toBe(false)
+    if (junk.ok) return
+    expect(junk.error).toContain('not a web address')
+  })
+
+  it('collapses repeats, including a repeat of the main address', () => {
+    const r = validateApp({ ...base, urls: ['https://app.example.com/login', 'app.example.com/reports', 'HTTPS://App.Example.com/reports', 'https://app.example.com/reports'] })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.value.urls).toEqual(['https://app.example.com/reports'])
+  })
+
+  it('allows at most 6 extra addresses', () => {
+    const many = [1, 2, 3, 4, 5, 6, 7].map((n) => `https://app.example.com/page-${n}`)
+    const r = validateApp({ ...base, urls: many })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.error).toContain('6')
+    expect(validateApp({ ...base, urls: many.slice(0, 6) }).ok).toBe(true)
+  })
+
+  it('an app without extra addresses gets no urls key, so old saved apps stay the same', () => {
+    const none = validateApp(base)
+    expect(none.ok).toBe(true)
+    if (!none.ok) return
+    expect('urls' in none.value).toBe(false)
+    const empty = validateApp({ ...base, urls: [] })
+    expect(empty.ok).toBe(true)
+    if (!empty.ok) return
+    expect('urls' in empty.value).toBe(false)
+  })
+
+  it('extra addresses survive being saved and read back', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vg-apps-'))
+    try {
+      const store = new AppReconStore(dir, { enc: (s) => s, dec: (s) => s })
+      const withUrls = validateApp({ ...base, urls: ['app.example.com/reports', 'https://app.example.com/admin'] })
+      expect(withUrls.ok).toBe(true)
+      if (!withUrls.ok) return
+      const saved = store.save(withUrls.value)
+      expect(saved.urls).toEqual(['https://app.example.com/reports', 'https://app.example.com/admin'])
+      expect(store.get(saved.id)?.urls).toEqual(['https://app.example.com/reports', 'https://app.example.com/admin'])
+      expect(store.list().find((a) => a.id === saved.id)?.urls).toEqual(['https://app.example.com/reports', 'https://app.example.com/admin'])
+      const plain = validateApp(base)
+      expect(plain.ok).toBe(true)
+      if (!plain.ok) return
+      expect('urls' in store.save(plain.value)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
+    }
   })
 })
 

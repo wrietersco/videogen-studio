@@ -208,6 +208,7 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
     const base: Omit<RunInput, 'chat' | 'speech'> = {
       runDir: d.store.runDir(rec.id),
       startUrl: app.url,
+      startUrls: [app.url, ...(app.urls ?? [])],
       context,
       mode: app.mode,
       launch: app.mode === 'launch' && app.launch ? { ...app.launch, targetSec } : undefined,

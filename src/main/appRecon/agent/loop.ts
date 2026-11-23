@@ -326,13 +326,19 @@ function scriptedCheck(seg: PageSegment, s: NonNullable<ReviewInput['scripted']>
 }
 
 export function reviewStage(r: ReviewInput): SegmentCheck[] {
-  return r.plan.segments.map((seg) => {
+  const checks = r.plan.segments.map((seg) => {
     if (seg.kind === 'page' && r.scripted && !r.acted) {
       const c = scriptedCheck(seg, r.scripted)
       if (c) return c
     }
     return reviewSegment(seg, evidenceFor(seg, r))
   })
+  // what each reached page offers (its tabs, sections), for the person to read in the report; display only, no decisions ride on it
+  for (const c of checks) {
+    const poss = r.acted?.acted.get(c.segment)?.reached.possibilities
+    if (poss?.length) c.note = `${c.note} ${`This page offers: ${poss.join('; ')}`.slice(0, 160)}`.trim()
+  }
+  return checks
 }
 
 function evidenceFor(seg: Segment, r: ReviewInput): Evidence {

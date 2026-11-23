@@ -42,6 +42,10 @@ export const AppPage = z.object({
   title: z.string(),
   /** file relative to the scout folder (sensitive fields already blurred) */
   screenshot: z.string().optional(),
+  /** every picture of this page, in page order from the top (screenshot is always the first) */
+  shots: z.array(z.string()).optional(),
+  /** how many screen-heights of scrolling the whole page needs (0 = it all fits on screen) */
+  scrolls: z.number().optional(),
   headings: z.array(z.string()),
   fields: z.array(AppField),
   controls: z.array(AppControl),
@@ -64,7 +68,9 @@ export const AppPage = z.object({
         expandable: z.boolean().optional()
       })
     )
-    .optional()
+    .optional(),
+  /** what a person could be referring to on this page: its tabs, sections, stages, cards, headings, chart labels and messages, as short human lines */
+  possibilities: z.array(z.string()).optional()
 })
 export type AppPage = z.infer<typeof AppPage>
 

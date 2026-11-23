@@ -36,6 +36,8 @@ export interface AppInput {
   id?: string
   name: string
   url: string
+  /** more addresses of the same app; `url` is where the video starts */
+  urls?: string[]
   /** what the video should show */
   context: string
   /** an attached document, read as text; treated as information, never as instructions */
@@ -173,19 +175,40 @@ export function brandSourceOf(v: unknown, hasKit: boolean): BrandSource {
 }
 const str = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '')
 
+/** how many addresses beyond the first one a single app may carry */
+export const MAX_EXTRA_URLS = 6
+
+/** one typed address, cleaned the same way everywhere: trimmed, https assumed when no scheme is typed, http/https only */
+const parseAddress = (v: unknown): { ok: true; url: string } | { ok: false; why: 'shape' | 'scheme' } => {
+  const s = typeof v === 'string' ? v.trim().slice(0, 2000) : ''
+  try {
+    const p = new URL(/^[a-z]+:\/\//i.test(s) ? s : `https://${s}`)
+    if (p.protocol !== 'http:' && p.protocol !== 'https:') return { ok: false, why: 'scheme' }
+    return { ok: true, url: p.toString() }
+  } catch {
+    return { ok: false, why: 'shape' }
+  }
+}
+
 /** the single place a screen's input becomes something the main process will store and run */
 export function validateApp(raw: unknown): { ok: true; value: AppInput } | { ok: false; error: string } {
   if (!raw || typeof raw !== 'object') return { ok: false, error: 'Nothing to save' }
   const r = raw as Record<string, unknown>
-  const url = str(r.url, 2000)
-  let parsed: URL
-  try {
-    parsed = new URL(/^[a-z]+:\/\//i.test(url) ? url : `https://${url}`)
-  } catch {
-    return { ok: false, error: 'That does not look like a web address' }
+  const primary = parseAddress(r.url)
+  if (!primary.ok) return { ok: false, error: primary.why === 'scheme' ? 'Only web addresses (http or https) can be recorded' : 'That does not look like a web address' }
+  const url = primary.url
+  // the extra addresses of the same app, cleaned exactly like the main one; repeats collapse, and only up to MAX_EXTRA_URLS may stay
+  const urls: string[] = []
+  for (const raw of Array.isArray(r.urls) ? r.urls : []) {
+    const s = typeof raw === 'string' ? raw.trim() : ''
+    if (!s) continue
+    const extra = parseAddress(s)
+    if (!extra.ok) return { ok: false, error: extra.why === 'scheme' ? `“${s}” is not a web address — only http or https can be recorded` : `“${s}” does not look like a web address` }
+    if (extra.url === url || urls.includes(extra.url)) continue
+    if (urls.length >= MAX_EXTRA_URLS) return { ok: false, error: `Up to ${MAX_EXTRA_URLS} extra addresses can be added` }
+    urls.push(extra.url)
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return { ok: false, error: 'Only web addresses (http or https) can be recorded' }
-  const name = str(r.name, 80) || parsed.hostname
+  const name = str(r.name, 80) || new URL(url).hostname
   const signIn: SignInMode = r.signIn === 'self' || r.signIn === 'none' ? r.signIn : 'saved'
   const depth: Depth = DEPTHS.includes(r.depth as Depth) ? (r.depth as Depth) : 'standard'
   const c = (r.checks && typeof r.checks === 'object' ? r.checks : {}) as Record<string, unknown>
@@ -213,7 +236,9 @@ export function validateApp(raw: unknown): { ok: true; value: AppInput } | { ok:
     value: {
       id: typeof r.id === 'string' ? r.id : undefined,
       name,
-      url: parsed.toString(),
+      url,
+      // left out entirely when there are none, so a saved app from before this existed stays byte-for-byte the same
+      ...(urls.length ? { urls } : {}),
       context: str(r.context, 20000),
       document,
       signIn,

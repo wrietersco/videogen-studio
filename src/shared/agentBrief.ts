@@ -137,6 +137,8 @@ export interface BriefInput {
   context: string
   /** the app's start address from "Your app" */
   startUrl: string
+  /** every address the person gave in "Your app" (startUrl is the first) */
+  startUrls?: string[]
   mode: 'walkthrough' | 'launch'
   launch?: { feature: string; tagline: string; targetSec?: number }
   targetSec?: number

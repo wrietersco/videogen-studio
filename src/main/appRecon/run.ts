@@ -5,7 +5,7 @@ import { type AppMap, type AppPage, type Playbook, type Step, type Take } from '
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { asPhone, enforcePolicy, launch } from './browser'
 import { scrubMap, scrubText } from './detect'
-import { parseDirectives, readUseCase } from './directives'
+import { parseDirectives, readUrls, readUseCase } from './directives'
 import { checkCompatibility, explore, openPage, passInterstitial, settle, type Depth, type Exploration } from './explore'
 import { narrate, voiceLine, voiceTone, type LaunchInfo } from './narrate'
 import { adoptFile, findVoice, writeRecordingRecord, type RecordedCard } from './recordingRecord'
@@ -101,6 +101,8 @@ export type Stage = 'explore' | 'plan' | 'script' | 'record' | 'produce'
 export interface RunInput {
   runDir: string
   startUrl: string
+  /** every address the person gave in "Your app" (startUrl is the first); each is scouted, and the film may go to any of them */
+  startUrls?: string[]
   /** what the video should show: typed text plus any attached document, already read */
   context: string
   mode: 'walkthrough' | 'launch'
@@ -200,12 +202,14 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
   const check = () => {
     if (inp.signal?.aborted) throw new RunCancelled()
   }
+  // every address the person gave in "Your app", startUrl first, without repeats (the same page with a trailing slash is one address)
+  const starts = [inp.startUrl, ...(inp.startUrls ?? [])].filter((u, i, all) => all.findIndex((x) => sameAddress(x, u)) === i)
   // ------------------------------------------------------------ PARI: plan (before anything is opened, recorded or paid for)
   let pari: PlanOutcome | null = null
   if (inp.pari && !inp.reuse) {
     hooks.progress('plan', 'Reading your brief')
     try {
-      pari = await planStage({ context: inp.context, startUrl: inp.startUrl, mode: inp.mode, launch: inp.launch, targetSec: inp.targetSec }, { chat: inp.chat, secrets: inp.vault ? [inp.vault.password, inp.vault.username] : [], say }, inp.pari)
+      pari = await planStage({ context: inp.context, startUrl: inp.startUrl, startUrls: starts, mode: inp.mode, launch: inp.launch, targetSec: inp.targetSec }, { chat: inp.chat, secrets: inp.vault ? [inp.vault.password, inp.vault.username] : [], say }, inp.pari)
     } catch (err) {
       if (err instanceof PariStopped && inp.signal?.aborted) throw new RunCancelled()
       throw err
@@ -216,7 +220,13 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
   const fp = pari?.plan ?? null
   const assigned = pari?.assignment ?? {}
 
-  const { guardrails, enforced, advisory } = interpretGuardrails(inp.guardrailText, inp.startUrl, inp.checks)
+  const ctxClean = withoutProductionSentences(inp.context)
+  // a numbered list of steps is a script: it is performed exactly, and nothing else is opened
+  const agentPages = !!fp && !inp.reuse && agentFilmsPages(fp)
+  const script = inp.reuse || agentPages ? null : parseStepScript(ctxClean)
+  // the addresses pasted into the brief ("What should the video show?") are pages of the app too, on every path but a typed script
+  const promptUrls = script ? [] : readUrls(ctxClean)
+  const { guardrails, enforced, advisory } = interpretGuardrails(inp.guardrailText, [...starts, ...promptUrls], inp.checks)
   const gate = new PolicyGate(guardrails)
   const vault = inp.vault ?? { username: '', password: '' }
   const useVault = inp.signIn === 'saved' && !!inp.vault
@@ -227,8 +237,6 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
   const ask = parseMediaAsk(inp.context)
   const musicAsk = parseMusicAsk(inp.context)
   const structure = parseStructure(inp.context)
-  // the same goes for sentences about the music and the shape of the film
-  const ctxClean = withoutProductionSentences(inp.context)
   const reveal = !!inp.revealUsername
   const speech = assigned.voice === 'none' ? null : inp.speech
 
@@ -360,9 +368,23 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       // an app that sends a signed-in person elsewhere is left where it put them
     }
 
-    // a numbered list of steps is a script: it is performed exactly, and nothing else is explored
-    const agentPages = !!fp && !inp.reuse && agentFilmsPages(fp)
-    const script = inp.reuse || agentPages ? null : parseStepScript(ctxClean)
+    // the other addresses the person gave in "Your app": each is scouted too, so the plan knows what every one offers
+    if (!inp.reuse) {
+      for (let i = 0; i < starts.length - 1; i++) {
+        check()
+        const url = starts[i + 1]
+        hooks.progress('explore', `Opening the other address you gave (${i + 2} of ${starts.length})`)
+        try {
+          if (await openPage(page, url, 30000)) pages.push(await scoutPage(page, scoutDir, `p0-extra-${i}`, { revealIdentifiers: reveal }))
+          else say(`The other address ${url} could not be opened (its "checking your browser" page never went away), so it is left out.`)
+        } catch (err) {
+          say(`The other address ${url} could not be opened (${String((err as Error)?.message ?? err).slice(0, 80)}), so it is left out.`)
+        }
+      }
+      // the flow below starts where it always did, on the address the film is built around
+      if (starts.length > 1) await openPage(page, inp.startUrl).catch(() => false)
+    }
+
     let scriptOut: ScriptOutcome | null = null
     let beganAt = ''
     const directives = inp.reuse || script || agentPages ? [] : parseDirectives(ctxClean)
@@ -423,7 +445,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       pages.push(await scoutPage(page, scoutDir, 'p-steps-end', { revealIdentifiers: reveal }))
     } else {
       hooks.progress('explore', 'Exploring the app')
-      exploration = await explore({ page, gate, startUrl: inp.startUrl, outDir: scoutDir, depth: inp.depth, revealIdentifiers: reveal, log: say, signal: inp.signal, pause, directives, scripted, topics: readUseCase(ctxClean).topics })
+      exploration = await explore({ page, gate, startUrl: inp.startUrl, extraStarts: [...starts.slice(1), ...promptUrls], outDir: scoutDir, depth: inp.depth, revealIdentifiers: reveal, log: say, signal: inp.signal, pause, directives, scripted, topics: readUseCase(ctxClean).topics })
       pages.push(...exploration.visits.map((v) => v.page))
       // a typed step that could not be done stops the run here, before anything is recorded or paid for
       const missed = (exploration.asked ?? []).filter((a) => !a.done)
