@@ -27,6 +27,8 @@ export interface ActOptions {
   gate?: PolicyGate
   /** the most sections / stages / features this segment may show, so the whole film keeps to its length */
   maxParts?: number
+  /** the step was worded as something to do on this page: these controls are used in turn instead of touring it */
+  onPage?: OnPageAction
 }
 
 export interface ActPlan {
@@ -75,6 +77,77 @@ export function findLinkFor(target: string, pages: AppPage[]): { url: string; la
     if (pageMatches(p, undefined, target)) return { url: p.url, label: p.title || target }
   }
   return null
+}
+
+// ------------------------------------------------------------------ a step worded as something to do, not a link's name
+
+export interface OnPagePick {
+  label: string
+  selector: string
+  via: 'tab' | 'button'
+}
+
+export interface OnPageAction {
+  /** the person's words for the step */
+  goal: string
+  picks: OnPagePick[]
+}
+
+const WORD_STOP = new Set(['the', 'and', 'this', 'that', 'one', 'of', 'to', 'for', 'with', 'all', 'any', 'each', 'every', 'show', 'see', 'use', 'try', 'different', 'various', 'several', 'other', 'its', 'their', 'then', 'also', 'page', 'view'])
+/** words that say "go through all of them" */
+const MANY_WORDS = /\b(different|various|several|all|each|every|options?|choices?|modes?|variants?|types?|views?|tabs?|switch|cycle|toggle|compare|try)\b/i
+const OPTION_WORDS = new Set(['option', 'options', 'choice', 'choices', 'mode', 'modes', 'variant', 'variants', 'type', 'types', 'tab', 'tabs', 'toggle', 'switch', 'cycle', 'chart', 'charts', 'graph', 'graphs', 'compare', 'comparison', 'views'])
+
+const stem = (w: string) => w.replace(/(ing|ies|es|s|ed)$/, '')
+const wordsIn = (s: string): string[] => (lower(s).match(/[a-z0-9]{3,}/g) ?? []).filter((w) => !WORD_STOP.has(w)).map(stem)
+
+/** how well a control's label fits the person's words: shared stems, partial credit allowed */
+function fit(label: string, target: string): number {
+  const want = wordsIn(target)
+  const have = wordsIn(label)
+  if (!want.length || !have.length) return 0
+  return want.filter((w) => have.some((h) => h === w || (w.length > 3 && (h.startsWith(w) || w.startsWith(h))))).length / want.length
+}
+
+/** loose match of a target against links, tabs and buttons on pages already seen (a looser step than findLinkFor, still by words) */
+export function findControlFor(target: string, pages: AppPage[]): { url: string; label: string } | null {
+  let best: { url: string; label: string; s: number } | null = null
+  for (const p of pages) {
+    for (const c of p.controls) {
+      if (c.kind !== 'link' || !c.href || c.label.length > 60) continue
+      const s = fit(c.label, target)
+      if (s >= 0.6 && (!best || s > best.s)) best = { url: c.href, label: c.label, s }
+    }
+  }
+  return best ? { url: best.url, label: best.label } : null
+}
+
+/**
+ * The controls on one page that a step worded as an action means: tabs and buttons whose names fit the words;
+ * when the words ask for "the different options" and none is named, the page's tabs, else its option-like buttons.
+ * Nothing that writes data is ever picked.
+ */
+export function onPageActions(target: string, page: AppPage, gate?: PolicyGate): { picks: OnPagePick[]; found: string[] } {
+  const cands: OnPagePick[] = []
+  const seen = new Set<string>()
+  const add = (label: string, selector: string, via: OnPagePick['via']) => {
+    const k = lower(label)
+    if (!selector || !label || label.length > 40 || seen.has(k) || !mayClick(label, gate)) return
+    seen.add(k)
+    cands.push({ label, selector, via })
+  }
+  for (const s of ofKind(page, 'tab')) add(s.label, s.selector, 'tab')
+  for (const c of page.controls) if (c.kind === 'button') add(c.label, c.selector, 'button')
+  const found = [...cands.map((c) => c.label), ...page.fields.filter((f) => /select/.test(f.inputType)).map((f) => `dropdown "${f.label || f.name}"`)].slice(0, 16)
+  const named = cands.filter((c) => fit(c.label, target) >= 0.5)
+  if (named.length && !(MANY_WORDS.test(target) && named.length < 2 && cands.filter((c) => c.via === 'tab').length >= 2)) return { picks: named.slice(0, 6), found }
+  if (!MANY_WORDS.test(target) && !wordsIn(target).some((w) => OPTION_WORDS.has(w) || OPTION_WORDS.has(w + 's'))) return { picks: [], found }
+  const tabs = cands.filter((c) => c.via === 'tab')
+  if (tabs.length >= 2) return { picks: tabs.slice(0, 6), found }
+  // buttons that read like options of one group: short names, not navigation or generic chrome
+  const chrome = /^(menu|close|back|next|previous|help|settings|login|log in|sign in|sign up|cancel|ok|accept|decline|search|more|share|copy|download|upload)$/i
+  const opts = cands.filter((c) => c.via === 'button' && !chrome.test(c.label) && c.label.length <= 24)
+  return { picks: opts.length >= 2 ? opts.slice(0, 6) : [], found }
 }
 
 function ofKind(page: AppPage, kind: Section['kind']): Section[] {
@@ -151,6 +224,25 @@ export function planSegment(seg: PageSegment, page: AppPage, opts: ActOptions): 
       return undefined
     }
     return { id: '', beat: 0, kind: 'click', selector: sec.selector, label: sec.label, intent: 'inspect', focus: 'target' }
+  }
+
+  if (opts.onPage) {
+    // a step worded as an action: the page is opened, then each control that fits is used, one beat each, in page order
+    const goal = opts.onPage.goal
+    openBeat(HOLD.brief)
+    opts.onPage.picks.forEach((p, i) => {
+      steps.push({ id: id(), beat, kind: 'click', selector: p.selector, label: p.label, intent: 'inspect', focus: 'target', find: { target: p.label, kind: 'click', ...(p.via === 'tab' ? { role: 'tab' as const } : {}) } })
+      steps.push({ id: id(), beat, kind: 'wait', holdMs: SECTION_HOLD[seg.emphasis] + 600, focus: 'page' })
+      beats.push({
+        beat, kind: 'page', chapter: short(p.label, 32),
+        facts: [`The person asked to: ${goal}`, `Option ${i + 1} of ${opts.onPage!.picks.length}: ${p.label}`, ...(i === 0 ? explainFacts : [])],
+        fallback: `${i === 0 ? 'First' : 'Next'}, ${p.label}.`
+      })
+      planned.push({ stepId: steps[steps.length - 2].id, label: p.label })
+      beat++
+    })
+    notes.push(`"${goal}" was done on the page itself: ${opts.onPage.picks.map((p) => p.label).join(', ')}`)
+    return { steps, beats, planned, notes }
   }
 
   switch (seg.how) {
@@ -236,6 +328,8 @@ export interface ScoutResult {
   page?: AppPage
   /** plain words: blocked host, sign-in wall, 404, redirected elsewhere */
   why?: string
+  /** the step was an action on this page, not a link: what to do there */
+  onPage?: OnPageAction
 }
 
 export interface ScoutOptions {
@@ -256,13 +350,26 @@ export async function scoutSegment(page: Page, seg: PageSegment, gate: PolicyGat
   if (!url) {
     if (!seg.target) return { ok: false, why: 'the segment names neither an address nor a page' }
     let link = findLinkFor(seg.target, o.known ?? [])
+    let here: AppPage | undefined
     if (!link && o.startUrl) {
       if (!gate.hostAllowed(o.startUrl)) return { ok: false, why: `${hostOf(o.startUrl)} is not one of the allowed sites` }
       await page.goto(o.startUrl, { waitUntil: 'load', timeout: 20000 }).catch(() => undefined)
-      const here = await scoutPage(page, o.outDir, `${o.name}-home`)
+      here = await scoutPage(page, o.outDir, `${o.name}-home`)
       link = findLinkFor(seg.target, [here])
     }
-    if (!link) return { ok: false, why: `no link called "${seg.target}" was found in the app` }
+    // looser, still by words: a link whose name only partly fits
+    link ??= findControlFor(seg.target, [...(o.known ?? []), ...(here ? [here] : [])])
+    if (!link) {
+      // not a link's name: the step is something to do. It is done on the page the film is on (the start page when none yet).
+      const base = o.known?.find((p) => p.url === page.url()) ?? here ?? o.known?.[0]
+      if (!base) return { ok: false, why: `no link called "${seg.target}" was found in the app` }
+      const { picks, found } = onPageActions(seg.target, base, gate)
+      if (!picks.length) {
+        return { ok: false, page: base, why: `"${seg.target}" is not a link, and no control on ${base.url} fits it. I looked for a link, tab or button with those words${found.length ? `; the page's controls are: ${found.join(', ')}` : '; the page showed no tabs, buttons or dropdowns'}` }
+      }
+      // the page is left as it was found: planSegment writes the open and the clicks, the recorder runs them behind the gate
+      return { ok: true, page: base, onPage: { goal: seg.target, picks } }
+    }
     url = link.url
   }
   if (!gate.hostAllowed(url)) return { ok: false, why: `${hostOf(url)} is not one of the allowed sites` }

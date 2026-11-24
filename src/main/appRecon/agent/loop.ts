@@ -194,7 +194,8 @@ export async function actStage(inp: {
     }
     inp.known.push(res.page)
     filmed.add(pathKey(res.page.url))
-    const act = planSegment(tried.url ? tried : { ...tried, url: res.page.url }, res.page, { startBeat: beat, idPrefix: `p${n}-`, gate: inp.gate, maxParts: budget.get(seg.id) })
+    const act = planSegment(tried.url ? tried : { ...tried, url: res.page.url }, res.page, { startBeat: beat, idPrefix: `p${n}-`, gate: inp.gate, maxParts: budget.get(seg.id), onPage: res.onPage })
+    if (res.onPage) inp.say(`  "${seg.target}" is an action on the page, not a link: using ${res.onPage.picks.map((p) => p.label).join(', ')}`)
     for (const note of act.notes) inp.say(`  ${note}`)
     out.steps.push(...act.steps)
     out.beats.push(...act.beats)

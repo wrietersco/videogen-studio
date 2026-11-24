@@ -9,7 +9,7 @@ import type { AppPage } from '../src/shared/appRecon'
 import type { ClipSegment, NarrationSegment, PageSegment } from '../src/shared/agentBrief'
 import { findHeadlessShell } from '../src/main/appRecon/browser'
 import { PolicyGate } from '../src/main/appRecon/policy'
-import { planSegment, scoutSegment } from '../src/main/appRecon/agent/act'
+import { findControlFor, onPageActions, planSegment, scoutSegment } from '../src/main/appRecon/agent/act'
 import { nextMove, reviewSegment, reviewSegmentWithVision, type PageEvidence } from '../src/main/appRecon/agent/review'
 
 const sec = (label: string, kind: 'section' | 'stage' | 'tab' | 'card' = 'section', extra: object = {}) => ({ label, kind, selector: `#${label.toLowerCase().replace(/\W+/g, '-')}`, text: `${label} text`, ...extra })
@@ -228,4 +228,41 @@ describe('scoutSegment against a local page', () => {
       rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
     }
   }, 90000)
+})
+
+describe('a step worded as an action, not a link', () => {
+  const btn = (label: string) => ({ label, selector: `#b-${label.toLowerCase().replace(/\W+/g, '-')}`, kind: 'button' as const })
+  const chart: AppPage = {
+    url: 'http://app.test/', title: 'Mizan', headings: ['Mizan'], fields: [], notices: [], controls: [btn('Menu'), btn('Word frequency'), btn('Ratios'), btn('Locations')],
+    sections: [sec('Frequency', 'tab'), sec('Ratio', 'tab'), sec('Location', 'tab')]
+  }
+  it('"different options of this one chart" uses the chart tabs, in order', () => {
+    const r = onPageActions('different options of this one chart', chart)
+    expect(r.picks.map((p) => p.label)).toEqual(['Frequency', 'Ratio', 'Location'])
+  })
+  it('a named control is picked by its words', () => {
+    expect(onPageActions('look at the ratios', chart).picks.map((p) => p.label)).toEqual(['Ratio', 'Ratios'])
+  })
+  it('never picks a control that writes data', () => {
+    const pg = { ...chart, sections: [sec('Delete all', 'tab'), sec('Ratio', 'tab'), sec('Location', 'tab')] }
+    expect(onPageActions('different options', pg).picks.map((p) => p.label)).not.toContain('Delete all')
+  })
+  it('nothing plausible: no picks, and the controls found are listed', () => {
+    const bare: AppPage = { ...chart, controls: [btn('Menu')], sections: [] }
+    const r = onPageActions('different options of this one chart', bare)
+    expect(r.picks).toEqual([])
+    expect(r.found).toEqual(['Menu'])
+  })
+  it('findControlFor matches a link by part of its words', () => {
+    const pg: AppPage = { ...chart, controls: [{ label: 'Pricing plans', selector: 'a', kind: 'link', href: 'http://app.test/pricing' }] }
+    expect(findControlFor('pricing', [pg])?.url).toBe('http://app.test/pricing')
+  })
+  it('planSegment writes a goto, then a click and a beat per pick', () => {
+    const picks = onPageActions('different options of this one chart', chart).picks
+    const p = planSegment(seg({ url: 'http://app.test/', target: 'different options of this one chart' }), chart, { startBeat: 2, idPrefix: 'p2-', onPage: { goal: 'different options of this one chart', picks } })
+    expect(p.steps[0]).toMatchObject({ kind: 'goto', beat: 2 })
+    expect(p.steps.filter((s) => s.kind === 'click').map((s) => s.label)).toEqual(['Frequency', 'Ratio', 'Location'])
+    expect(p.beats.map((b) => b.beat)).toEqual([2, 3, 4, 5])
+    expect(new Set(p.steps.map((s) => s.id)).size).toBe(p.steps.length)
+  })
 })
