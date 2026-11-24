@@ -195,6 +195,16 @@ const VOCAL_WORD = /\b(?:vocals?|vocali[sz]\w*|singers?|singing|choir|voices|cha
 
 const cleanText = (s: string): string => s.replace(/\s+/g, ' ').replace(/^[\s,.;:-]+|[\s,.;:-]+$/g, '').trim()
 
+/** "background music: none" and the markdown form "# background music" with "none" on the next line */
+const MUSIC_OFF = /\bmusic\s*[:=–-]\s*(?:none|off|no|nothing|nil|silent)\b/i
+export function musicOffIn(typed: string): boolean {
+  return MUSIC_OFF.test(normaliseOutline(typed)) || /(?:^|\n)\s*#{0,6}\s*[^\n]*\bmusic\b[^\n]*\n\s*(?:none|off|no|nothing|nil)\.?\s*(?:\n|$)/i.test(typed)
+}
+/** a markdown header about music with its answer on the next line becomes one sentence: "# background music" + "none" → "background music: none" */
+export function normaliseOutline(typed: string): string {
+  return typed.replace(/(^|\n)[ \t]*#{1,6}[ \t]*([^\n]*\bmusic\b[^\n]*?)[ \t]*:?[ \t]*\r?\n[ \t]*(none|off|no|nothing|nil)\.?[ \t]*(?=\r?\n|$)/gi, '$1$2: $3')
+}
+
 const emptyMusic = (): MusicSpec => ({ none: false, description: '', vocals: 'any', instruments: [], exclude: [], ambience: [], quiet: false })
 
 /** read one sentence about music into a MusicSpec (null when the sentence is not about music) */
@@ -203,7 +213,7 @@ export function readMusicSentence(unit: string): MusicSpec | null {
   if (URL_RE.test(unit)) { URL_RE.lastIndex = 0; return null }
   URL_RE.lastIndex = 0
   const m = emptyMusic()
-  m.none = /\b(?:no|without|skip)\s+(?:any\s+)?(?:background\s+)?music\b/i.test(unit)
+  m.none = /\b(?:no|without|skip)\s+(?:any\s+)?(?:background\s+)?music\b/i.test(unit) || MUSIC_OFF.test(unit)
   m.description = cleanText(unit.replace(new RegExp(`^${LEAD}(?:(?:i|we)\\s+(?:would\\s+like|want|need)\\s+(?:to\\s+(?:use|have)\\s+)?|(?:please\\s+)?(?:use|add|include|play|put|have|make)\\s+)?`, 'i'), ''))
   const exclude: string[] = []
   for (const x of unit.matchAll(/\b(?:no|without|not|never)\s+(?:any\s+)?([a-z][a-z' -]{1,24}?)(?=\s*(?:[,.;:!]|\band\b|\bor\b|\bjust\b|\bonly\b|\bbut\b|$))/gi)) {
@@ -279,6 +289,9 @@ function targetOf(doing: string, url?: string): string | undefined {
   return t || undefined
 }
 
+const INTRO_WITH = new RegExp(String.raw`^${LEAD}(?:start|open|begin)\s+(?:the\s+)?(?:intro\w*|video|film)\s+with\b[^:]*:\s*(.+)$`, 'i')
+const CTA_LINE = new RegExp(String.raw`^${LEAD}(?:(?:a|the|with\s+a)\s+)?(?:call\s+to\s+action|cta)\b[^:]*:\s*(.+)$`, 'i')
+const EXPLORE_LINE = new RegExp(String.raw`^${LEAD}(?:you\s+will\s+|we\s+will\s+|i\s+will\s+)?(?:begin\s+|start\s+)?(?:exploring|explore)\s+(.+?)(?:\s+and\s+(?:explain|describe)\s+(.+?))?[.!]*$`, 'i')
 const PAGE_LINE = new RegExp(`^${LEAD}(?:show(?:\\s+me)?|go\\s+(?:in)?to|go\\s+through|walk\\s+through|open|visit|navigate\\s+to|display|take\\s+(?:me|us)\\s+to|head\\s+to|briefly\\s+show)\\b(?!\\s+(?:how|that|what|why|when))`, 'i')
 const NARRATE_LINE = new RegExp(`^${LEAD}(?:tell|say|mention)\\b`, 'i')
 const EXPLAIN_LINE = new RegExp(`^${LEAD}(?:explain|describe|highlight|talk\\s+about|discuss)\\b`, 'i')
@@ -294,9 +307,10 @@ function productOf(typed: string, input: BriefInput): string | undefined {
 
 /** the rules reader: deterministic, no AI */
 export function readBriefByRules(input: BriefInput, typedIn?: string): FilmPlan {
-  const typed = typedIn ?? typedOf(input.context)
+  const typed = normaliseOutline(typedIn ?? typedOf(input.context))
   const units = unitsOf(typed)
   const segs: Segment[] = []
+  let introAt = -1
   const pending = [...units]
   let music: MusicSpec | null = null
   let goal = ''
@@ -380,6 +394,33 @@ export function readBriefByRules(input: BriefInput, typedIn?: string): FilmPlan 
     // a total length
     const tl = /\b(?:about|around|under|within|of|length|long|takes?)\s*(\d{1,3})\s*(seconds?|secs?|minutes?|mins?)\b/i.exec(unit)
     if (tl && /\b(?:video|film|length|long)\b/i.test(unit) && !url.length) targetSec = /^m/i.test(tl[2]) ? Number(tl[1]) * 60 : Number(tl[1])
+
+    // a prose outline: "Start the intro with a question: …", "Then you will begin exploring … and explain them one by one", "Then a call to action: …"
+    const introFollow = introAt
+    introAt = -1
+    const iq = INTRO_WITH.exec(unit)
+    if (iq) {
+      segs.push({ id: '', kind: 'narration', said: unit, required: true, claims: [cleanText(iq[1])], over: 'find' } as NarrationSegment)
+      introAt = segs.length - 1
+      continue
+    }
+    const cta = CTA_LINE.exec(unit)
+    if (cta) {
+      segs.push({ id: '', kind: 'card', card: 'outro', said: unit, required: true, text: cleanText(cta[1]) } as CardSegment)
+      continue
+    }
+    if (!url.length && !LIST_LINE.test(unit)) {
+      const ex = EXPLORE_LINE.exec(unit)
+      if (ex && cleanText(ex[1]).split(' ').length <= 12) {
+        segs.push({ id: '', kind: 'page', said: unit, required: true, how: 'features', emphasis: 'normal', target: cleanText(ex[1]), ...(ex[2] ? { explain: [cleanText(ex[2])] } : {}) } as PageSegment)
+        continue
+      }
+    }
+    // the sentence right after an intro question belongs to it ("This one simple chart would help you.")
+    if (introFollow >= 0 && !url.length && unit.length <= 200 && !VOICE_WORD.test(unit) && !MUSIC_WORD.test(unit) && !/^(?:then|next|finally)\b/i.test(unit)) {
+      const prevSeg = segs[introFollow]
+      if (prevSeg?.kind === 'narration') { prevSeg.claims.push(cleanText(unit)); prevSeg.said = `${prevSeg.said} ${unit}`; continue }
+    }
 
     // the arrow form: "log in -> ontology -> type "x" in the filter"
     if (/->|→|=>|⇒|➜|>>/.test(unit) && !url.length) {
@@ -625,7 +666,7 @@ export function normalisePlan(raw: unknown, input: BriefInput, deps: { secrets: 
   scriptFromList(segs, typed)
   const m = (r.music && typeof r.music === 'object' ? r.music : {}) as Record<string, unknown>
   const music: MusicSpec = {
-    none: bool(m.none, false),
+    none: bool(m.none, false) || musicOffIn(typed),
     description: scrub(str(m.description, 500)) ?? '',
     vocals: pick(m.vocals, ['none', 'wordless', 'lyrics', 'any'] as const) ?? 'any',
     instruments: scrubAll(strs(m.instruments)), exclude: scrubAll(strs(m.exclude)), ambience: scrubAll(strs(m.ambience)),

@@ -280,3 +280,34 @@ describe('on-page action: site chrome is never an option', () => {
     expect(r.picks).toEqual([])
   })
 })
+
+describe('rules reader: a prose outline', () => {
+  const ctx = `# overall structure
+Start the intro with a question: We have always wondered how many times each word has occurred in Quran, and how they relate with each other. This one simple chart would help you. Then you will begin exploring different options of this one chart and explain them one by one. Then a call to action: explore any surah at taaweel.snapkodex.com.
+# voiceover
+Voiceover: a deep, commanding, authoritative BBC documentary narrator, calm British English. Say each Arabic word naturally, then give its English meaning.
+# background music
+none`
+  it('keeps the intro question, the exploring step and the call to action in order; music is off', async () => {
+    const { readBriefByRules } = await import('../src/main/appRecon/agent/brief')
+    const plan = readBriefByRules({ context: ctx, startUrl: 'https://taaweel.snapkodex.com', mode: 'walkthrough' } as never, ctx)
+    expect(plan.music.none).toBe(true)
+    const kinds = plan.segments.map((s) => s.kind + (s.kind === 'card' ? `:${s.card}` : ''))
+    expect(kinds.slice(0, 1)).toEqual(['narration'])
+    const intro = plan.segments[0]
+    expect(intro.kind === 'narration' && intro.claims.join(' ')).toContain('always wondered')
+    expect(intro.kind === 'narration' && intro.claims.join(' ')).toContain('This one simple chart')
+    const page = plan.segments.find((s) => s.kind === 'page')
+    expect(page).toMatchObject({ target: 'different options of this one chart', how: 'features' })
+    const outro = plan.segments.find((s) => s.kind === 'card')
+    expect(outro).toMatchObject({ card: 'outro' })
+    expect(plan.segments.indexOf(outro!)).toBeGreaterThan(plan.segments.indexOf(page!))
+    expect(plan.voice.tone).toContain('BBC')
+  })
+  it('"background music: none" and "no music" turn music off', async () => {
+    const { readBriefByRules, musicOffIn } = await import('../src/main/appRecon/agent/brief')
+    for (const t of ['Background music: none.', 'No music please.']) expect(readBriefByRules({ context: t, startUrl: 'http://a.test', mode: 'walkthrough' } as never, t).music.none).toBe(true)
+    expect(musicOffIn('# background music\nnone')).toBe(true)
+    expect(musicOffIn('Use calm oud music')).toBe(false)
+  })
+})

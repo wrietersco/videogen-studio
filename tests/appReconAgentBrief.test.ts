@@ -277,8 +277,9 @@ Voiceover: a deep, commanding, authoritative BBC documentary narrator, calm Brit
     // the plan the writer made opens with the question as narration
     const withIntro: FilmPlan = { ...base, segments: [{ id: 's0', said: q, required: true, kind: 'narration', claims: [q], over: 'find' } as FilmPlan['segments'][number], ...base.segments] }
     expect(accountFor(KAHF, withIntro).unplaced.filter((u) => /Start the intro|Say each Arabic|Describe the findings/.test(u))).toEqual([])
-    // and without it in the plan, the honest list still has it
-    expect(accountFor(KAHF, base).unplaced.join(' ')).toMatch(/Start the intro with a question/)
+    // the rules reader now carries the intro question itself, as the first narration
+    expect(base.segments[0]).toMatchObject({ kind: 'narration' })
+    expect(accountFor(KAHF, base).unplaced.join(' ')).not.toMatch(/Start the intro with a question/)
   })
 
   it('still lists a sentence nothing carries', () => {
