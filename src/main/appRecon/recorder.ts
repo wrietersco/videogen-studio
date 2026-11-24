@@ -12,6 +12,8 @@ import { asPhone } from './browser'
 import { redactionInitScript, cursorInitScript, verifyScript, type RedactionConfig } from './redact'
 import { findElement, scrollArea } from './resolve'
 import { chooseNative, matchOption, readChoices } from './pick'
+import { judgeLogin, type LoginVerdict } from './loginCheck'
+import { isInterstitial } from './explore'
 
 /**
  * Recorder — a screencast of the page, plus a timeline of what was done when.
@@ -307,9 +309,41 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
     return false
   }
 
+  let stepFromUrl = ''
+  /** sign-in check: waits long, survives redirects and browser-check pages, fails only on a refusal message */
+  const checkLogin = async (step: Step, sel: string): Promise<string | null> => {
+    const until = Date.now() + 25000
+    const urlBefore = stepFromUrl
+    let last: LoginVerdict = 'waiting'
+    let lastErr = ''
+    while (Date.now() < until) {
+      const sig = await page
+        .evaluate((s) => {
+          const vis = (el: Element) => !!(el as HTMLElement).offsetParent || getComputedStyle(el).position === 'fixed'
+          const pw = document.querySelector(s)
+          const errEl = Array.from(document.querySelectorAll('[role=alert],.error,.alert,.alert-danger,.flash,.invalid-feedback,.form-error,.text-danger,[class*=error i]')).find((el) => vis(el) && (el as HTMLElement).innerText.trim())
+          const acct = Array.from(document.querySelectorAll('a,button')).some((el) => vis(el) && /^(log ?out|sign ?out|logout)$/i.test(((el as HTMLElement).innerText || '').trim()))
+          return { passwordVisible: !!pw && vis(pw), errorText: errEl ? (errEl as HTMLElement).innerText.trim().slice(0, 200) : '', accountControl: acct }
+        }, sel)
+        .catch(() => null) // the page is navigating: look again
+      if (sig) {
+        const interstitial = await isInterstitial(page).catch(() => false)
+        lastErr = sig.errorText || lastErr
+        last = judgeLogin({ urlBefore, urlNow: page.url(), interstitial, ...sig })
+        if (last === 'success') return null
+        if (last === 'failed') return `the page said "${sig.errorText}"`
+      }
+      await sleep(250)
+    }
+    // no sign of success but no refusal message either: the film carries on rather than stopping on a doubtful check
+    say(step.id, `WARNING: could not confirm the sign-in worked (still on ${page.url()}${lastErr ? `, page text: "${lastErr}"` : ''}); carrying on`)
+    return null
+  }
+
   const checkExpect = async (step: Step): Promise<string | null> => {
     const e = step.expect
     if (!e) return null
+    if (e.selectorGone && step.intent === 'login-submit') return checkLogin(step, e.selectorGone)
     if (e.urlIncludes && !(await waitFor(async () => page.url().includes(e.urlIncludes!)))) return `expected the address to contain "${e.urlIncludes}" but it is ${page.url()}`
     if (e.textVisible && !(await waitFor(async () => (await page.evaluate(() => document.body.innerText)).toLowerCase().includes(e.textVisible!.toLowerCase())))) return `expected to see "${e.textVisible}"`
     if (e.selectorGone && !(await waitFor(async () => (await page.$(e.selectorGone!)) === null || !(await page.$eval(e.selectorGone!, (el) => (el as HTMLElement).offsetParent !== null).catch(() => false))))) return `"${e.selectorGone}" should have gone`
@@ -355,6 +389,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
     let focusKind: Step['focus']
     let focusRect: Rect | null = null
     for (const step of steps.filter((s) => s.beat === beat)) {
+      stepFromUrl = page.url()
       try {
         if (step.kind === 'goto') {
           const url = step.url ?? playbook.startUrl
