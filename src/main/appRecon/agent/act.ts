@@ -98,6 +98,10 @@ const WORD_STOP = new Set(['the', 'and', 'this', 'that', 'one', 'of', 'to', 'for
 const MANY_WORDS = /\b(different|various|several|all|each|every|options?|choices?|modes?|variants?|types?|views?|tabs?|switch|cycle|toggle|compare|try)\b/i
 const OPTION_WORDS = new Set(['option', 'options', 'choice', 'choices', 'mode', 'modes', 'variant', 'variants', 'type', 'types', 'tab', 'tabs', 'toggle', 'switch', 'cycle', 'chart', 'charts', 'graph', 'graphs', 'compare', 'comparison', 'views'])
 
+const APP_CHROME = /\b(dark|light|theme|menu|navigation|nav|language|cookies?|close|dismiss|sign\s*in|log\s*in|register|sign\s*up|search|share|copy|download|upload|back|next|previous|help|feedback|accept|decline)\b/i
+const CHROME_PLACE = /(^|[\s>])(header|nav|footer|aside)(\b|:)/i
+const HINT_STOP = new Set(['video', 'film', 'launch', 'tool', 'using', 'with', 'this', 'that', 'from', 'about', 'what', 'chart', 'simple', 'compare', 'comparing'])
+
 const stem = (w: string) => w.replace(/(ing|ies|es|s|ed)$/, '')
 const wordsIn = (s: string): string[] => (lower(s).match(/[a-z0-9]{3,}/g) ?? []).filter((w) => !WORD_STOP.has(w)).map(stem)
 
@@ -133,6 +137,8 @@ export function onPageActions(target: string, page: AppPage, gate?: PolicyGate):
   const add = (label: string, selector: string, via: OnPagePick['via']) => {
     const k = lower(label)
     if (!selector || !label || label.length > 40 || seen.has(k) || !mayClick(label, gate)) return
+    // the site's own chrome (theme switch, menu, sign-in) is never "an option of the chart"
+    if (APP_CHROME.test(label) || (via === 'button' && CHROME_PLACE.test(selector))) return
     seen.add(k)
     cands.push({ label, selector, via })
   }
@@ -145,8 +151,7 @@ export function onPageActions(target: string, page: AppPage, gate?: PolicyGate):
   const tabs = cands.filter((c) => c.via === 'tab')
   if (tabs.length >= 2) return { picks: tabs.slice(0, 6), found }
   // buttons that read like options of one group: short names, not navigation or generic chrome
-  const chrome = /^(menu|close|back|next|previous|help|settings|login|log in|sign in|sign up|cancel|ok|accept|decline|search|more|share|copy|download|upload)$/i
-  const opts = cands.filter((c) => c.via === 'button' && !chrome.test(c.label) && c.label.length <= 24)
+  const opts = cands.filter((c) => c.via === 'button' && !/^(settings|cancel|ok|more)$/i.test(c.label) && c.label.length <= 24)
   return { picks: opts.length >= 2 ? opts.slice(0, 6) : [], found }
 }
 
@@ -340,6 +345,8 @@ export interface ScoutOptions {
   known?: AppPage[]
   /** the app's start address, used when a target must be looked for */
   startUrl?: string
+  /** what the film is about (product, hero feature, goal): where the thing a step acts on is likely to be found */
+  hints?: string[]
 }
 
 const SIGN_IN_PATH = /(^|\/)(log-?in|sign-?in|sign-?on|auth|session|sso)(\/|$|\.)/i
@@ -363,10 +370,31 @@ export async function scoutSegment(page: Page, seg: PageSegment, gate: PolicyGat
       // not a link's name: the step is something to do. It is done on the page the film is on (the start page when none yet).
       const base = o.known?.find((p) => p.url === page.url()) ?? here ?? o.known?.[0]
       if (!base) return { ok: false, why: `no link called "${seg.target}" was found in the app` }
-      const { picks, found } = onPageActions(seg.target, base, gate)
+      let { picks, found } = onPageActions(seg.target, base, gate)
+      let at = base
+      const tried = [base.url]
       if (!picks.length) {
-        return { ok: false, page: base, why: `"${seg.target}" is not a link, and no control on ${base.url} fits it. I looked for a link, tab or button with those words${found.length ? `; the page's controls are: ${found.join(', ')}` : '; the page showed no tabs, buttons or dropdowns'}` }
+        // the thing may live on another page of the app: pages whose link or address carries a word of what the film is about
+        const hint = new Set((o.hints ?? []).flatMap((h) => lower(h).match(/[\p{L}\p{N}]{4,}/gu) ?? []).filter((w) => !HINT_STOP.has(w)))
+        const links = [...(o.known ?? []), base].flatMap((p) => p.controls.filter((c) => c.kind === 'link' && c.href && !APP_CHROME.test(c.label)))
+        const cand = [...new Map(links.map((c) => [c.href!.split('#')[0], c])).values()]
+          .filter((c) => !tried.includes(c.href!) && hostOf(c.href!) === hostOf(base.url) && [...hint].some((w) => lower(`${c.label} ${c.href}`).includes(w)))
+          .slice(0, 4)
+        for (const c of cand) {
+          if (!gate.hostAllowed(c.href!)) continue
+          tried.push(c.href!)
+          await page.goto(c.href!, { waitUntil: 'load', timeout: 20000 }).catch(() => undefined)
+          if (!gate.hostAllowed(page.url())) continue
+          const cp = await scoutPage(page, o.outDir, `${o.name}-find${tried.length}`)
+          const r = onPageActions(seg.target, cp, gate)
+          found = [...found, ...r.found].slice(0, 16)
+          if (r.picks.length) { picks = r.picks; at = cp; break }
+        }
       }
+      if (!picks.length) {
+        return { ok: false, page: base, why: `"${seg.target}" is not a link, and no control that fits it was found (looked at ${tried.join(', ')}). I looked for a link, tab or button with those words${found.length ? `; the controls seen are: ${found.join(', ')}` : '; the pages showed no tabs, buttons or dropdowns'}` }
+      }
+      if (at !== base) return { ok: true, page: at, onPage: { goal: seg.target, picks } }
       // the page is left as it was found: planSegment writes the open and the clicks, the recorder runs them behind the gate
       return { ok: true, page: base, onPage: { goal: seg.target, picks } }
     }

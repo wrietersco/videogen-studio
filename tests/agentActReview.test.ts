@@ -248,10 +248,10 @@ describe('a step worded as an action, not a link', () => {
     expect(onPageActions('different options', pg).picks.map((p) => p.label)).not.toContain('Delete all')
   })
   it('nothing plausible: no picks, and the controls found are listed', () => {
-    const bare: AppPage = { ...chart, controls: [btn('Menu')], sections: [] }
+    const bare: AppPage = { ...chart, controls: [btn('Details')], sections: [] }
     const r = onPageActions('different options of this one chart', bare)
     expect(r.picks).toEqual([])
-    expect(r.found).toEqual(['Menu'])
+    expect(r.found).toEqual(['Details'])
   })
   it('findControlFor matches a link by part of its words', () => {
     const pg: AppPage = { ...chart, controls: [{ label: 'Pricing plans', selector: 'a', kind: 'link', href: 'http://app.test/pricing' }] }
@@ -264,5 +264,19 @@ describe('a step worded as an action, not a link', () => {
     expect(p.steps.filter((s) => s.kind === 'click').map((s) => s.label)).toEqual(['Frequency', 'Ratio', 'Location'])
     expect(p.beats.map((b) => b.beat)).toEqual([2, 3, 4, 5])
     expect(new Set(p.steps.map((s) => s.id)).size).toBe(p.steps.length)
+  })
+})
+
+describe('on-page action: site chrome is never an option', () => {
+  it('a theme switch and menu toggle in the header are not picked as chart options', () => {
+    const pg: AppPage = {
+      url: 'http://app.test/', title: 'Home', headings: ['Home'], fields: [], notices: [], sections: [],
+      controls: [
+        { label: 'dark_mode Dark mode', selector: 'div > header > div > button:nth-of-type(1)', kind: 'button' },
+        { label: 'Toggle navigation menu', selector: 'div > header > div > button:nth-of-type(2)', kind: 'button' }
+      ]
+    }
+    const r = onPageActions('different options of this one chart', pg)
+    expect(r.picks).toEqual([])
   })
 })

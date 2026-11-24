@@ -138,7 +138,7 @@ export async function actStage(inp: {
     for (;;) {
       attempts++
       inp.say(`Opening ${tried.url ?? `"${tried.target}"`} (attempt ${attempts})`)
-      res = await scoutSegment(inp.page, tried, inp.gate, { outDir: inp.outDir, name: `pari-${seg.id}-${attempts}`, known: inp.known, startUrl: inp.startUrl })
+      res = await scoutSegment(inp.page, tried, inp.gate, { outDir: inp.outDir, name: `pari-${seg.id}-${attempts}`, known: inp.known, startUrl: inp.startUrl, hints: [inp.plan.product ?? '', inp.plan.heroFeature ?? '', inp.plan.goal] })
       // a page found by name is no substitute when it is one already filmed, or the very page the address bounced to
       if (res.ok && substituted && res.page && (filmed.has(pathKey(res.page.url)) || bouncedTo.has(pathKey(res.page.url)))) {
         res = { ok: false, why: `the only page called "${seg.target}" is ${res.page.url}, which is not the page you asked for` }
