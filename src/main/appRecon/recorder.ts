@@ -316,6 +316,8 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
     const urlBefore = stepFromUrl
     let last: LoginVerdict = 'waiting'
     let lastErr = ''
+    let enterSent = false
+    let clickSent = false
     while (Date.now() < until) {
       const sig = await page
         .evaluate((s) => {
@@ -332,6 +334,18 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
         last = judgeLogin({ urlBefore, urlNow: page.url(), interstitial, ...sig })
         if (last === 'success') return null
         if (last === 'failed') return `the page said "${sig.errorText}"`
+      }
+      const waited = Date.now() - (until - 25000)
+      if (!enterSent && waited > 5000 && last === 'waiting') {
+        // still on the form and quiet: the click may have missed, so submit the way a person would, with Enter in the password field
+        enterSent = true
+        await page.focus(sel).catch(() => undefined)
+        await page.keyboard.press('Enter').catch(() => undefined)
+        say(step.id, 'the sign-in page did not move on, so Enter was pressed')
+      } else if (!clickSent && waited > 12000 && last === 'waiting' && step.selector) {
+        clickSent = true
+        await page.$eval(step.selector, (el) => (el as HTMLElement).click()).catch(() => undefined)
+        say(step.id, 'still on the sign-in page, so the button was pressed directly')
       }
       await sleep(250)
     }
@@ -440,7 +454,22 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           const label = info.label
           const verdict = o.gate.checkClick({ label: label || step.label || '', intent: step.intent, kind: info.kind as 'button' | 'link', href: info.href, hint: info.hint })
           if (!verdict.allow) return { ok: false, failure: `${step.id}: blocked by guardrails — ${verdict.reason}`, beats, navigations, log, redactionMisses: misses }
-          await glide(r.x + r.w / 2, r.y + r.h / 2, 700)
+          // a page that is still drawing (help icons, banners) moves its controls: wait until this one holds still, and look again
+          // after the pointer arrives, so the click lands on the control and not where it used to be
+          let target: Rect = r
+          for (let k = 0; k < 15; k++) {
+            await sleep(200)
+            const again = await rectOf(step.selector!)
+            if (!again) break
+            const still = Math.abs(again.x - target.x) < 1 && Math.abs(again.y - target.y) < 1
+            target = again
+            if (still) break
+          }
+          await glide(target.x + target.w / 2, target.y + target.h / 2, 700)
+          const landed = await rectOf(step.selector!)
+          if (landed && (Math.abs(landed.y - target.y) > 1 || Math.abs(landed.x - target.x) > 1)) {
+            await glide(landed.x + landed.w / 2, landed.y + landed.h / 2, 350)
+          }
           await sleep(350 * pace)
           if (step.intent === 'login-submit' || step.intent === 'logout') o.gate.openSessionWindow()
           const nav = page.waitForNavigation({ waitUntil: 'load', timeout: 8000 }).catch(() => null)
