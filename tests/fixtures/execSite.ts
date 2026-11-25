@@ -138,6 +138,9 @@ table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:6p
 document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();document.getElementById('palette').style.display='block';document.getElementById('pi').focus();ev('palette')}
  if(e.key==='Escape'){document.getElementById('palette').style.display='none'}});</script></body></html>`,
 
+  // ------------------------------------------------------------ content that arrives late
+  '/late': `${head('Late')}<div class="wrap"><h1>Report</h1><div id="slot"></div></div><script>setTimeout(()=>{document.getElementById('slot').innerHTML='<p>Report ready for download</p>'},3000)</script></body></html>`,
+
   // ------------------------------------------------------------ svg chart
   '/chart': `${head('Chart')}<div class="wrap"><h2>Monthly consumption</h2>
 <svg id="ch" width="420" height="240" viewBox="0 0 420 240"><g><line x1="40" y1="40" x2="400" y2="40" stroke="#ddd"/><line x1="40" y1="80" x2="400" y2="80" stroke="#ddd"/><line x1="40" y1="120" x2="400" y2="120" stroke="#ddd"/><line x1="40" y1="160" x2="400" y2="160" stroke="#ddd"/><line x1="40" y1="200" x2="400" y2="200" stroke="#999"/>

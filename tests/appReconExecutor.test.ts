@@ -11,6 +11,9 @@ import { execNewAtom } from '../src/main/appRecon/atomExec'
 import { sweepOverlays, controlRole, pressOrder, policyFromWhenever } from '../src/main/appRecon/overlays'
 import { pickByStructure, parseNumber, ordinalIn } from '../src/main/appRecon/pageModel'
 import { parseKeys, saysDate } from '../src/main/appRecon/gestures'
+import { editKeyedValue } from '../src/main/appRecon/actions'
+import { runPlaybook } from '../src/main/appRecon/recorder'
+import type { Playbook } from '../src/shared/appRecon'
 import type { Atom, FindSpec } from '../src/shared/appRecon'
 import { startExecSite, type ExecSite } from './fixtures/execSite'
 
@@ -55,6 +58,12 @@ describe('what the action layer reads, with no browser', () => {
     expect(parseKeys('Ctrl + Shift + P')).toEqual([['Control', 'Shift', 'p']])
     expect(parseKeys('ArrowDown ArrowDown Enter')).toEqual([['ArrowDown'], ['ArrowDown'], ['Enter']])
     expect(parseKeys('esc')).toEqual([['Escape']])
+  })
+  it('replaces just the value that belongs to a name in a text', () => {
+    expect(editKeyedValue('{"plan": "pro"}', 'plan', 'team')).toBe('{"plan": "team"}')
+    expect(editKeyedValue('{"plan": "pro", "seats": 3}', 'seats', '10')).toBe('{"plan": "pro", "seats": 10}')
+    expect(editKeyedValue('plan = pro\nseats = 3', 'plan', 'team')).toBe('plan = team\nseats = 3')
+    expect(editKeyedValue('{"plan": "pro"}', 'colour', 'red')).toBeNull()
   })
   it('knows a date written in different ways', () => {
     expect(saysDate('27/11/2026', '2026-11-27')).toBe(true)
@@ -316,6 +325,61 @@ describe('the action layer on pages with traps', () => {
     expect(never.skipped.length).toBe(1)
     await page.close()
   }, 90000)
+
+  it('changes one value inside a code editor ("change plan to team") and leaves the rest of the text', async () => {
+    const page = await open('/editor', 200)
+    const r = await run(page, { action: 'type', label: 'plan', text: 'team', replace: true, find: find('plan', 'type', { within: ['request body'] }) })
+    expect(r.skipped).toEqual([])
+    expect(r.verified).toBe(true)
+    expect(await page.evaluate(() => document.getElementById('code')!.textContent)).toBe('{"plan": "team"}')
+    await page.close()
+  }, 60000)
+
+  it('types into whatever has focus after a key opened a palette', async () => {
+    const page = await open('/keys', 200)
+    await run(page, { action: 'key', label: 'open the palette', keys: 'Control+K' })
+    const t = await run(page, { action: 'type', label: 'command', text: 'export', focused: true, find: find('nothing like this', 'type') })
+    expect(t.skipped).toEqual([])
+    expect(await page.evaluate(() => (document.getElementById('pi') as HTMLInputElement).value)).toBe('export')
+    expect(t.steps[0]).toMatchObject({ kind: 'type', focused: true })
+    await page.close()
+  }, 60000)
+
+  it('waits for text that arrives late even when nothing scrolls, and gives up honestly', async () => {
+    const page = await open('/late', 100)
+    const r = await run(page, { action: 'scrollUntil', label: 'the report', text: 'Report ready for download', find: find('report') })
+    expect(r.skipped).toEqual([])
+    expect(r.verified).toBe(true)
+    const none = await run(page, { action: 'scrollUntil', label: 'x', text: 'never shows up', find: find('x'), dir: 'down' })
+    expect(none.verified).toBe(false)
+    await page.close()
+  }, 90000)
+
+  it('records a playbook: closes a late pop-up first, presses by name, notes it, and a failing sign-out check does not stop the film', async () => {
+    site.events.length = 0
+    const page = await open('/overlay', 1700)
+    const pb: Playbook = {
+      version: 1,
+      title: 'overlay',
+      startUrl: site.url + '/overlay',
+      steps: [
+        { id: 's1', beat: 0, kind: 'wait' },
+        { id: 's2', beat: 1, kind: 'click', label: 'Place order', find: find('Place order'), focus: 'target' },
+        { id: 's3', beat: 2, kind: 'click', label: 'Save settings', find: find('Save settings'), focus: 'target' },
+        { id: 's4', beat: 3, kind: 'click', label: 'Quantum teleporter', find: find('Quantum teleporter'), focus: 'target' },
+        { id: 's5', beat: 4, kind: 'wait', intent: 'logout', expect: { selectorVisible: '#sign-in-form' } }
+      ]
+    }
+    const res = await runPlaybook(page, pb, { vault: {}, gate: gate(), redaction: { selectors: [], values: [] }, pace: 0, log: (m) => log.push(m) })
+    expect(res.ok).toBe(true)
+    const ev = seenEvents()
+    expect(ev).toEqual(expect.arrayContaining(['promo-close', 'order', 'save']))
+    expect(ev.indexOf('promo-close')).toBeLessThan(ev.indexOf('order'))
+    expect(res.closed?.join(' ')).toMatch(/closed the (dialog|pop-up)/)
+    // a control that does not exist is skipped and said so, never clicked
+    expect(res.skipped?.map((s) => s.label)).toEqual(['Quantum teleporter'])
+    await page.close()
+  }, 120000)
 
   it('finds the tallest bar and a bar by its month on an SVG chart, and clicks it', async () => {
     site.events.length = 0
