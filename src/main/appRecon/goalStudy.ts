@@ -219,6 +219,23 @@ function readPage(maxControls: number): Omit<PageStudy, 'url'> {
     }
     raw.push({ el, c })
   }
+  // things that are pressed without being a button (a task card, a table row, a tile): the pointer shows it, as it does to the engine that finds them
+  const known = new Set(raw.map((r) => r.el))
+  for (const el of Array.from(document.querySelectorAll('div,li,article,td,tr,span,p,img,svg'))) {
+    if (raw.length > 260) break
+    if (known.has(el) || !shown(el) || !el.parentElement) continue
+    const cur = getComputedStyle(el).cursor
+    if (!(cur === 'pointer' || cur === 'grab') && el.getAttribute('draggable') !== 'true') continue
+    if (cur === getComputedStyle(el.parentElement).cursor && el.getAttribute('draggable') !== 'true') continue
+    if (el.querySelector(CONTROL)) continue
+    const label = clean((el as HTMLElement).innerText || el.getAttribute('aria-label') || el.getAttribute('title'), 70)
+    if (!label) continue
+    const r = el.getBoundingClientRect()
+    const c: StudyControl = { i: 0, kind: 'other', label, y: Math.round(r.top + sy), cx: Math.round(r.left + r.width / 2), cy: Math.round(r.top + sy + r.height / 2), w: Math.round(r.width), h: Math.round(r.height), inView: inView(el), section: sectionOf(el), same: 1 }
+    const it = itemIdOf(el)
+    if (it) c.item = it
+    raw.push({ el, c })
+  }
   const count = new Map<string, number>()
   for (const { c } of raw) count.set(c.label.toLowerCase(), (count.get(c.label.toLowerCase()) ?? 0) + 1)
   // page order; a long list of the same card keeps its first few

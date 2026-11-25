@@ -133,7 +133,7 @@ export interface Budget {
   /** other pages the goal may move to */
   moves: number
 }
-export const DEFAULT_BUDGET: Budget = { turns: 8, actions: 11, ms: 200_000, live: 2, support: 5, moves: 3 }
+export const DEFAULT_BUDGET: Budget = { turns: 10, actions: 14, ms: 200_000, live: 2, support: 5, moves: 3 }
 
 /** atom kinds beyond the original ones that the engine can perform (grows when their executors land) */
 export const NEW_ATOMS_READY: ReadonlySet<string> = new Set<string>()
@@ -182,7 +182,7 @@ const SYSTEM = `You direct a screen recording of a REAL web app. The person who 
 
 How to work:
 1. FIND the part of the app the goal is about: a section, a feature or a flow. Use the page outline (headings in page order, controls under each heading, the data in cards/rows, charts) and the picture. If it is not on this page, look for the way there: a link, tab, menu entry or FOLDED group in the outline, or a page listed under OTHER PAGES. Never invent a control or a feature. If the app has no such feature, answer status "impossible" and say so plainly in "reason".
-2. PREPARE only what the feature needs first (data not loaded yet, a folded group, a popup in front of the page, being on the right page) and give the reason. Scroll to the section ("scrollto" with its heading) before working in it.
+2. PREPARE only what the feature needs first (data not loaded yet, a folded group, being on the right page) and give the reason. A popup, survey or cookie banner in front of the page: close it with its own button (one or two tries). If it will not go away, carry on anyway and work around it (scroll so the control you need is clear of it); never answer "impossible" only because of a banner, and never stop to keep pressing its buttons. Scroll to the section ("scrollto" with its heading) before working in it.
 3. SHOW IT WORKING with at least TWO different real live interactions inside the feature (choose, filter, type, press, step through, pick a data point). Choose examples from the data you can see: the largest or most telling item, a value that fits the limit the goal states (a budget, a date), the item that matches the goal's condition (the overdue one, the one with an error). Prefer examples that change what is on screen.
 4. STOP: when what is on screen now visibly shows the goal met and at least two live interactions were done, answer status "done" with no actions and say in "reason" what is now visible. Never add actions after that.
 
@@ -415,7 +415,14 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
     if (model) {
       const shot = model.supportsVision?.() === false ? null : await screenshotForModel(deps.page)
       report.modelCalls++
-      d = await askModel(model, { goal, explain: goalItem.explain, brief, history, study, shot, live: report.live, want: B.live, used: actions, max: B.actions, pushed, known: deps.known, scrub, before: deps.around?.before ?? [], after: deps.around?.after ?? [] }, caps)
+      const ask = { goal, explain: goalItem.explain, brief, history, study, shot, live: report.live, want: B.live, used: actions, max: B.actions, pushed, known: deps.known, scrub, before: deps.around?.before ?? [], after: deps.around?.after ?? [] }
+      d = await askModel(model, ask, caps)
+      if (!d) {
+        // one more try: a slow answer is not a reason to hand the goal to rules half way through
+        log('the planning model gave no usable answer; asking once more')
+        report.modelCalls++
+        d = await askModel(model, ask, caps)
+      }
       if (!d) { log('the planning model gave no usable answer; continuing on rules'); model = null; report.mode = 'rules' }
     }
     if (!d) d = ruleDecision(`${goal} ${explain}`, study, { sections: rails.sections, live: report.live, want: B.live, usedKeys: done, refused: report.refused.length })
@@ -493,7 +500,8 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
     for (const b of built) {
       const ran = !notDone(b.label)
       const live = ran && interactive.has(b.atom.action) && !r.unchanged && (verified !== false)
-      if (ran) done.add(b.key)
+      // an action that changed nothing may be tried again (a click that a popup swallowed)
+      if (ran && !r.unchanged) done.add(b.key)
       if (live) report.live++
       report.shown.push({ what: describeAtom(b.atom), why: b.why, ...(ran ? {} : { skipped: r.skipped.find((s) => s.what.toLowerCase().includes(b.label.toLowerCase()))?.why ?? 'it could not be done' }) })
     }

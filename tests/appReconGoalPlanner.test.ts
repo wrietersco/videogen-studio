@@ -281,6 +281,20 @@ describe.skipIf(!runnable)('the goal planner on real pages', () => {
     await o.page.close()
   }, 120000)
 
+  it('can open a card that is no button (a draggable div the pointer shows as pressable)', async () => {
+    const o = await open('/board')
+    const s = await studyPage(o.page)
+    expect(s.controls.map((c) => c.label)).toEqual(expect.arrayContaining(['Fix login redirect Overdue']))
+    const model = fakeModel([
+      decision('continue', [{ do: 'click', target: 'Fix login redirect Overdue', why: 'It is the overdue card.' }], { sections: ['Sprint board'] }),
+      decision('done', [], { reason: 'The detail says overdue by 14 days.' })
+    ])
+    const out = await runGoal(goal('what happens when a task is overdue') as never, deps(o, model))
+    expect(sites.events).toEqual(['card:Fix login redirect'])
+    expect(out.report.live).toBe(1)
+    await o.page.close()
+  }, 120000)
+
   it('says plainly that the feature does not exist, skips the goal, and never stops the run', async () => {
     const o = await open('/')
     const model = fakeModel([decision('impossible', [], { reason: 'This app has no invoices or billing section.' })])

@@ -222,10 +222,11 @@ export function buildAtom(a: ModelAction, study: PageStudy, r: Rails): Built {
     const rel = inst.relation
     c = inst.c
     const key = `${kind}|${c.label.toLowerCase()}|${(a.near ?? '').toLowerCase()}`
-    if (r.done.has(key) && kind === 'click' && !c.collapsed) return { reject: `"${c.label}" was already pressed` }
+    if (r.done.has(key) && kind === 'click' && !c.collapsed && !CLOSER.test(c.label.trim())) return { reject: `"${c.label}" was already pressed and changed the page` }
     const leaves = c.kind === 'link' && !!c.href && c.href.startsWith('/') && !c.href.startsWith(new URL(study.url).pathname + '#') && c.href.split('#')[0] !== new URL(study.url).pathname + new URL(study.url).search
     if (c.kind === 'link' && c.href && !c.href.startsWith('/')) return { reject: `"${c.label}" leads out of the app (${c.href})` }
-    if (leaves && relation !== 'navigation') return { reject: `"${c.label}" opens another page, and was not given as the way to the goal's section` }
+    // a link in the feature itself (a product, a task, a row) is the feature at work; one from elsewhere must be given as the way there
+    if (leaves && relation === 'feature' && r.sections.length && !inFeature(c, r.sections)) return { reject: `"${c.label}" opens another page, and is not part of the section the goal is about` }
     if (leaves && r.moves.used >= r.moves.max) return { reject: `already moved between pages ${r.moves.max} times for this goal` }
     if (!supportRel && kind === 'click' && r.sections.length && !inFeature(c, r.sections) && !(leaves && relation === 'navigation')) {
       return { reject: `"${c.label}" is under "${c.section || 'the top of the page'}", not in the part this goal is about (${r.sections.join('; ')})` }

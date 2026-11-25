@@ -74,6 +74,15 @@ function show(f){e('filter:'+f);let k=0;for(const li of document.querySelectorAl
 function open_(t,s){e('open:'+t);document.getElementById('detail').innerHTML='<b>'+t+'</b> — '+s+(s.startsWith('overdue')?' <button onclick="e(\\'reschedule\\');this.parentNode.append(\\' Moved to tomorrow.\\')">Reschedule</button>':'')}
 </script>`
 
+const BOARD = `<!doctype html><title>Board</title>${BASE}
+<section><h2>Sprint board</h2><p id="count">3 cards</p>
+ <div id="cards" style="display:flex;gap:12px">
+  <div draggable="true" style="cursor:grab;border:1px solid #999;padding:10px;width:150px" onclick="o('Write release notes','due in 3 days')">Write release notes</div>
+  <div draggable="true" style="cursor:grab;border:1px solid #999;padding:10px;width:150px" onclick="o('Fix login redirect','overdue by 14 days')">Fix login redirect <b style="color:red">Overdue</b></div>
+  <div draggable="true" style="cursor:grab;border:1px solid #999;padding:10px;width:150px" onclick="o('Update logo','done')">Update logo</div>
+ </div><p id="detail">Pick a card.</p></section>
+<script>function o(t,s){e('card:'+t);document.getElementById('detail').textContent=t+' — '+s}</script>`
+
 export interface GoalSites {
   url: string
   events: string[]
@@ -88,7 +97,7 @@ export async function startGoalSites(): Promise<GoalSites> {
       res.writeHead(204).end()
       return
     }
-    const page = req.url?.startsWith('/shop') ? SHOP : req.url?.startsWith('/tasks') ? TASKS : DASH
+    const page = req.url?.startsWith('/shop') ? SHOP : req.url?.startsWith('/tasks') ? TASKS : req.url?.startsWith('/board') ? BOARD : DASH
     res.writeHead(200, { 'content-type': 'text/html' }).end(page)
   })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
