@@ -673,13 +673,14 @@ export async function clickMarkChecked(env: Env, chartRect: Rect, spots: Array<{
     tries.push(s)
     for (const j of [[0, 0], [2, 0], [0, 2], [-2, 0], [0, -2]]) tries.push({ x: s.x + j[0], y: s.y + j[1] })
   }
-  const order = [...tries.filter((_, i) => i % 6 === 0), ...tries.filter((_, i) => i % 6 !== 0)].slice(0, 9)
+  const order = [...tries.filter((_, i) => i % 6 === 0), ...tries.filter((_, i) => i % 6 !== 0)].slice(0, 7)
   const first = await snapshotTexts(page)
   let n = 0
   for (const p of order) {
     n++
     await go(env, p.x, p.y, 500)
-    await nap(220 * Math.max(env.pace, 0.4))
+    // a tooltip that comes when the pointer rests is not the chart answering a click: it is let appear first, and is then part of "before"
+    await nap(850)
     const snap = await snapshotTexts(page)
     const was = await thumbOf(page, chartRect)
     await page.mouse.click(p.x, p.y)
