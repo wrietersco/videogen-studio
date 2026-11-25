@@ -30,6 +30,7 @@ import { filmFrame } from '@shared/shapes'
 import type { PariReport } from '@shared/agentBrief'
 import { actStage, agentFilmsPages, buildReport, clipRequests, narrationBrief, planStage, PariStopped, reviewStage, wantsProblemCard, type ActOutcome, type PariHooks, type PlanOutcome } from './agent/loop'
 import { musicPrompt } from './agent/musicBrief'
+import { framedWords, withoutFramed } from './agent/brief'
 import type { PlatformId } from '@shared/spec'
 
 /**
@@ -218,6 +219,9 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     check()
   }
   const fp = pari?.plan ?? null
+  // words the person ordered at the very start / end ("Start the intro with a question: ...") are the title / closing scene's narration, not a beat over a page
+  const framedAsked = fp && inp.mode === 'launch' && inp.launch ? framedWords(fp) : {}
+  const fpBeats = fp && (framedAsked.intro || framedAsked.outro) ? withoutFramed(fp) : fp
   const assigned = pari?.assignment ?? {}
 
   const ctxClean = withoutProductionSentences(inp.context)
@@ -427,7 +431,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       await pause()
       // ACT: every page the plan names is opened behind the gate, in the person's order; a failure is retried, substituted or put to the person
       hooks.progress('explore', `Opening the ${fp.segments.filter((s) => s.kind === 'page').length} pages your brief names`)
-      acted = await actStage({ page, plan: fp, gate, outDir: scoutDir, startUrl: inp.startUrl, known: [...pages], startBeat: signedIn && useVault ? 1 : 0, say, hooks: inp.pari, check, signedIn,
+      acted = await actStage({ page, plan: fpBeats ?? fp, gate, outDir: scoutDir, startUrl: inp.startUrl, known: [...pages], startBeat: signedIn && useVault ? 1 : 0, say, hooks: inp.pari, check, signedIn,
         targetSec: inp.targetSec ?? inp.launch?.targetSec,
         // a fresh, signed-out page behind the same gate: the recording signs in itself, so public pages are filmed before it
         publicPage: useVault ? async () => { const c = await browser.createBrowserContext(); const p = await c.newPage(); await enforcePolicy(p, gate); await prepare(p, redaction); return p } : undefined })
@@ -499,7 +503,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     const clipsPossible = !!inp.media?.tools && !ask.declined
     const clipPlaces: Placement[] = !clipsPossible ? [] : ask.requests.length ? [...new Set(ask.requests.map((r) => r.placement))] : inp.media?.clips && !fp ? ['start'] : []
     const problemAsked = fp ? wantsProblemCard(fp, clipsPossible && ask.requests.some((r) => r.part === 'problem')) : structure.problem
-    const narration = await narrate({ chat: inp.chat, speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: fp ? narrationBrief(fp) : ctxClean, secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, problem: problemAsked, clips: clipPlaces, voiceStyle: fp?.voice.tone, product: inp.launch?.feature.split(/\s+/)[0]?.replace(/['\u2019]s$/i, ''), dir: inp.runDir, say })
+    const narration = await narrate({ chat: inp.chat, speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: fpBeats ? narrationBrief(fpBeats) : ctxClean, secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, problem: problemAsked, clips: clipPlaces, voiceStyle: fp?.voice.tone, opening: framedAsked.intro, closing: framedAsked.outro, product: inp.launch?.feature.split(/\s+/)[0]?.replace(/['\u2019]s$/i, ''), dir: inp.runDir, say })
     // a result the person asked to see stays on screen long enough to be taken in, whatever the narration length
     for (const b of plan.beats) if ((b.kind === 'result' || b.kind === 'detail') && (narration.minSec.get(b.beat) ?? 0) < RESULT_HOLD_SEC) narration.minSec.set(b.beat, RESULT_HOLD_SEC)
     check()

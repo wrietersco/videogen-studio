@@ -78,6 +78,13 @@ export interface NarrationSegment extends SegmentBase {
    * look for a page that shows it (and fall back to a card)
    */
   over: { segment: string } | 'card' | 'find'
+  /**
+   * the person asked for these words at the very start ("Start the intro with a question: ...") or the very end of the
+   * film: they are the opening / closing narration (spoken over the title / closing scene), not a beat over a page
+   */
+  at?: 'intro' | 'outro'
+  /** the person asked for the opening as a question ("start the intro with a question") */
+  asQuestion?: boolean
 }
 
 /** a drawn scene (title, problem statement card, closing) */
