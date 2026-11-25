@@ -17,7 +17,7 @@ import { scrollToSection } from './sections'
 import { chooseNative, matchOption, readChoices } from './pick'
 import { deepEval, deepRect } from './deep'
 import { sweepOverlays } from './overlays'
-import { armWhenever, clickMarkChecked, doClick, doHover, doType, policyOf, type Env, type Outcome } from './actions'
+import { armWhenever, clickMarkChecked, doClick, doHover, doType, focusedEditable, policyOf, type Env, type Outcome } from './actions'
 import { doDate, doDrag, doKey, doScrollUntil, doSlider } from './gestures'
 import { dropZone } from './atomExec'
 import { pickByStructure, type PickSpec } from './pageModel'
@@ -401,7 +401,9 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
   const sweep = async (step: Step): Promise<void> => {
     if (step.kind === 'goto' || step.kind === 'handoff' || step.kind === 'whenever') return
     try {
-      const r = await sweepOverlays(page, { policy: policyOf(page), allow: env.allow, log: (m) => say(step.id, m.trim()), move: (x, y) => glide(x, y, 450), stepWords: step.label ?? step.find?.target ?? '', pace })
+      // where the step is going, so that an overlay it is about (a form it fills) is left alone
+      const where = step.find ? (await findElement(page, step.find, 0).catch(() => ({ found: null }))).found?.selector : step.selector
+      const r = await sweepOverlays(page, { target: where, policy: policyOf(page), allow: env.allow, log: (m) => say(step.id, m.trim()), move: (x, y) => glide(x, y, 450), stepWords: step.label ?? step.find?.target ?? '', pace })
       for (const c of r.closed) closedAll.push(`${step.id}: ${c}`)
     } catch {
       /* a page that is changing under us: the next step looks again */
@@ -478,6 +480,11 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           await page.mouse.move(mouse.x, mouse.y) // the pointer reappears on the new page
           say(step.id, `opened ${url}`)
         } else if (step.kind === 'type' && (step.selector || step.find)) {
+          if (step.focused) {
+            // the text goes where the cursor is; the words that named the box are the fallback
+            const f = await focusedEditable(page)
+            if (f) { step.selector = f; step.find = undefined }
+          }
           const found = await locate(step)
           if (found === 'gone') continue
           const r = found
@@ -495,7 +502,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
             if (!fill.allow) return { ok: false, failure: `${step.id}: blocked — ${fill.reason}`, beats, navigations, log, redactionMisses: misses }
           }
           const value = resolve(step.text ?? '')
-          const typed = await doType(env, { selector: step.selector!, label: step.label ?? step.find?.target ?? step.selector! }, value, { replace: step.replace ?? (step.find ? undefined : true), secret: /\{\{secret:/.test(step.text ?? ''), delay: step.find ? 55 : 70, stepWords: step.label })
+          const typed = await doType(env, { selector: step.selector!, label: step.label ?? step.find?.target ?? step.selector! }, value, { key: step.replace && step.find ? step.label : undefined, replace: step.replace ?? (step.find ? undefined : true), secret: /\{\{secret:/.test(step.text ?? ''), delay: step.find ? 55 : 70, stepWords: step.label })
           noteOutcome(step, typed, 'typed')
           if (typed.skipped) {
             if (step.find) { skipStep(step, typed.skipped.why); continue }
@@ -505,12 +512,15 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           lastSel = step.selector
           focusRect = typed.rect ?? r
           focusKind = step.focus
-        } else if ((step.kind === 'click' || step.kind === 'dblclick') && (step.selector || step.find || /^\{"pick"/.test(step.text ?? ''))) {
+        } else if ((step.kind === 'click' || step.kind === 'dblclick' || step.kind === 'pick') && (step.selector || step.find || /^\{"pick"/.test(step.text ?? ''))) {
           // a pick by place or by value ("the cheapest jacket") is decided again on the page as it is now
           let pickNote = ''
-          if (step.kind === 'click' && /^\{"pick"/.test(step.text ?? '')) {
+          let pickVerb: string | undefined
+          if (/^\{"pick"/.test(step.text ?? '')) {
             try {
-              const spec = (JSON.parse(step.text!) as { pick: PickSpec }).pick
+              const parsed = JSON.parse(step.text!) as { pick: PickSpec; verb?: string }
+              pickVerb = parsed.verb
+              const spec = parsed.pick
               const res = await pickByStructure(page, spec)
               if (!res.ok) { skipStep(step, res.why); continue }
               step.selector = res.selector
@@ -546,7 +556,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
             if (still) break
           }
           if (step.intent === 'login-submit' || step.intent === 'logout') o.gate.openSessionWindow()
-          const out = await doClick(env, { selector: step.selector!, label: label || step.label || step.selector! }, { double: step.kind === 'dblclick', stepWords: step.label ?? step.find?.target })
+          const out = await doClick(env, { selector: step.selector!, label: label || step.label || step.selector! }, { double: step.kind === 'dblclick' || pickVerb === 'dblclick', stepWords: step.label ?? step.find?.target })
           noteOutcome(step, out, 'clicked')
           await page.mouse.move(mouse.x, mouse.y)
           if (out.skipped) {
@@ -695,9 +705,9 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           say(step.id, `chose the date ${j.date}`)
           focusRect = dt.rect ?? null
           focusKind = 'target'
-        } else if (step.kind === 'scrollUntil') {
-          const j = ((): { text?: string } => { try { return JSON.parse(step.text ?? '{}') } catch { return {} } })()
-          const su = await doScrollUntil(env, j.text ?? '')
+        } else if (step.kind === 'scrolluntil') {
+          const j = ((): { text?: string; dir?: 'down' | 'up' | 'left' | 'right'; within?: string[] } => { try { return JSON.parse(step.text ?? '{}') } catch { return {} } })()
+          const su = await doScrollUntil(env, j.text ?? '', { dir: j.dir, within: j.within })
           if (su.skipped) { skipStep(step, su.skipped.why); continue }
           say(step.id, `scrolled until "${j.text}" was on screen`)
         } else if (step.kind === 'whenever') {

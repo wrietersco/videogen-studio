@@ -317,6 +317,7 @@ export async function doClick(env: Env, target: { selector: string; label: strin
   let sel = target.selector
   let blockedBy = ''
   let base: State | null = null
+  let before: State = await stateOf(page)
   let relocated = false
   const plan: Array<'point' | 'point2' | 'key' | 'relocate'> = o.once ? ['point'] : ['point', 'point2', 'key', 'relocate']
   for (let ai = 0; ai < plan.length; ai++) {
@@ -346,9 +347,6 @@ export async function doClick(env: Env, target: { selector: string; label: strin
     out.rect = (await h.boundingBox().then((b) => (b ? { x: b.x, y: b.y, w: b.width, h: b.height } : undefined)).catch(() => undefined)) ?? out.rect
     if (!aim.visible) return { ...out, skipped: { what, why: 'it is not visible on the page' } }
     if (aim.by) blockedBy = aim.by
-    if (!base) base = await baselineOf(page)
-    const before = await stateOf(page)
-    before.noisy = base.noisy
     await h.evaluate(installClickProbe).catch(() => undefined)
     let point = aim.pts[kind === 'point2' ? Math.min(1, aim.pts.length - 1) : 0]
     if (kind === 'point2' && aim.pts.length > 1) point = aim.pts[Math.min(aim.pts.length - 1, 1 + Math.floor(aim.pts.length / 3))]
@@ -360,6 +358,8 @@ export async function doClick(env: Env, target: { selector: string; label: strin
         const tag = await h.evaluate((el) => `${el.tagName}|${el.getAttribute('type') ?? ''}|${el.getAttribute('role') ?? ''}`)
         await h.evaluate((el) => (el as HTMLElement).focus({ preventScroll: true }))
         await nap(120)
+        base = await baselineOf(page)
+        before = { ...base }
         const space = /checkbox|radio|switch|option/i.test(tag) && !/^A\|/.test(tag)
         await page.keyboard.press(space ? 'Space' : 'Enter')
         env.log(`    pressed ${space ? 'Space' : 'Enter'} on "${target.label}" because the click did not land`)
@@ -371,8 +371,10 @@ export async function doClick(env: Env, target: { selector: string; label: strin
         }
         await go(env, point.x, point.y, 600)
         await nap(150 * env.pace)
+        // what the page does as the pointer arrives (a hover tooltip) is not the click's doing: the page is looked at now
+        base = await baselineOf(page)
+        before = { ...base }
         if (thumbRect) was = await thumbOf(page, thumbRect)
-        await nap(80)
         await page.mouse.click(point.x, point.y, { count: o.double ? 2 : 1 })
         out.at = point
       }
@@ -386,6 +388,7 @@ export async function doClick(env: Env, target: { selector: string; label: strin
     const res = await waitForChange(page, before, { ms: env.pace ? 1800 : 2200, thumb: thumbRect ? { rect: thumbRect, was } : undefined, expect: o.expect })
     if (landed !== false || res.changed) {
       // the click reached the control (or the page changed in response to it): whatever happened is the answer
+      if (res.changed) env.log(`    after "${target.label}": ${res.why.join(', ')}`)
       out.did = 1
       out.landed = landed !== false
       out.changed = res.changed
@@ -441,7 +444,68 @@ async function fieldHints(h: ElementHandle<Element>): Promise<{ type: string; na
 
 const compact = (s: string): string => s.replace(/[\s ]+/g, '')
 
+/** in the page: the address of the box that has focus (a field, an editable area, a code editor), or null */
+function focusedBox(): string | null {
+  let a: Element | null = document.activeElement
+  for (let i = 0; a && i < 8 && (a as HTMLElement).shadowRoot?.activeElement; i++) a = (a as HTMLElement).shadowRoot!.activeElement
+  if (!a || a === document.body) return null
+  const editorSel = '.cm-content,.CodeMirror,.monaco-editor,.ace_editor,.ProseMirror,.ql-editor,.trix-content,.tox-edit-area'
+  const box = a.closest(editorSel) ?? a
+  const ok = /^(INPUT|TEXTAREA)$/.test(box.tagName) ? !/^(button|submit|reset|checkbox|radio|image|hidden|file|range|color)$/i.test((box as HTMLInputElement).type) : (box as HTMLElement).isContentEditable || box !== a || box.getAttribute('role') === 'textbox'
+  if (!ok) return null
+  const one = (root: Document | ShadowRoot, sel: string) => { try { return root.querySelectorAll(sel).length === 1 } catch { return false } }
+  const hops: string[] = []
+  let cur: Element | null = box
+  for (let guard = 0; cur && guard < 12; guard++) {
+    const root = cur.getRootNode() as Document | ShadowRoot
+    const parts: string[] = []
+    for (let n: Element | null = cur; n && n.nodeType === 1; n = n.parentElement) {
+      if (n === document.documentElement) break
+      if (n.id && one(root, '#' + CSS.escape(n.id))) { parts.unshift('#' + CSS.escape(n.id)); break }
+      const sibs = Array.from(n.parentElement?.children ?? [])
+      parts.unshift(n.tagName.toLowerCase() + (sibs.length > 1 ? ':nth-child(' + (sibs.indexOf(n) + 1) + ')' : ''))
+    }
+    hops.unshift(parts.join(' > '))
+    cur = root && (root as ShadowRoot).host ? (root as ShadowRoot).host : null
+  }
+  return hops.join(' >>> ')
+}
+
+/** the address of the box that has focus now, in the page or in a frame, or null when nothing editable has it */
+export async function focusedEditable(page: Page): Promise<string | null> {
+  for (const f of framesOf(page)) {
+    const r = await f.evaluate(focusedBox).catch(() => null)
+    if (!r) continue
+    if (f === page.mainFrame()) return r
+    const fe = await f.frameElement().catch(() => null)
+    if (!fe) continue
+    const prefix = await fe.evaluate((el) => { const parts: string[] = []; for (let n: Element | null = el; n && n.nodeType === 1 && n !== document.documentElement; n = n.parentElement) { if (n.id && document.querySelectorAll('#' + CSS.escape(n.id)).length === 1) { parts.unshift('#' + CSS.escape(n.id)); break } const sibs = Array.from(n.parentElement?.children ?? []); parts.unshift(n.tagName.toLowerCase() + (sibs.length > 1 ? ':nth-child(' + (sibs.indexOf(n) + 1) + ')' : '')) } return parts.join(' > ') })
+    await fe.dispose().catch(() => undefined)
+    return prefix + ' >>> ' + r
+  }
+  return null
+}
+
+/**
+ * "change plan to team" in a box that holds `{"plan": "pro"}`: the value that belongs to the name is replaced, the rest of the
+ * text stays. Returns the whole new text, or null when the name is not in it.
+ */
+export function editKeyedValue(doc: string, key: string, value: string): string | null {
+  const k = key.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (!k) return null
+  const re = new RegExp(`(["']?${k}["']?\\s*[:=]\\s*)("(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*'|[^,}\\]\\n]*[^,}\\]\\s\\n])`, 'i')
+  const m = re.exec(doc)
+  if (!m) return null
+  const old = m[2]
+  let v = value
+  // a quoted value stays quoted
+  if (/^["']/.test(old) && !/^["']/.test(value)) v = old[0] + value + old[0]
+  return doc.slice(0, m.index) + m[1] + v + doc.slice(m.index + m[0].length)
+}
+
 export interface TypeOptions {
+  /** the name of a value inside the box ("plan" in {"plan": "pro"}): only that value is replaced */
+  key?: string
   /** select what is in the box first and type over it (the default for a plain box); false adds to the end */
   replace?: boolean
   /** the text came from the vault: never read back, always blurred */
@@ -495,6 +559,34 @@ export async function doType(env: Env, target: { selector: string; label: string
   }
   if (!focused) return { ...out, skipped: { what, why: 'the box did not take focus (something else is in front of it)' } }
   const editor = hints.editor
+  // a value named inside a code editor or a text area: that value is replaced, not the whole text
+  if (o.key && o.replace) {
+    const doc = await h.evaluate(valueIn).catch(() => '')
+    const edited = editKeyedValue(doc, o.key, text)
+    if (edited !== null && compact(edited) !== compact(doc)) {
+      await h.evaluate((el) => (el as HTMLElement).focus()).catch(() => undefined)
+      await page.keyboard.down('Control'); await page.keyboard.press('a'); await page.keyboard.up('Control')
+      if (edited.length <= 240) await page.keyboard.type(edited, { delay: env.pace === 0 ? 4 : 18 })
+      else await page.evaluate((t) => document.execCommand('insertText', false, t), edited)
+      await nap(env.pace === 0 ? 250 : 600)
+      let got = await h.evaluate(valueIn).catch(() => null)
+      if (got === null || compact(got) !== compact(edited)) {
+        await page.keyboard.down('Control'); await page.keyboard.press('a'); await page.keyboard.up('Control')
+        await page.evaluate((t) => document.execCommand('insertText', false, t), edited).catch(() => undefined)
+        await nap(200)
+        got = await h.evaluate(valueIn).catch(() => null)
+      }
+      out.did = 1
+      out.changed = true
+      out.verified = got !== null && compact(got) === compact(edited)
+      out.landed = true
+      out.last = target.selector
+      out.at = point
+      if (!out.verified) out.note = `"${o.key}" was set in "${target.label}" but the box does not read back as expected`
+      else out.seen.push(`The value of "${o.key}" in "${target.label}" is changed to ${text}`)
+      return out
+    }
+  }
   const plainBox = !editor && (await h.evaluate((el) => /^(INPUT|TEXTAREA)$/.test(el.tagName)))
   if (plainBox) {
     if (o.replace === false) await h.evaluate((el) => { const i = el as HTMLInputElement; try { i.setSelectionRange(i.value.length, i.value.length) } catch { /* a type that has no caret */ } })

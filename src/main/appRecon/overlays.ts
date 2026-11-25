@@ -399,7 +399,7 @@ export async function clearOverlays(page: Page, o: ClearOptions = {}): Promise<C
 }
 
 /** a page-wide check at load and after each step: closes what blocks the page (a banner, a dimming pop-up) */
-export async function sweepOverlays(page: Page, o: Omit<ClearOptions, 'sweep' | 'target'> = {}): Promise<ClearResult> {
+export async function sweepOverlays(page: Page, o: Omit<ClearOptions, 'sweep'> = {}): Promise<ClearResult> {
   return clearOverlays(page, { ...o, sweep: true })
 }
 

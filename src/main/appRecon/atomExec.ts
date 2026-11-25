@@ -5,7 +5,7 @@ import type { Atom, AtomResult, FindSpec, NewAtom, Step } from '@shared/appRecon
 import type { PolicyGate } from './policy'
 import type { Found } from './resolve'
 import type { Located, VisionPick } from './script'
-import { armWhenever, clickMarkChecked, doClick, doHover, doType, policyOf, type Env, type Outcome } from './actions'
+import { armWhenever, clickMarkChecked, doClick, doHover, doType, focusedEditable, policyOf, type Env, type Outcome } from './actions'
 import { doDate, doDrag, doKey, doScrollUntil, doSlider } from './gestures'
 import { findMark, findSvgMark, hoverText, newTexts, snapshotTexts } from './marks'
 import { pickByStructure, type PickSpec } from './pageModel'
@@ -143,8 +143,8 @@ export async function execNewAtom(atom: NewAtom, ctx: AtomExecCtx): Promise<Atom
     }
 
     case 'scrollUntil': {
-      const o = await doScrollUntil(env, a.text)
-      const step: Omit<Step, 'id' | 'beat'> = { kind: 'scrollUntil', label: a.label, find: a.find, text: JSON.stringify({ text: a.text }), focus: 'page' }
+      const o = await doScrollUntil(env, a.text, { dir: a.dir, within: a.find.within })
+      const step: Omit<Step, 'id' | 'beat'> = { kind: 'scrolluntil', label: a.label, find: a.find, text: JSON.stringify({ text: a.text, dir: a.dir, within: a.find.within }), focus: 'page' }
       return done(o, o.verified ? [step] : [])
     }
 
@@ -244,6 +244,10 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
       pickText = JSON.stringify({ pick: spec })
       if (r.values) pickNote += `. The values compared: ${r.values.map((v) => `${v.label} ${v.value}`).join('; ')}`
     }
+  } else if (a.action === 'type' && a.focused && (await focusedEditable(page))) {
+    // after a key that opened a palette, or a double-click that opened an inline edit: the text goes where the cursor is
+    found = { selector: (await focusedEditable(page))!, rect: { x: 0, y: 0, w: 0, h: 0 }, label, score: 100 }
+    pickNote = 'focused'
   } else {
     const kind = a.action === 'type' ? 'type' : a.action === 'hover' ? 'hover' : 'click'
     const l = await ctx.locate({ find: wanted(kind, label, a.find), label })
@@ -285,11 +289,11 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
 
   if (verb === 'type') {
     const t = a as Extract<Atom, { action: 'type' }>
-    const o = await doType(env, target, t.text, { replace: t.replace, stepWords: label })
+    const o = await doType(env, target, t.text, { replace: t.replace, stepWords: label, key: t.replace && pickNote !== 'focused' ? label : undefined })
     if (o.skipped) return miss(o.skipped.what, o.skipped.why, stepsFor)
     say(`    typed "${t.text}" into "${name}"${o.verified ? '' : ' (it does not read back as typed)'}`)
     for (const c of o.closed) say(`    ${c}`)
-    stepsFor.push({ kind: 'type', selector: found.selector, label, text: t.text, find: wanted('type', label, t.find), focus: 'target', ...(t.replace !== undefined ? { replace: t.replace } : {}) })
+    stepsFor.push({ kind: 'type', selector: found.selector, label, text: t.text, find: wanted('type', label, t.find), focus: 'target', ...(t.replace !== undefined ? { replace: t.replace } : {}), ...(pickNote === 'focused' ? { focused: true } : {}), ...(t.replace ? { text: t.text } : {}) })
     const out = done(o, stepsFor)
     // typed text is a change by itself; what matters is that it reads back
     return { ...out, changed: true, verified: o.verified }
@@ -313,10 +317,10 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
   if (fresh.length) seen.push(`After ${verb === 'dblclick' ? 'double-clicking' : 'clicking'} "${name}" the page shows: ${fresh.join(' · ').slice(0, 300)}`)
   if (pickNote) seen.push(`Picked ${pickNote}`)
   stepsFor.push({
-    kind: verb === 'dblclick' ? 'dblclick' : 'click',
+    kind: a.action === 'pick' && pickText ? 'pick' : verb === 'dblclick' ? 'dblclick' : 'click',
     selector: found.selector,
     label: a.action === 'pick' ? name : label,
-    ...(a.action === 'pick' && pickText ? { text: pickText } : { find: wanted('click', label, a.find as FindSpec) }),
+    ...(a.action === 'pick' && pickText ? { text: JSON.stringify({ ...(JSON.parse(pickText) as object), verb }) } : { find: wanted('click', label, a.find as FindSpec) }),
     focus: 'target'
   })
   say(`    ${verb === 'dblclick' ? 'double-clicked' : 'clicked'} "${name}"${o.note ? ` (${o.note})` : ''}`)

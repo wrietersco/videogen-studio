@@ -788,27 +788,45 @@ function textState(wanted: string): { found: boolean; visible: boolean; path: st
   return { found: true, visible, path: pathOf(best) }
 }
 
-/** in the page: the place the wheel should turn (the biggest scrolling area, else the page) and how far it can go */
-function scrollerPoint(): { x: number; y: number; inner: boolean; room: number } {
+/** in the page: the place the wheel should turn (the area the words name, else the biggest scrolling area, else the page) and how far it can go */
+function scrollerPoint(within: string[], horizontal: boolean): { x: number; y: number; inner: boolean; room: number } {
   const vw = innerWidth
   const vh = innerHeight
-  let best: { el: Element; a: number } | null = null
+  const words = within.map((w) => w.toLowerCase()).filter((w) => w.length > 2 && !/^(the|row|list|feed|area|section|panel)$/.test(w))
+  const over = horizontal ? 'overflowX' : 'overflowY'
+  let best: { el: Element; a: number; named: boolean } | null = null
   for (const el of Array.from(document.querySelectorAll('*')).slice(0, 5000)) {
     const cs = getComputedStyle(el)
-    if (!/(auto|scroll)/.test(cs.overflowY) || el.scrollHeight <= el.clientHeight + 40) continue
+    const room = horizontal ? el.scrollWidth - el.clientWidth : el.scrollHeight - el.clientHeight
+    if (!/(auto|scroll)/.test(cs[over]) || room <= 40) continue
     const r = el.getBoundingClientRect()
     const a = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0)) * Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0))
-    if (a > 15000 && (!best || a > best.a)) best = { el, a }
+    if (a < 6000) continue
+    const hay = `${el.id} ${typeof (el as HTMLElement).className === 'string' ? (el as HTMLElement).className : ''} ${el.getAttribute('aria-label') ?? ''} ${((el.previousElementSibling as HTMLElement | null)?.innerText ?? '').slice(0, 40)}`.toLowerCase()
+    const named = words.length > 0 && words.every((w) => hay.includes(w))
+    if (!best || (named && !best.named) || (named === best.named && a > best.a)) best = { el, a, named }
   }
-  const pageRoom = document.documentElement.scrollHeight - vh - scrollY
-  if (best && (best.el.scrollHeight - best.el.clientHeight - best.el.scrollTop > 10 || pageRoom < 10)) {
+  const pageRoom = horizontal ? document.documentElement.scrollWidth - vw - scrollX : document.documentElement.scrollHeight - vh - scrollY
+  if (best && (best.named || (horizontal ? best.el.scrollWidth - best.el.clientWidth - best.el.scrollLeft : best.el.scrollHeight - best.el.clientHeight - best.el.scrollTop) > 10 || pageRoom < 10)) {
     const r = best.el.getBoundingClientRect()
-    return { x: (Math.max(r.left, 0) + Math.min(r.right, vw)) / 2, y: (Math.max(r.top, 0) + Math.min(r.bottom, vh)) / 2, inner: true, room: best.el.scrollHeight - best.el.clientHeight - best.el.scrollTop }
+    const room = horizontal ? best.el.scrollWidth - best.el.clientWidth - best.el.scrollLeft : best.el.scrollHeight - best.el.clientHeight - best.el.scrollTop
+    return { x: (Math.max(r.left, 0) + Math.min(r.right, vw)) / 2, y: (Math.max(r.top, 0) + Math.min(r.bottom, vh)) / 2, inner: true, room }
   }
   return { x: vw / 2, y: vh / 2, inner: false, room: pageRoom }
 }
 
-export async function doScrollUntil(env: Env, text: string, cap = 45): Promise<Outcome> {
+/** in the page: how far the scrolled things are from their start, so a scroll that moved nothing is known */
+function scrollSum(): number {
+  let n = scrollY + scrollX
+  for (const el of Array.from(document.querySelectorAll('*')).slice(0, 4000)) n += (el as HTMLElement).scrollTop + (el as HTMLElement).scrollLeft
+  return n
+}
+
+export async function doScrollUntil(env: Env, text: string, o: { dir?: 'down' | 'up' | 'left' | 'right'; within?: string[]; cap?: number } = {}): Promise<Outcome> {
+  const cap = o.cap ?? 45
+  const dir = o.dir ?? 'down'
+  const horizontal = dir === 'left' || dir === 'right'
+  const sign = dir === 'up' || dir === 'left' ? -1 : 1
   const { page } = env
   const out = blank()
   const what = `scrolling until "${text}" shows`
@@ -841,21 +859,31 @@ export async function doScrollUntil(env: Env, text: string, cap = 45): Promise<O
         return out
       }
     }
-    const sp = await page.evaluate(scrollerPoint)
-    const before = await page.evaluate(() => scrollY + (document.scrollingElement?.scrollTop ?? 0))
+    const sp = await page.evaluate(scrollerPoint, o.within ?? [], horizontal)
+    const before = await page.evaluate(scrollSum)
     if (env.move) await env.move(sp.x, sp.y, 300)
     else await page.mouse.move(sp.x, sp.y)
-    const vh = page.viewport()?.height ?? 720
-    await page.mouse.wheel({ deltaY: Math.round(vh * 0.7) })
+    const vp = page.viewport() ?? { width: 1280, height: 720 }
+    await page.mouse.wheel(horizontal ? { deltaX: sign * Math.round(vp.width * 0.6) } : { deltaY: sign * Math.round(vp.height * 0.7) })
     // a feed loads more when the end comes near: give it a moment
     await nap(env.pace ? 650 : 380)
-    const room = (await page.evaluate(scrollerPoint)).room
-    const moved = Math.abs((await page.evaluate(() => scrollY + (document.scrollingElement?.scrollTop ?? 0))) - before)
-    if (moved < 2 && room < 5) {
+    const room = (await page.evaluate(scrollerPoint, o.within ?? [], horizontal)).room
+    const moved = Math.abs((await page.evaluate(scrollSum)) - before)
+    if (moved < 2 && (room < 5 || dir === 'up' || dir === 'left')) {
       stuck++
       await nap(900) // a slow feed
       if (stuck >= 3) break
     } else stuck = 0
+  }
+  // "wait for X to load": no direction was given, so the text is waited for even when nothing scrolls
+  if (!o.dir) {
+    const stop = Date.now() + 10000
+    while (Date.now() < stop) {
+      const st = await page.evaluate(textState, text).catch(() => ({ found: false, visible: false, path: '' }))
+      if (st.visible) break
+      if (st.found) { await deepHandle(page, st.path).then((h) => h?.evaluate((el) => el.scrollIntoView({ block: 'center' }))).catch(() => undefined) }
+      await nap(300)
+    }
   }
   const final = await page.evaluate(textState, text).catch(() => ({ found: false, visible: false, path: '' }))
   const moved = stateDiff(base, await stateOf(page)).length > 0

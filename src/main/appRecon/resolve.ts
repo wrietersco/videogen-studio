@@ -344,7 +344,7 @@ function locate(spec: FindSpec, minScore: number): Result {
     return best
   }
 
-  const INTERACTIVE = 'a,button,input,select,textarea,summary,label,[role=button],[role=tab],[role=menuitem],[role=option],[role=treeitem],[role=link],[role=switch],[role=checkbox],[role=radio],[role=searchbox],[role=combobox],[role=textbox],[role=slider],[role=gridcell],[role=row],[role=cell],[role=listitem],[tabindex],[onclick],[draggable=true],li,[contenteditable],[class*=btn],[class*=icon],[class*=item],[class*=tab],[class*=suggest],[class*=option],[class*=card],[class*=swatch]'
+  const INTERACTIVE = 'a,button,input,select,textarea,summary,label,[role=button],[role=tab],[role=menuitem],[role=option],[role=treeitem],[role=link],[role=switch],[role=checkbox],[role=radio],[role=searchbox],[role=combobox],[role=textbox],[role=slider],[role=gridcell],[tabindex],[onclick],[draggable=true],li,[contenteditable],[class*=btn],[class*=icon],[class*=item],[class*=tab],[class*=suggest],[class*=option],[class*=swatch]'
   const EDITOR = '.cm-content,.CodeMirror,.monaco-editor,.ace_editor,.ProseMirror,.ql-editor,.trix-content,.tox-edit-area,[role=textbox]'
   const isEditable = (el: Element): boolean => {
     const ce = el.getAttribute('contenteditable')
