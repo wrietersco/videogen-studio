@@ -270,6 +270,7 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
           enforced: out.enforced,
           advisory: out.advisory,
           editable: out.editable,
+          ...(out.partial ? { partial: out.partial } : {}),
           ...(o.parent ? { parentRunId: o.parent.runId, revision: o.parent.revision } : {})
         }
         if (out.video) d.store.savePlan(id, out.plan)

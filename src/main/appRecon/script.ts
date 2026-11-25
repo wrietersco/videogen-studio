@@ -579,7 +579,7 @@ export async function performScript(inp: ScriptInput): Promise<ScriptOutcome> {
     // nothing is dropped silently: what was written but not understood, and a step with no action at all, are skipped parts with a reason
     const skipped = [...all.skipped]
     for (const u of item.unread) skipped.push({ what: `"${u}"`, why: `no action understood in "${u}"` })
-    const onlySays = !item.atoms.length && (item.narration || !!item.explain)
+    const onlySays = !item.atoms.length && !item.goal && (item.narration || !!item.explain)
     if (!item.atoms.length && !onlySays && !item.unread.length) {
       skipped.push(item.goal
         ? { what: `the goal "${item.goal.slice(0, 90)}"`, why: 'no concrete action was worked out for it, so nothing was done on the page' }
