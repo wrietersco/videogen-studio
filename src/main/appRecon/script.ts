@@ -12,7 +12,9 @@ import { findElement, scrollArea, type Found } from './resolve'
 import { chooseNative, matchOption, readChoices, shortName } from './pick'
 import { findMark, hoverText, newTexts, snapshotTexts } from './marks'
 import { revealHidden, scrollToSection } from './sections'
-import { plainStep, type Atom, type ScriptItem, type StepScript } from './stepScript'
+import type { Atom } from '@shared/appRecon'
+import { plainStep, type ScriptItem, type StepScript } from './stepScript'
+import { execNewAtom, isNewAtom } from './atomExec'
 
 /**
  * Carries out the steps a person wrote, exactly and in order, on the live app.
@@ -132,7 +134,7 @@ export function sameView(a: View, b: View): boolean {
 
 // ---------------------------------------------------------------- finding what a step means
 
-interface Located {
+export interface Located {
   found: Found | null
   miss?: { closest: string[] }
   /** steps that had to be done to bring the control into reach (a folded panel opened) */
@@ -232,6 +234,8 @@ interface AtomRun {
   did: number
   /** the screen looked different afterwards (a click that changes nothing at all is suspect) */
   changed: boolean
+  /** what was done showed its expected effect (until the executors report it, a performed action counts as verified) */
+  verified?: boolean
 }
 
 /** one pass over the parts of a step (a part that was not tried is a hole in `per`) */
@@ -280,6 +284,19 @@ export async function performScript(inp: ScriptInput): Promise<ScriptOutcome> {
       if (only && !only.has(ai)) continue
       cur = { steps: [], picks: [], skipped: [], seen: [], did: 0, changed: false }
       run.per[ai] = cur
+      // the newer kinds (keys, drag, double-click, sliders, dates, scroll-until, whenever, pick) are performed by atomExec.ts
+      if (isNewAtom(atom)) {
+        const res = await execNewAtom(atom, { page, gate, log: inp.log, relaxed, said: item.said, vision: inp.vision, last: run.last, locate: loc })
+        for (const k of res.skipped) inp.log(`    SKIPPED ${k.what}: ${k.why}`)
+        cur.steps.push(...res.steps)
+        cur.seen.push(...res.seen)
+        cur.skipped.push(...res.skipped)
+        cur.did += res.did
+        cur.changed = res.changed
+        cur.verified = res.verified
+        if (res.last) run.last = res.last
+        continue
+      }
       if (atom.action === 'open') {
         if (relaxed) continue // the page is already open: opening it again would undo what was done
         // the whole address is opened, #fragment and all: on many apps it is what picks the view the page opens on
@@ -614,7 +631,7 @@ export function scriptPlan(inp: ScriptPlanInput): Plan {
           else if (a.action === 'type') facts.push(`Types "${s(a.text)}" into the ${s(a.label)} box`)
           else if (a.action === 'hover') facts.push(`Rests the pointer on "${s(a.label)}"`)
           else if (a.action === 'scrollto') facts.push(`Scrolls ${a.dir} to the part of the page called "${s(a.label)}"`)
-          else facts.push(`Scrolls ${a.dir}${where(a.find) ? ` (${where(a.find)})` : ''} through the area`)
+          else if (a.action === 'scroll') facts.push(`Scrolls ${a.dir}${where(a.find) ? ` (${where(a.find)})` : ''} through the area`)
         }
         for (const o of r.seen) facts.push(s(o))
         for (const k of r.skipped) facts.push(`NOT SHOWN: ${s(k.what)} could not be done on the page (${s(k.why)}). Do not say or imply that it was done; describe only what is on screen.`)
