@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { ffmpegBin } from '../audio/pcm'
 import { launch } from './browser'
+import { gsapJs, introPage, type SceneBackground } from '../introBg/kit'
 
 /**
  * Programmatic animated scenes for the launch film: title, "the problem",
@@ -42,6 +43,11 @@ export interface SceneInput {
   logo?: string
   durationSec: number
   seed?: number
+  /**
+   * a background the AI designed for this film: it replaces the drawn motif (the title text, pill and logo are laid over it)
+   * and is the normal case. The motif is only the last resort when no background could be made.
+   */
+  background?: SceneBackground
   /** the film's frame (default 1920×1080); the motif is laid out on a 1920×1080 stage that covers it */
   size?: { width: number; height: number }
 }
@@ -77,7 +83,19 @@ function logoData(path?: string): string | null {
   }
 }
 
+/** the words laid over a scene: logo, pill, headline, sub (shared by the drawn motif scenes and the AI-background scenes) */
+function textCss(W: number, H: number, rgb: number[], light: number[]): string {
+  const a = (x: number): string => `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${x})`
+  return `#blk{position:absolute;left:0;top:0;width:${W}px;height:${H}px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;font-family:'Segoe UI','Segoe UI Variable','Noto Sans','Helvetica Neue',Arial,'Segoe UI Historic','Segoe UI Symbol',Tahoma,sans-serif;color:#fff;text-shadow:0 2px 26px rgba(0,0,0,.5)}
+#blk>*{will-change:transform,opacity}
+#logo{max-width:380px;max-height:96px;object-fit:contain;margin-bottom:34px}
+#pill{font-size:22px;font-weight:700;letter-spacing:.24em;text-transform:uppercase;padding:11px 28px 11px 32px;border-radius:999px;border:1.5px solid ${a(0.7)};background:${a(0.16)};color:${cssRgb(light)};margin-bottom:34px;text-shadow:none}
+#head{font-weight:700;line-height:1.1;letter-spacing:-.01em;max-width:${Math.min(1500, W - 140)}px;text-wrap:balance;overflow-wrap:break-word}
+#sub{font-weight:400;line-height:1.3;color:rgba(255,255,255,.8);max-width:${Math.min(1300, W - 180)}px;margin-top:30px;text-wrap:balance;overflow-wrap:break-word}`
+}
+
 export function sceneHtml(inp: SceneInput): string {
+  if (inp.background) return backedSceneHtml(inp, inp.background)
   const rgb = hexRgb((inp.accent ?? '4f8cff').replace('#', ''))
   const light = mixRgb(rgb, [255, 255, 255], 0.45)
   const dark0 = cssRgb(mixRgb(rgb, [0, 0, 0], 0.88))
@@ -107,7 +125,6 @@ export function sceneHtml(inp: SceneInput): string {
     `<div id="head" dir="auto">${esc(inp.headline)}</div>`,
     inp.sub ? `<div id="sub" dir="auto">${esc(inp.sub)}</div>` : ''
   ].join('')
-  const a = (x: number): string => `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${x})`
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>scene</title>
 <style>
@@ -116,12 +133,7 @@ html,body{margin:0;padding:0;width:${W}px;height:${H}px;overflow:hidden;backgrou
 canvas{position:absolute;left:0;top:0;width:${W}px;height:${H}px}
 #blur{position:absolute;left:${k(210, 1920, W)}px;top:${k(170, 1080, H)}px;width:${k(1500, 1920, W)}px;height:${k(740, 1080, H)}px;backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);-webkit-mask-image:radial-gradient(ellipse at center,#000 30%,rgba(0,0,0,0) 70%);mask-image:radial-gradient(ellipse at center,#000 30%,rgba(0,0,0,0) 70%)}
 #scrim{position:absolute;left:${k(150, 1920, W)}px;top:${k(130, 1080, H)}px;width:${k(1620, 1920, W)}px;height:${k(820, 1080, H)}px;background:radial-gradient(ellipse at center,rgba(0,0,0,.58) 0%,rgba(0,0,0,.4) 38%,rgba(0,0,0,0) 72%)}
-#blk{position:absolute;left:0;top:0;width:${W}px;height:${H}px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;font-family:'Segoe UI','Segoe UI Variable','Noto Sans','Helvetica Neue',Arial,'Segoe UI Historic','Segoe UI Symbol',Tahoma,sans-serif;color:#fff;text-shadow:0 2px 26px rgba(0,0,0,.5)}
-#blk>*{will-change:transform,opacity}
-#logo{max-width:380px;max-height:96px;object-fit:contain;margin-bottom:34px}
-#pill{font-size:22px;font-weight:700;letter-spacing:.24em;text-transform:uppercase;padding:11px 28px 11px 32px;border-radius:999px;border:1.5px solid ${a(0.7)};background:${a(0.16)};color:${cssRgb(light)};margin-bottom:34px;text-shadow:none}
-#head{font-weight:700;line-height:1.1;letter-spacing:-.01em;max-width:${Math.min(1500, W - 140)}px;text-wrap:balance;overflow-wrap:break-word}
-#sub{font-weight:400;line-height:1.3;color:rgba(255,255,255,.8);max-width:${Math.min(1300, W - 180)}px;margin-top:30px;text-wrap:balance;overflow-wrap:break-word}
+${textCss(W, H, rgb, light)}
 </style></head><body>
 <div id="bg"></div><canvas id="c" width="${W}" height="${H}"></canvas>
 <div id="blur"></div><div id="scrim"></div>
@@ -132,26 +144,62 @@ ${PAGE_JS}
 </script></body></html>`
 }
 
-const PAGE_JS = String.raw`
+/**
+ * A scene over an AI-designed background: the background is its own page
+ * (kept in a frame, so its ids, styles and globals cannot touch the words) that
+ * is stepped with the scene; the logo, pill, headline and sub are laid over it
+ * exactly as on the drawn scenes, with the same soft scrim for legibility.
+ */
+export function backedSceneHtml(inp: SceneInput, bg: SceneBackground): string {
+  const rgb = hexRgb((inp.accent ?? '4f8cff').replace('#', ''))
+  const light = mixRgb(rgb, [255, 255, 255], 0.45)
+  const T = Math.max(0.5, inp.durationSec)
+  const W = inp.size?.width ?? 1920
+  const H = inp.size?.height ?? 1080
+  const k = (n: number, of: number, total: number) => Math.round((n / of) * total)
+  const cfg = { vw: W, vh: H, headLines: W < H ? 3 : 2, kind: inp.kind, t: T, rgb, light }
+  const cfgJson = JSON.stringify(cfg).replace(/</g, '\u003c')
+  const logo = logoData(inp.logo)
+  const els = [
+    logo ? `<img id="logo" src="${logo}" alt="">` : '',
+    inp.pill ? `<div id="pill" dir="auto">${esc(inp.pill)}</div>` : '',
+    `<div id="head" dir="auto">${esc(inp.headline)}</div>`,
+    inp.sub ? `<div id="sub" dir="auto">${esc(inp.sub)}</div>` : ''
+  ].join('')
+  const inner = introPage(bg.code, { width: W, height: H }, T, {}, { fonts: '', gsap: gsapJs() })
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>scene</title>
+<style>
+html,body{margin:0;padding:0;width:${W}px;height:${H}px;overflow:hidden;background:#000}
+#bgf{position:absolute;left:0;top:0;width:${W}px;height:${H}px;border:0;background:#000}
+#blur{display:none}
+#scrim{position:absolute;left:${k(150, 1920, W)}px;top:${k(130, 1080, H)}px;width:${k(1620, 1920, W)}px;height:${k(820, 1080, H)}px;background:radial-gradient(ellipse at center,rgba(0,0,0,.5) 0%,rgba(0,0,0,.34) 38%,rgba(0,0,0,0) 72%)}
+${textCss(W, H, rgb, light)}
+</style></head><body>
+<iframe id="bgf" scrolling="no" srcdoc="${inner.replace(/&/g, '&amp;').replace(/"/g, '&quot;')}"></iframe>
+<div id="blur"></div><div id="scrim"></div>
+<div id="blk">${els}</div>
+<script>
+const CFG=${cfgJson};
 (function(){
-var W=1920,H=1080,T=CFG.t,KIND=CFG.kind,MOTIF=CFG.motif;
-/* the motif is drawn on a 1920x1080 stage scaled to cover the film's frame (identity for a wide film) */
-var VW=CFG.vw||W,VH=CFG.vh||H,S=Math.max(VW/W,VH/H),OX=(VW-W*S)/2,OY=(VH-H*S)/2;
-function base(){ctx.setTransform(S,0,0,S,OX,OY)}
-var cv=document.getElementById('c'),ctx=cv.getContext('2d');
-function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
-var R=mulberry(CFG.seed*7919+13);
-function rr(a,b){return a+(b-a)*R()}
+var T=CFG.t,S=1,OX=0,OY=0;
+${TEXT_LAYER_JS}
+var fr=document.getElementById('bgf');
+window.__seek=function(t){
+  var w=fr.contentWindow;
+  if(w&&typeof w.__seek==='function')w.__seek(Math.min(Math.max(t,0),T));
+  textAt(t);
+};
+window.__seek(0);
+})();
+</script></body></html>`
+}
+
+/** the words over a scene: fit, reveal and scrim, driven by textAt(t). Needs CFG, S, OX, OY and T in scope. */
+const TEXT_LAYER_JS = String.raw`
 function cl(x,a,b){a=a===undefined?0:a;b=b===undefined?1:b;return Math.min(b,Math.max(a,x))}
 function eo(x){x=cl(x);return 1-Math.pow(1-x,3)}
-function eio(x){x=cl(x);return x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2}
-function lp(a,b,t){return a+(b-a)*t}
 function sg(t,a,b){return cl((t-a)/(b-a))}
-var AR=CFG.rgb[0],AG=CFG.rgb[1],AB=CFG.rgb[2],LR=CFG.light[0],LG=CFG.light[1],LB=CFG.light[2];
-function ac(a){return 'rgba('+AR+','+AG+','+AB+','+a+')'}
-function lc(a){return 'rgba('+LR+','+LG+','+LB+','+a+')'}
-function wh(a){return 'rgba(255,255,255,'+a+')'}
-
 /* ---------- text layer ---------- */
 var elLogo=document.getElementById('logo'),elPill=document.getElementById('pill'),elHead=document.getElementById('head'),elSub=document.getElementById('sub');
 function fit(el,maxLines,from,to,step){
@@ -180,6 +228,27 @@ function textAt(t){
   var k=eo(sg(t,.2*TK,1.1*TK+.3));
   s.style.opacity=k;b.style.opacity=k;
 }
+
+`
+
+const PAGE_JS = String.raw`
+(function(){
+var W=1920,H=1080,T=CFG.t,KIND=CFG.kind,MOTIF=CFG.motif;
+/* the motif is drawn on a 1920x1080 stage scaled to cover the film's frame (identity for a wide film) */
+var VW=CFG.vw||W,VH=CFG.vh||H,S=Math.max(VW/W,VH/H),OX=(VW-W*S)/2,OY=(VH-H*S)/2;
+function base(){ctx.setTransform(S,0,0,S,OX,OY)}
+var cv=document.getElementById('c'),ctx=cv.getContext('2d');
+function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+var R=mulberry(CFG.seed*7919+13);
+function rr(a,b){return a+(b-a)*R()}
+function eio(x){x=cl(x);return x<.5?4*x*x*x:1-Math.pow(-2*x+2,3)/2}
+function lp(a,b,t){return a+(b-a)*t}
+var AR=CFG.rgb[0],AG=CFG.rgb[1],AB=CFG.rgb[2],LR=CFG.light[0],LG=CFG.light[1],LB=CFG.light[2];
+function ac(a){return 'rgba('+AR+','+AG+','+AB+','+a+')'}
+function lc(a){return 'rgba('+LR+','+LG+','+LB+','+a+')'}
+function wh(a){return 'rgba(255,255,255,'+a+')'}
+
+${TEXT_LAYER_JS}
 
 /* ---------- sprites & primitives ---------- */
 function mkGlow(size,col){

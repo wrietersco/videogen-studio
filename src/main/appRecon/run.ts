@@ -18,6 +18,9 @@ import { ambientBrief, chooseMusic, clipSeconds, parseMediaAsk, parseMusicAsk, p
 import { musicBrief } from '../audio/cue'
 import { soundsFromWords } from '../audio/ambience'
 import { pickMotif } from './scenes'
+import { designFilmBackgrounds } from '../introBg/film'
+import { IntroBackgroundLibrary } from '../introBg/library'
+import { introBackgroundsDir } from '../paths'
 import { decodeStereo } from '../audio/pcm'
 import { probe } from '../assets/probe'
 import type { VideoSpec } from '@shared/spec'
@@ -137,6 +140,8 @@ export interface RunInput {
   /** pause after planning so the person can edit the steps */
   reviewFirst?: boolean
   chat: LLMProvider | null
+  /** where AI-designed intro backgrounds are kept for later films (default: the app's intro-backgrounds folder; null = not kept) */
+  introLibrary?: IntroBackgroundLibrary | null
   speech: SpeechProvider | null
   signal?: AbortSignal
   /** keep frames and the browser profile (for debugging) */
@@ -620,6 +625,37 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     } else if (inp.media?.music && !musicAsk?.none && !musicWish) mediaNotes.push('AI music was ticked, but it is not available for this video (the AI option is off, the plan does not include it, or no Gemini key is set), so the built-in score plays.')
     check()
 
+    // ------------------------------------------------------------ the title and closing backgrounds: designed by the AI for this film, never a template
+    hooks.progress('produce', 'Designing the opening and closing backgrounds')
+    const sceneSecs = { title: 6, outro: 6 }
+    const designed = await designFilmBackgrounds({
+      chat: inp.chat,
+      library: inp.introLibrary === undefined ? new IntroBackgroundLibrary(introBackgroundsDir) : inp.introLibrary,
+      dir: join(inp.runDir, 'intro-background'),
+      size: frame,
+      topic: inp.launch ? `${inp.launch.feature}: ${inp.launch.tagline}` : plan.playbook.title,
+      product: inp.launch?.feature ?? plan.playbook.title,
+      about: ctxClean,
+      narration: [narration.introText, ...narration.lines.map((l) => l.text), narration.outroText].filter(Boolean).join(' '),
+      title: { pill: narration.intro?.pill, headline: narration.intro?.headline ?? plan.playbook.title, sub: narration.intro?.sub },
+      outro: narration.outro ? { pill: narration.outro.pill, headline: narration.outro.headline, sub: narration.outro.sub } : undefined,
+      hasLogo: !!(narration.intro?.logo && existsSync(narration.intro.logo)),
+      logo: narration.intro?.logo && existsSync(narration.intro.logo) ? narration.intro.logo : undefined,
+      accent: look?.accent.replace('#', '') ?? brand?.accent,
+      backdrop: look?.backdrop,
+      style: inp.styleDirection ?? null,
+      mood: inp.mode === 'launch' ? 'upbeat' : 'corporate',
+      pictures: pages.map((p) => (p.screenshot ? join(scoutDir, p.screenshot) : '')).filter((f) => f && existsSync(f)).slice(0, 3),
+      titleSec: sceneSecs.title,
+      outroSec: sceneSecs.outro,
+      drawnName: motif,
+      signal: inp.signal,
+      say
+    })
+    check()
+    mediaNotes.push(...designed.notes)
+    // what the scenes sit on is kept with the run, so a later change to the film re-renders them on the same backgrounds
+    for (const k of ['title', 'outro'] as const) if (designed[k]) writeFileSync(join(inp.runDir, `intro-background-${k}.json`), JSON.stringify(designed[k], null, 2))
     // ------------------------------------------------------------ produce
     hooks.progress('produce', inserts.length || musicChoice ? 'Making the video, with AI media' : 'Making the video')
     const res = await produce({
@@ -653,13 +689,14 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       ambience,
       musicLevel: musicAsk?.quiet ? 0.45 : undefined,
       motif,
+      backgrounds: designed.title ? { title: designed.title, outro: designed.outro } : undefined,
       targetSec: inp.mode === 'launch' ? inp.launch?.targetSec : undefined,
       keep: false,
       look
     })
     if (musicChoice) mediaNotes.push(res.musicSource === 'ai' ? `AI music: ${musicChoice.ambient ? 'natural sounds' : musicChoice.mood} — ${musicChoice.why}` : `The AI music could not be used${res.musicError ? ` (${res.musicError})` : ''}, so the built-in score plays.`)
     if (res.musicSource === 'ambience') mediaNotes.push(`Background sound: ${musicAsk!.sounds.length ? musicAsk!.sounds.join(', ') : 'natural ambience'}, made on this computer with no instruments, as you asked.`)
-    if (res.scenes) mediaNotes.push(`The title${narration.problem ? ', problem' : ''} and closing scenes are animated around a "${motif}" motif chosen from what your video is about.`)
+    if (res.drawnScenes?.length) mediaNotes.push(`The ${res.drawnScenes.join(', ')} scene${res.drawnScenes.length === 1 ? ' is' : 's are'} animated around a "${motif}" motif (the drawn template, the last resort), because no AI background could be made for ${res.drawnScenes.length === 1 ? 'it' : 'them'}.`)
     if (narration.problem) mediaNotes.push('Problem statement added after the opening, as you asked (written by the engine from your words).')
     // ------------------------------------------------------------ keep what the video is made of, so changes can be typed later without recording again
     let editable = false
@@ -696,6 +733,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
           level: musicAsk?.quiet ? 0.45 : undefined
         },
         motif,
+        introBackground: designed.title ? { title: `intro-background-title.json`, outro: designed.outro ? `intro-background-${designed.results.outro?.background ? 'outro' : 'title'}.json` : undefined } : undefined,
         look,
         raw: 'final/raw.mp4'
       })

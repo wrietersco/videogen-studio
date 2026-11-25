@@ -20,3 +20,6 @@ library/
 
 # Market my business data written by the dev app
 business-profiles/
+
+# AI intro backgrounds written by the dev app
+/intro-backgrounds/

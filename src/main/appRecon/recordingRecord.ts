@@ -88,6 +88,8 @@ export interface RecordingRecord {
   inserts: RecordedInsert[]
   music: RecordedMusic
   motif?: 'graph' | 'flow' | 'cards'
+  /** the AI-designed backgrounds of the title and closing scenes (files in the run folder, each { code, concept, id }); absent = the drawn motif */
+  introBackground?: { title: string; outro?: string }
   look?: { backdrop: [string, string]; accent: string }
   /** the screen recording, relative to the run folder */
   raw: string

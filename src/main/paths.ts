@@ -49,3 +49,5 @@ export const footageDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen St
 export const appReconDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'app-recordings') : resolve(appRoot, 'app-recordings')
 /** business profiles: the site read, the brand taken from it, the video cards and their films */
 export const marketingDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'business-profiles') : resolve(appRoot, 'business-profiles')
+/** AI-designed intro/outro backgrounds kept for later films on similar topics (index.json + one folder each: index.html, source.json, meta.json) */
+export const introBackgroundsDir = isPackaged ? join(homedir(), 'Documents', 'VideoGen Studio', 'intro-backgrounds') : resolve(appRoot, 'intro-backgrounds')
