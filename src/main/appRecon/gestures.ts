@@ -2,7 +2,7 @@
 // page.evaluate() callbacks run inside the browser, so they use DOM types
 import type { ElementHandle, Page } from 'puppeteer-core'
 import type { Rect } from '@shared/appRecon'
-import { deepHandle } from './deep'
+import { deepHandle, deepPathInPage } from './deep'
 import { clearOverlays } from './overlays'
 import { aimAt, baselineOf, blank, nap, policyOf, stateDiff, stateOf, waitForChange, type Env, type Outcome } from './actions'
 
@@ -59,9 +59,10 @@ function focusIs(wanted: string): { is: boolean; name: string } {
   const want = norm(wanted)
   const lev = (x: string, y: string) => {
     if (Math.abs(x.length - y.length) > 1) return 9
-    let d = 0
-    for (let i = 0, j = 0; i < x.length || j < y.length; i++, j++) { if (x[i] !== y[j]) { d++; if (x.length > y.length) j-- ; else if (y.length > x.length) i-- } }
-    return d
+    const d: number[][] = Array.from({ length: x.length + 1 }, (_, i) => [i, ...new Array(y.length).fill(0)])
+    for (let j = 0; j <= y.length; j++) d[0][j] = j
+    for (let i = 1; i <= x.length; i++) for (let j = 1; j <= y.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1))
+    return d[x.length][y.length]
   }
   const hit = names.some((n) => { const t = norm(n); return want.length > 0 && want.every((w) => t.some((x) => x === w || x.startsWith(w) || w.startsWith(x) || (w.length >= 4 && lev(x, w) <= 1))) })
   return { is: hit, name: (names[0] ?? el.tagName).slice(0, 40) }
@@ -98,7 +99,7 @@ export async function doKey(env: Env, keys: string, repeatUntil?: string): Promi
     await nap(env.pace ? 220 : 80)
     out.did++
   }
-  const res = await waitForChange(page, before, { ms: 1800 })
+  const res = await waitForChange(page, before, { ms: 1800, focus: true })
   out.changed = res.changed
   out.verified = res.changed
   out.landed = true
@@ -308,22 +309,81 @@ function slidersAround(el: Element): Element[] {
   return []
 }
 
-export async function doSlider(env: Env, target: { selector: string; label: string }, want: { value?: number; min?: number; max?: number }): Promise<Outcome> {
+/** in the page: the sliders a name points at (a group of thumbs of one control), by their label, or the text around them */
+function slidersNamed(label: string): Element[] {
+  const norm = (s: string) => (s || '').toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter((w) => w && !/^(the|a|an|slider|range|bar|control|thumb|handle)$/.test(w)).map((w) => (w.length > 3 && w.endsWith('s') ? w.slice(0, -1) : w))
+  const want = norm(label)
+  const vis = (e: Element) => { const r = e.getBoundingClientRect(); return r.width > 2 && r.height > 2 }
+  const all = Array.from(document.querySelectorAll('input[type=range],[role=slider]')).filter(vis)
+  if (!all.length) return []
+  const score = (el: Element): number => {
+    const names: string[] = []
+    const i = el as HTMLInputElement
+    for (const l of Array.from(i.labels ?? [])) names.push((l as HTMLElement).innerText ?? '')
+    names.push(el.getAttribute('aria-label') ?? '', el.getAttribute('title') ?? '', el.id, el.getAttribute('name') ?? '')
+    const lb = el.getAttribute('aria-labelledby')
+    if (lb) names.push(document.getElementById(lb.split(' ')[0])?.textContent ?? '')
+    let n: Element | null = el
+    for (let k = 0; k < 3 && n; k++, n = n.parentElement) {
+      // a box that holds several controls says nothing about this one; a box that holds just the thumbs of this control does
+      if (k > 0 && n.querySelectorAll('input[type=range],[role=slider]').length > 2) break
+      const t = ((n as HTMLElement).innerText ?? '').replace(/\s+/g, ' ').trim()
+      if (t && t.length <= 100) names.push(t)
+      const p = n.previousElementSibling
+      const pt = p ? ((p as HTMLElement).innerText ?? '').trim() : ''
+      if (pt && pt.length <= 40) names.push(pt)
+    }
+    let best = 0
+    for (const nm of names) {
+      const t = norm(nm)
+      if (!want.length) { best = Math.max(best, 0.5); continue }
+      const have = want.filter((w) => t.some((x) => x === w || x.startsWith(w) || w.startsWith(x)))
+      best = Math.max(best, have.length / want.length)
+    }
+    return best
+  }
+  const ranked = all.map((el) => ({ el, s: score(el) })).sort((a, b) => b.s - a.s)
+  const top = ranked[0]
+  if (!top || top.s < 0.6) return []
+  // the other thumbs of the same control: the nearest wrapper that holds more than one slider
+  let box: Element | null = top.el.parentElement
+  for (let k = 0; k < 3 && box; k++, box = box.parentElement) {
+    const mates = all.filter((x) => box!.contains(x))
+    if (mates.length >= 2 && mates.length <= 3 && mates.every((m) => score(m) >= 0.6 || mates.length === 2)) return mates
+    if (mates.length > 3) break
+  }
+  return [top.el]
+}
+
+export async function doSlider(env: Env, target: { selector?: string; label: string }, want: { value?: number; min?: number; max?: number }): Promise<Outcome> {
   const { page } = env
   const out = blank()
   const what = `setting the slider "${target.label}"`
-  const h = await deepHandle(page, target.selector)
-  if (!h) return { ...out, skipped: { what, why: 'it disappeared before it could be used' } }
+  // the sliders by their name; when the name finds none, the ones at the control the name led to
+  let thumbsH = await page.evaluateHandle(slidersNamed, target.label)
+  let props = await thumbsH.getProperties()
+  let thumbs = [...props.values()].map((p) => p.asElement()).filter((e): e is ElementHandle<Element> => !!e)
+  if (!thumbs.length && target.selector) {
+    const h = await deepHandle(page, target.selector)
+    if (h) {
+      thumbsH = await h.evaluateHandle(slidersAround)
+      props = await thumbsH.getProperties()
+      thumbs = [...props.values()].map((p) => p.asElement()).filter((e): e is ElementHandle<Element> => !!e)
+    }
+  }
+  if (!thumbs.length) return { ...out, skipped: { what, why: 'no slider was found there' } }
   const cl = await clearOverlays(page, { policy: policyOf(page), target: target.selector, stepWords: target.label, allow: env.allow, log: env.log, move: env.move ? (x, y) => env.move!(x, y, 450) : undefined, pace: env.pace })
   out.closed.push(...cl.closed)
-  await h.evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' as ScrollBehavior })).catch(() => undefined)
+  await thumbs[0].evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' as ScrollBehavior })).catch(() => undefined)
   await nap(100)
-  const thumbsH = await h.evaluateHandle(slidersAround)
-  const props = await thumbsH.getProperties()
-  let thumbs = [...props.values()].map((p) => p.asElement()).filter((e): e is ElementHandle<Element> => !!e)
-  if (!thumbs.length) return { ...out, skipped: { what, why: 'no slider was found there' } }
   const infos = await Promise.all(thumbs.map((t) => t.evaluate(infoIn)))
-  const order = thumbs.map((_, i) => i).sort((a, b) => (infos[a]!.vertical ? infos[a]!.rect.y - infos[b]!.rect.y : infos[a]!.rect.x - infos[b]!.rect.x))
+  // along the track; two thumbs on the very same track (two inputs laid over each other) go by their values
+  const order = thumbs.map((_, i) => i).sort((a, b) => {
+    const A = infos[a]!
+    const B = infos[b]!
+    if (Math.abs(A.rect.x - B.rect.x) < 4 && Math.abs(A.rect.y - B.rect.y) < 4) return A.now - B.now
+    return A.vertical ? A.rect.y - B.rect.y : A.rect.x - B.rect.x
+  })
   thumbs = order.map((i) => thumbs[i])
   const dual = want.min !== undefined && want.max !== undefined && thumbs.length >= 2
   if (want.min !== undefined && want.max !== undefined && thumbs.length < 2) return { ...out, skipped: { what, why: 'a range of two values was asked for but this slider has one thumb' } }
@@ -341,6 +401,7 @@ export async function doSlider(env: Env, target: { selector: string; label: stri
   for (const j of jobs) {
     const r = await moveThumb(env, j.th, j.v)
     results.push(`${j.name ? j.name + ' ' : ''}${r.now}`)
+    env.log(`    slider ${j.name || 'thumb'}: wanted ${j.v}, reads ${r.now}`)
     if (!r.ok) allOk = false
     out.rect = r.rect ?? out.rect
   }
@@ -348,7 +409,7 @@ export async function doSlider(env: Env, target: { selector: string; label: stri
   out.landed = true
   out.changed = true
   out.verified = allOk
-  out.last = target.selector
+  out.last = (await thumbs[0].evaluate(deepPathInPage).catch(() => undefined)) as string | undefined
   if (!allOk) return { ...out, verified: false, skipped: { what, why: `the slider could not be set exactly (it reads ${results.join(', ')}, not ${jobs.map((j) => j.v).join(' and ')})` } }
   out.seen.push(`The slider "${target.label}" is set to ${dual ? `${want.min} to ${want.max}` : jobs[0].v}`)
   return out
@@ -442,7 +503,10 @@ function calendarIn(): { sel: string; month: number; year: number; days: number;
     if (n >= 27 && (!best || c.querySelectorAll('*').length < best.el.querySelectorAll('*').length)) best = { el: c, days: n }
   }
   if (!best) return null
-  const cal = best.el
+  // the grid of days alone has no heading: the calendar is the nearest box around it that says which month it shows
+  let cal = best.el
+  const monthWord = new RegExp(String.raw`(${MONTHS.map((m) => m.slice(0, 3)).join('|')})[a-z]*\.?,?\s+\d{4}|\d{4}\s*[-/.]\s*\d{1,2}`, 'i')
+  for (let i = 0; i < 4 && cal.parentElement && !monthWord.test((cal as HTMLElement).innerText ?? '') && !cal.querySelector('select'); i++) cal = cal.parentElement
   const text = ((cal as HTMLElement).innerText ?? '').toLowerCase()
   let month = -1
   let year = 0
@@ -553,6 +617,8 @@ export async function doDate(env: Env, target: { selector: string; label: string
     h = (await page.evaluateHandle(() => Array.from(document.querySelectorAll('input[type=date],input[type=datetime-local],input[placeholder*=date i],input[name*=date i],input[id*=date i],input[aria-label*=date i],[class*=date i] input')).find((e) => { const r = e.getBoundingClientRect(); return r.width > 4 && r.height > 4 }) ?? null)).asElement() as ElementHandle<Element> | null
   }
   if (!h) return { ...out, skipped: { what, why: 'no date box or calendar was found' } }
+  // a label, or a wrapper around the box, stands for the box it names
+  h = ((await h.evaluateHandle((el) => (el as HTMLLabelElement).control ?? (el.matches('input,textarea') ? el : el.querySelector('input[type=date],input[type=datetime-local],input:not([type=hidden]),textarea')) ?? el)).asElement() as ElementHandle<Element> | null) ?? h
   const label = target?.label ?? 'the date'
   const cl = await clearOverlays(page, { policy: policyOf(page), target: target?.selector, stepWords: label, allow: env.allow, log: env.log, move: env.move ? (x, y) => env.move!(x, y, 450) : undefined, pace: env.pace })
   out.closed.push(...cl.closed)

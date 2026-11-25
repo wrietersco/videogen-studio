@@ -137,7 +137,7 @@ export async function baselineOf(page: Page): Promise<State> {
   return { ...b, noisy: { text: a.parts.some((p, i) => p.text !== b.parts[i]?.text), dom: a.parts.some((p, i) => p.dom !== b.parts[i]?.dom) } }
 }
 
-export function stateDiff(a: State, b: State): string[] {
+export function stateDiff(a: State, b: State, o: { focus?: boolean } = {}): string[] {
   const why: string[] = []
   if (a.url !== b.url) why.push('the address changed')
   if (a.parts.length !== b.parts.length) why.push('a frame appeared or went')
@@ -146,7 +146,7 @@ export function stateDiff(a: State, b: State): string[] {
     if (!a.noisy?.text && a.parts[i].text !== b.parts[i].text) why.push('the words on the page changed')
     if (!a.noisy?.dom && a.parts[i].dom !== b.parts[i].dom) why.push('the page changed')
     if (Math.abs(a.parts[i].scroll - b.parts[i].scroll) >= 8) why.push('the page scrolled')
-    if (a.parts[i].focus !== b.parts[i].focus) why.push('the focus moved')
+    if (o.focus && a.parts[i].focus !== b.parts[i].focus) why.push('the focus moved')
   }
   return [...new Set(why)]
 }
@@ -176,13 +176,13 @@ export function thumbDiff(a: Buffer | null, b: Buffer | null): number {
  * Waits for the page to react: returns as soon as something differs (then lets it finish drawing), or after `ms`.
  * A page that is slow to answer (a result that arrives 2 s later) is waited for, instead of a fixed pause.
  */
-export async function waitForChange(page: Page, before: State, o: { ms?: number; thumb?: { rect: Rect; was: Buffer | null }; expect?: () => Promise<boolean> } = {}): Promise<{ changed: boolean; why: string[]; expected?: boolean }> {
+export async function waitForChange(page: Page, before: State, o: { ms?: number; thumb?: { rect: Rect; was: Buffer | null }; expect?: () => Promise<boolean>; focus?: boolean } = {}): Promise<{ changed: boolean; why: string[]; expected?: boolean }> {
   const until = Date.now() + (o.ms ?? 2000)
   let why: string[] = []
   for (;;) {
     if (o.expect && (await o.expect().catch(() => false))) return { changed: true, why: ['the expected thing appeared'], expected: true }
     const now = await stateOf(page).catch(() => null)
-    if (now) why = stateDiff(before, now)
+    if (now) why = stateDiff(before, now, { focus: o.focus })
     if (why.length) {
       // it is changing: wait until it holds still (at most 1.2 s), so the result is whole
       let last = now!
@@ -191,7 +191,7 @@ export async function waitForChange(page: Page, before: State, o: { ms?: number;
       while (Date.now() < calm && still < 2) {
         await nap(180)
         const n2 = await stateOf(page).catch(() => last)
-        if (stateDiff(last, n2).length === 0) still++
+        if (stateDiff(last, n2, { focus: o.focus }).length === 0) still++
         else still = 0
         last = n2
       }

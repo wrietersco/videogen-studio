@@ -72,6 +72,25 @@ export function parseNumber(text: string): number | null {
 
 /** in the page */
 function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: string; reason: string; values?: Array<{ label: string; value: number }> } | { ok: false; why: string } {
+  const ORDW: Record<string, number> = { first: 1, '1st': 1, second: 2, '2nd': 2, third: 3, '3rd': 3, fourth: 4, '4th': 4, fifth: 5, '5th': 5, sixth: 6, '6th': 6, seventh: 7, '7th': 7, eighth: 8, '8th': 8, ninth: 9, '9th': 9, tenth: 10, '10th': 10, last: -1, final: -1 }
+  const ordinalIn = (text: string): { n?: number; rest: string } => {
+    const m = /\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|final|\d+(?:st|nd|rd|th))\b/i.exec(text)
+    if (!m) return { rest: text }
+    const w = m[1].toLowerCase()
+    return { n: ORDW[w] ?? (parseInt(w, 10) || undefined), rest: (text.slice(0, m.index) + ' ' + text.slice(m.index + m[0].length)).replace(/\s+/g, ' ').trim() }
+  }
+  const parseNumber = (text: string): number | null => {
+    const m = /-?\d[\d.,\u00a0\u202f ]*\d|-?\d/.exec(text.replace(/\u2212/g, '-'))
+    if (!m) return null
+    let s = m[0].replace(/[\u00a0\u202f ]/g, '')
+    const lastDot = s.lastIndexOf('.')
+    const lastComma = s.lastIndexOf(',')
+    if (lastDot >= 0 && lastComma >= 0) s = lastComma > lastDot ? s.replace(/\./g, '').replace(',', '.') : s.replace(/,/g, '')
+    else if (lastComma >= 0) s = /,\d{1,2}$/.test(s) && (s.match(/,/g) ?? []).length === 1 ? s.replace(',', '.') : s.replace(/,/g, '')
+    else if (lastDot >= 0 && (s.match(/\./g) ?? []).length > 1) s = s.replace(/\./g, '')
+    const n = Number(s)
+    return Number.isFinite(n) ? n : null
+  }
   const textOf = (el: Element): string => ((el as HTMLElement).innerText ?? el.textContent ?? '').replace(/\s+/g, ' ').trim()
   const classOf = (el: Element): string => (typeof (el as HTMLElement).className === 'string' ? (el as HTMLElement).className : el.getAttribute('class') ?? '')
   const visible = (el: Element): boolean => {

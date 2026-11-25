@@ -148,11 +148,27 @@ export async function execNewAtom(atom: NewAtom, ctx: AtomExecCtx): Promise<Atom
       return done(o, o.verified ? [step] : [])
     }
 
+    case 'slider': {
+      const want = { value: a.value, min: a.min, max: a.max }
+      const stepFor = (selector?: string): Omit<Step, 'id' | 'beat'> => ({ kind: 'slider', selector, label: a.label, find: wanted('click', a.label, a.find), text: JSON.stringify(want), focus: 'target' })
+      const o = await doSlider(env, { label: a.label }, want)
+      if (o.skipped) {
+        // the name led nowhere: the control found by its name may be a label or a wrapper of the slider
+        const l = await ctx.locate({ find: wanted('click', a.label, a.find), label: a.label })
+        if (l.found) {
+          const o2 = await doSlider(env, { selector: l.found.selector, label: a.label }, want)
+          if (!o2.skipped) return done(o2, [...l.prep, stepFor(o2.last)])
+        }
+        return miss(o.skipped.what, o.skipped.why)
+      }
+      say(`    set the slider "${a.label}"${a.min !== undefined && a.max !== undefined ? ` to ${a.min}–${a.max}` : ` to ${a.value}`}`)
+      return done(o, [stepFor(o.last)])
+    }
+
     case 'click':
     case 'dblclick':
     case 'hover':
     case 'type':
-    case 'slider':
     case 'date':
     case 'pick': {
       return onElement(a, ctx, env, allow)
@@ -189,7 +205,7 @@ export async function execNewAtom(atom: NewAtom, ctx: AtomExecCtx): Promise<Atom
 
 // ---------------------------------------------------------------- a control found by name, picked by place, or by value
 
-async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hover' | 'type' | 'slider' | 'date' | 'pick' }>, ctx: AtomExecCtx, env: Env, allow: (l: string) => boolean): Promise<AtomResult> {
+async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hover' | 'type' | 'date' | 'pick' }>, ctx: AtomExecCtx, env: Env, allow: (l: string) => boolean): Promise<AtomResult> {
   const { page, gate } = ctx
   const say = ctx.log
   const verb = a.action === 'pick' ? (a.verb ?? 'click') : a.action
@@ -236,9 +252,9 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
     prep = l.prep
   }
   if (!found) {
-    const box = verb === 'type' ? 'box' : verb === 'slider' ? 'slider' : verb === 'date' ? 'date box' : 'control'
+    const box = verb === 'type' ? 'box' : verb === 'date' ? 'date box' : 'control'
     const w = a.action === 'date' ? ' (and no date box or calendar was found)' : ''
-    const what = verb === 'type' ? `typing into "${label}"` : verb === 'hover' ? `hovering over "${label}"` : verb === 'slider' ? `setting the slider "${label}"` : verb === 'date' ? `choosing the date "${a.action === 'date' ? a.phrase : label}"` : `${verb === 'dblclick' ? 'double-clicking' : 'clicking'} "${label}"`
+    const what = verb === 'type' ? `typing into "${label}"` : verb === 'hover' ? `hovering over "${label}"` : verb === 'date' ? `choosing the date "${a.action === 'date' ? a.phrase : label}"` : `${verb === 'dblclick' ? 'double-clicking' : 'clicking'} "${label}"`
     if (a.action === 'date') {
       // no box was named, or it was not found: a date box anywhere on the page may be the one
       const o = await doDate(env, null, a.date, a.phrase)
@@ -277,15 +293,6 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
     const out = done(o, stepsFor)
     // typed text is a change by itself; what matters is that it reads back
     return { ...out, changed: true, verified: o.verified }
-  }
-
-  if (verb === 'slider') {
-    const s = a as Extract<Atom, { action: 'slider' }>
-    const o = await doSlider(env, target, { value: s.value, min: s.min, max: s.max })
-    if (o.skipped) return miss(o.skipped.what, o.skipped.why, stepsFor)
-    say(`    set the slider "${name}"${s.min !== undefined && s.max !== undefined ? ` to ${s.min}–${s.max}` : ` to ${s.value}`}`)
-    stepsFor.push({ kind: 'slider', selector: found.selector, label, find: wanted('click', label, s.find), text: JSON.stringify({ value: s.value, min: s.min, max: s.max }), focus: 'target' })
-    return done(o, stepsFor)
   }
 
   if (verb === 'date') {

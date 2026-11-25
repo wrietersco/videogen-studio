@@ -10,6 +10,7 @@ import { checkSecretFill } from './detect'
 import { classifyField } from './sensitivity'
 import { asPhone } from './browser'
 import { redactionInitScript, cursorInitScript, verifyScript, type RedactionConfig } from './redact'
+import { probeInitScript } from './probes'
 import { findElement, scrollArea } from './resolve'
 import { findMark, pickChart } from './marks'
 import { scrollToSection } from './sections'
@@ -242,6 +243,7 @@ export async function prepare(page: Page, redaction: RedactionConfig): Promise<v
   const phone = !!page.viewport()?.isMobile
   if (phone) await asPhone(page)
   await page.evaluateOnNewDocument(redactionInitScript(redaction))
+  await page.evaluateOnNewDocument(probeInitScript())
   await page.evaluateOnNewDocument(cursorInitScript(phone))
 }
 
