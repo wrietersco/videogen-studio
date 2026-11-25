@@ -113,7 +113,7 @@ function readPage(maxControls: number): Omit<PageStudy, 'url'> {
     return best
   }
 
-  const CONTROL = 'a[href],button,[role=button],[role=tab],[role=menuitem],[role=switch],[role=checkbox],[role=radio],[role=option],[role=link],summary,input:not([type=hidden]),select,textarea,[onclick],[tabindex]:not([tabindex="-1"])'
+  const CONTROL = 'a[href],button,[role=button],[role=tab],[role=menuitem],[role=switch],[role=checkbox],[role=radio],[role=option],[role=link],summary,input:not([type=hidden]),select,textarea,[contenteditable=true],[contenteditable=plaintext-only],[role=textbox],[onclick],[tabindex]:not([tabindex="-1"])'
   /** the words of a <label> that wraps a control, without the control's own entries ("Category All Shoes Socks" is "Category") */
   const ownLabel = (inp: HTMLInputElement): string => {
     const l = inp.labels?.[0]
@@ -149,7 +149,7 @@ function readPage(maxControls: number): Omit<PageStudy, 'url'> {
       if (/^(button|submit|reset|image)$/.test(ty)) return 'button'
       return 'input'
     }
-    if (t === 'TEXTAREA') return 'input'
+    if (t === 'TEXTAREA' || (el as HTMLElement).isContentEditable || role === 'textbox') return 'input'
     if (role === 'tab') return 'tab'
     if (role === 'switch' || role === 'checkbox' || role === 'radio') return 'checkbox'
     if (t === 'A' || role === 'link') return 'link'
@@ -198,7 +198,7 @@ function readPage(maxControls: number): Omit<PageStudy, 'url'> {
     if (el.getAttribute('aria-disabled') === 'true' || (el as HTMLButtonElement).disabled) c.disabled = true
     const inp = el as HTMLInputElement
     if (kind === 'checkbox') c.checked = inp.checked ?? el.getAttribute('aria-checked') === 'true'
-    if (kind === 'input' && !/^(password|hidden|file)$/i.test(inp.type)) c.value = clean(inp.value, 40)
+    if (kind === 'input' && !/^(password|hidden|file)$/i.test(inp.type)) c.value = clean(inp.value ?? (el as HTMLElement).innerText, el.tagName === 'INPUT' ? 40 : 160)
     if (kind === 'select') {
       c.options = Array.from((el as HTMLSelectElement).options ?? []).map((o) => clean(o.text, 40)).slice(0, 14)
       c.value = clean((el as HTMLSelectElement).selectedOptions?.[0]?.text, 40)

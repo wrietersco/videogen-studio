@@ -19,6 +19,8 @@ export interface ModelAction {
   do: string
   target: string
   text?: string
+  /** type: select what is in the box first and type over it */
+  replace?: boolean
   near?: string
   /** why this action belongs to the goal: part of the feature itself, a thing it needs first, finding the way there, or a supporting step */
   relation?: string
@@ -87,6 +89,7 @@ export function bestSection(study: PageStudy, words: string): { heading: string;
 }
 
 const WRITE = /\b(delete|remove|erase|destroy|sign\s*out|log\s*out|logout|unsubscribe|deactivate|pay|purchase|place\s+order|checkout|check\s*out|buy|confirm|submit|send|post|publish|subscribe|upgrade|invite|create|save|add|book|order|reset|clear)\b/i
+const DESTRUCTIVE = /\b(delete|remove|erase|destroy|sign\s*out|log\s*out|logout|unsubscribe|deactivate|pay|purchase|place\s+order|checkout|check\s*out|buy|cancel\s+(?:plan|subscription|account))\b/i
 const CHROME = /\b(dark\s*mode|light\s*mode|theme|language|cookies?|privacy|terms|settings?|preferences|profile|my\s*account|help|feedback|contact(?:\s*us)?|about|share|download|export|print)\b/i
 /** closing a popup or a banner is always allowed: it is what a person would do before anything else */
 const CLOSER = /^(?:close|dismiss|no\s*thanks|not\s*now|maybe\s*later|skip|got\s*it|ok(?:ay)?|accept(?:\s+(?:all|essential|necessary|only necessary|cookies))?|only\s+necessary|reject(?:\s+all)?|decline|×|✕|x|cancel)$/i
@@ -184,9 +187,11 @@ export function buildAtom(a: ModelAction, study: PageStudy, r: Rails): Built {
     const v = r.gate.checkClick({ label, kind: 'button' })
     return v.allow ? null : `your own rules do not allow it (${v.reason})`
   }
-  const risky = (label: string): string | null => {
+  const risky = (label: string, ctl = ''): string | null => {
     if (CLOSER.test(label.trim())) return null
-    if (!wordIn(WRITE, r.goal, label)) return `"${label}" changes or sends data and the goal does not ask for that`
+    // a link in a docs sidebar or a menu ("Create a user") names a place, not a write: only the destructive ones are held back
+    const write = ctl === 'link' && !DESTRUCTIVE.test(label) ? /(?!)/ : WRITE
+    if (!wordIn(write, r.goal, label)) return `"${label}" changes or sends data and the goal does not ask for that`
     if (!wordIn(CHROME, r.goal, label)) return `"${label}" is a setting or site control that has nothing to do with the goal`
     return null
   }
@@ -210,7 +215,7 @@ export function buildAtom(a: ModelAction, study: PageStudy, r: Rails): Built {
     let c = bestControl(study, target)
     if (!c) return { reject: `no control called "${target}" is on the page (closest: ${study.controls.slice(0, 5).map((x) => x.label).join('; ')})` }
     if (kind === 'click' && c.disabled) return { reject: `"${c.label}" is disabled right now` }
-    const bad = kind === 'click' ? risky(c.label) ?? gateOk(c.label) : null
+    const bad = kind === 'click' ? risky(c.label, c.kind) ?? gateOk(c.label) : null
     if (bad) return { reject: bad }
     const inst = instanceFor(c, study, a.near?.trim())
     if (inst.why) return { reject: inst.why }
@@ -240,9 +245,9 @@ export function buildAtom(a: ModelAction, study: PageStudy, r: Rails): Built {
     if (!supportRel && r.sections.length && !inFeature(c, r.sections)) return { reject: `the box "${c.label}" is under "${c.section || 'the top of the page'}", not in the part this goal is about` }
     const lim = spend()
     if (lim) return { reject: lim }
-    const key = `type|${c.label.toLowerCase()}|${text.toLowerCase()}`
+    const key = `type|${c.label.toLowerCase()}|${text.toLowerCase().slice(0, 80)}`
     if (r.done.has(key)) return { reject: `"${text}" was already typed into "${c.label}"` }
-    return { atom: { action: 'type', label: c.label, text, find: { target: c.label, kind: 'type' } }, label: c.label, support, leaves: false, key }
+    return { atom: { action: 'type', label: c.label, text, find: { target: c.label, kind: 'type' }, ...(a.replace ? { replace: true } : {}) }, label: c.label, support, leaves: false, key }
   }
 
   if (kind === 'select') {

@@ -14,7 +14,7 @@ import { interpretGuardrails, PolicyGate, type RestrictionChecks } from './polic
 import { produce, recordingScreen, type CardPlan, type InsertPlan } from './produce'
 import { scriptPlan, type ScriptOutcome, type VisionPick } from './script'
 import { parseStepScript, type StepScript } from './stepScript'
-import { goalNotes, goalSegments, performWithGoals, scriptFromPlan, type GoalReport } from './goalPlanner'
+import { goalListScript, goalNotes, goalSegments, performWithGoals, scriptFromPlan, type GoalReport } from './goalPlanner'
 import { ambientBrief, chooseMusic, clipSeconds, parseMediaAsk, parseMusicAsk, parseStructure, planMedia, withStyle, withoutProductionSentences, type Placement } from './aiMedia'
 import { musicBrief } from '../audio/cue'
 import { soundsFromWords } from '../audio/ambience'
@@ -417,7 +417,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     let beganAt = ''
     // goals: a brief that says what to show instead of which buttons to press. The pages of the plan become steps, and each goal is
     // worked out on the real page (goalPlanner.ts); a typed list that holds a goal step is performed the same way, in its order
-    let goalScript: StepScript | null = !inp.reuse && !script && fp && goalSegments(fp).length ? scriptFromPlan(fp) : null
+    let goalScript: StepScript | null = inp.reuse || script ? null : goalListScript(ctxClean) ?? (fp && goalSegments(fp).length ? scriptFromPlan(fp) : null)
     let doneScript = null as StepScript | null
     let goalReports = [] as GoalReport[]
     const runSteps = async (s: StepScript): Promise<void> => {

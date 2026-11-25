@@ -5,7 +5,7 @@ import type { LLMProvider } from '../providers/types'
 import { scrubText } from './detect'
 import type { PolicyGate } from './policy'
 import { performScript, type ItemResult, type ScriptInput, type ScriptOutcome, type VisionPick } from './script'
-import type { Atom, ScriptItem, StepScript } from './stepScript'
+import { BULLET, parseStepScript, type Atom, type ScriptItem, type StepScript } from './stepScript'
 import { buildAtom, bestSection, BASE_ACTIONS, describeAtom, tokens, type Capable, type ModelAction, type Rails } from './goalGuard'
 import { diffStudy, renderStudy, screenshotForModel, studyPage, type PageStudy, type StudyControl } from './goalStudy'
 
@@ -51,7 +51,7 @@ const GOAL_CUE = new RegExp(
 )
 const EXPLAIN_TOPIC = /\b(section|feature|chart|table|panel|widget|tab|dashboard|form|flow|screen|tool|playground|workflow|process)\b/i
 /** a step that only says something: it needs no page work */
-const NARRATION_ONLY = /^(?:(?:then|and|finally|lastly|also)\s+)*(?:in\s+(?:your|my)\s+own\s+words\s+)?(?:tell|say|mention|thank|conclude|end\b|finish\b|close\s+with|add\s+(?:a\s+)?(?:cta|call\s+to\s+action)|provide\s+a\s+conclusion|keep\s+it|make\s+it\s+(?:sound|feel)|speak|be\s+(?:warm|quick|short|friendly)|wait|pause|hold|stay|sign\s+off)\b/i
+const NARRATION_ONLY = /^(?:(?:then|and|finally|lastly|also)\s+)*(?:in\s+(?:your|my)\s+own\s+words\s+)?(?:tell|say|mention|thank|conclude|(?:end|finish|close)\s+with\b|add\s+(?:a\s+)?(?:cta|call\s+to\s+action)|provide\s+a\s+conclusion|keep\s+it|make\s+it\s+(?:sound|feel)|speak|be\s+(?:warm|quick|short|friendly)|wait|pause|hold|stay|sign\s+off)\b/i
 
 /** is this wording a goal (something to be worked out) rather than an action or a plain statement? */
 export function isGoalText(text: string): boolean {
@@ -71,6 +71,21 @@ export function isGoalItem(item: ScriptItem): boolean {
   }
   // clicks whose "label" is a sentence ("click how errors are handled") are goals in disguise
   return item.atoms.every((a) => a.action === 'click' && (a.label.trim().split(/\s+/).length >= 6 || /^(?:how|what|why|which|where|when)\b/i.test(a.label.trim())))
+}
+
+/**
+ * A written list whose lines are all goals reads as no list at all in the typed-step reader (it needs one line with an action).
+ * It is read here by adding one probe step and dropping it again, so the steps around the goals (a sign-in, a final click) are
+ * still done in order. Null when the list holds no goal.
+ */
+export function goalListScript(context: string): StepScript | null {
+  const typed = context.split(/\n\s*Attached notes \(information only\):/)[0] ?? ''
+  if (typed.split('\n').filter((l) => BULLET.test(l)).length < 2) return null
+  const probe = parseStepScript(`${typed}\n999. click "goal probe"`)
+  if (!probe) return null
+  const items = probe.items.filter((i) => i.said !== 'click "goal probe"')
+  if (!items.some(isGoalItem)) return null
+  return { ...probe, items }
 }
 
 const segText = (s: PageSegment): string => [s.said, ...(s.explain ?? []), s.target ?? ''].join('. ')
@@ -147,13 +162,14 @@ const SCHEMA = {
           do: { type: 'string', enum: ['click', 'type', 'select', 'scrollto', 'hover', 'mark', 'key', 'slider', 'dblclick', 'scrollUntil'] },
           target: { type: 'string' },
           text: { type: 'string' },
+          replace: { type: 'boolean' },
           near: { type: 'string' },
           relation: { type: 'string', enum: ['feature', 'prerequisite', 'navigation', 'support'] },
           colours: { type: 'array', items: { type: 'string' } },
           noun: { type: 'string' },
           why: { type: 'string' }
         },
-        required: ['do', 'target', 'text', 'near', 'relation', 'colours', 'noun', 'why'],
+        required: ['do', 'target', 'text', 'replace', 'near', 'relation', 'colours', 'noun', 'why'],
         additionalProperties: false
       }
     }
@@ -177,7 +193,7 @@ Rules:
 - "relation" says why the action belongs to the goal: "feature" (it is the feature itself), "prerequisite" (the feature needs it first), "navigation" (finding the way to it), "support" (a step the goal's wording asks for outside the feature, such as putting a found item in the cart). Anything that is not "feature" needs a real reason in "why".
 - Do not repeat an action that already worked. If an action was refused or skipped, do not propose it again as it is; choose another control or say "impossible".
 - "why" is one plain sentence for a viewer: what this shows. It must only claim what the page will really show; never state a value you have not been shown.
-- Only these actions work: click, type (text = what to type), select (text = the option to choose), scrollto, hover, mark (text = "click" or "hover"; noun = bar/line/point/slice; colours = [the colour] or []; target = the chart's title) for drawn charts{NEW}.
+- Only these actions work: click, type (text = what to type; replace = true to select what is in the box and type over it, for a code editor or a field that already has a value), select (text = the option to choose), scrollto, hover, mark (text = "click" or "hover"; noun = bar/line/point/slice; colours = [the colour] or []; target = the chart's title) for drawn charts{NEW}.
 - Give at most 3 actions per answer, in the order they must happen. Answer with JSON only.`
 
 const EXTRA_ACTIONS: Record<string, string> = {
@@ -223,6 +239,8 @@ export interface GoalDeps {
   known: AppPage[]
   caps?: Capable
   budget?: Partial<Budget>
+  /** what the person's other steps say, before and after this goal */
+  around?: { before: string[]; after: string[] }
 }
 
 export interface GoalRun {
@@ -272,7 +290,7 @@ function readDecision(raw: unknown): Decision | null {
   const str = (v: unknown, n = 160): string => (typeof v === 'string' ? v.trim().slice(0, n) : '')
   const actions: ModelAction[] = (Array.isArray(o.actions) ? o.actions : []).slice(0, 3).flatMap((a: Record<string, unknown>) => {
     if (!a || typeof a !== 'object') return []
-    return [{ do: str(a.do, 20), target: str(a.target, 100), text: str(a.text, 80), near: str(a.near, 80), relation: str(a.relation, 20), colours: Array.isArray(a.colours) ? a.colours.filter((c): c is string => typeof c === 'string').slice(0, 1) : [], noun: str(a.noun, 20), why: str(a.why, 200) }]
+    return [{ do: str(a.do, 20), target: str(a.target, 100), text: str(a.text, 300), replace: a.replace === true, near: str(a.near, 80), relation: str(a.relation, 20), colours: Array.isArray(a.colours) ? a.colours.filter((c): c is string => typeof c === 'string').slice(0, 1) : [], noun: str(a.noun, 20), why: str(a.why, 200) }]
   })
   return { status, reason: str(o.reason, 400), sections: (Array.isArray(o.sections) ? o.sections : []).filter((s): s is string => typeof s === 'string').map((s) => s.trim().slice(0, 80)).filter(Boolean).slice(0, 4), actions, source: 'model' }
 }
@@ -291,12 +309,17 @@ interface Ask {
   pushed: boolean
   known: AppPage[]
   scrub: (t: string) => string
+  /** the person's steps before and after this goal */
+  before: string[]
+  after: string[]
 }
 
 async function askModel(chat: LLMProvider, a: Ask, caps: Capable): Promise<Decision | null> {
   const prompt = [
     `GOAL (the person's words): ${a.goal}`,
     a.explain ? `What the video must make clear: ${a.explain}` : '',
+    a.before.length ? `STEPS ALREADY DONE before this goal (do not redo them):\n${a.before.map((s) => `- ${s}`).join('\n')}` : '',
+    a.after.length ? `STEPS THAT COME AFTER this goal (the person wrote them; do not do them here):\n${a.after.map((s) => `- ${s}`).join('\n')}` : '',
     a.brief ? `REST OF THE BRIEF (context only; limits like a budget or a person's role matter):\n${a.brief}` : '',
     `OTHER PAGES OF THE APP already read:\n${otherPages(a.known, a.study.url)}`,
     `WHAT HAS BEEN DONE SO FAR for this goal (${a.used}/${a.max} actions, ${a.live} live interactions; at least ${a.want} wanted):\n${a.history.length ? a.history.join('\n') : '(nothing yet)'}`,
@@ -392,7 +415,7 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
     if (model) {
       const shot = model.supportsVision?.() === false ? null : await screenshotForModel(deps.page)
       report.modelCalls++
-      d = await askModel(model, { goal, explain: goalItem.explain, brief, history, study, shot, live: report.live, want: B.live, used: actions, max: B.actions, pushed, known: deps.known, scrub }, caps)
+      d = await askModel(model, { goal, explain: goalItem.explain, brief, history, study, shot, live: report.live, want: B.live, used: actions, max: B.actions, pushed, known: deps.known, scrub, before: deps.around?.before ?? [], after: deps.around?.after ?? [] }, caps)
       if (!d) { log('the planning model gave no usable answer; continuing on rules'); model = null; report.mode = 'rules' }
     }
     if (!d) d = ruleDecision(`${goal} ${explain}`, study, { sections: rails.sections, live: report.live, want: B.live, usedKeys: done, refused: report.refused.length })
@@ -557,12 +580,15 @@ export async function performWithGoals(inp: GoalScriptInput): Promise<GoalScript
     batch = []
     return o.failure
   }
+  const said = (i: ScriptItem): string => i.said.replace(/\s+/g, ' ').trim().slice(0, 140)
+  const all = inp.script.items
   for (const item of inp.script.items) {
     if (inp.signal?.aborted) break
     if (!isGoalItem(item)) { batch.push(item); continue }
+    const at = all.indexOf(item)
     let failure = await flush()
     if (failure) return { outcome: { results, actions, skipped, failure }, script: { ...inp.script, items: expanded }, reports }
-    const g = await runGoal(item, { page: inp.page, gate: inp.gate, chat: inp.chat, vision: inp.vision, log: inp.log, signal: inp.signal, brief: inp.brief, secrets: inp.secrets, known: inp.known, caps: inp.caps, budget: inp.budget })
+    const g = await runGoal(item, { page: inp.page, gate: inp.gate, chat: inp.chat, vision: inp.vision, log: inp.log, signal: inp.signal, brief: inp.brief, secrets: inp.secrets, known: inp.known, caps: inp.caps, budget: inp.budget, around: { before: all.slice(0, at).filter((i) => !i.login).map(said), after: all.slice(at + 1).map(said) } })
     results.push(...g.results)
     skipped.push(...g.skipped)
     actions += g.actions

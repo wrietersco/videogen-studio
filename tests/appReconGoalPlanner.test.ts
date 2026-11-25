@@ -11,7 +11,7 @@ import { prepare } from '../src/main/appRecon/recorder'
 import { runAppRecording, type RunHooks } from '../src/main/appRecon/run'
 import { parseStepScript } from '../src/main/appRecon/stepScript'
 import { agentFilmsPages } from '../src/main/appRecon/agent/loop'
-import { goalNotes, goalSegments, isGoalItem, isGoalText, performWithGoals, runGoal, scriptFromPlan } from '../src/main/appRecon/goalPlanner'
+import { goalListScript, goalNotes, goalSegments, isGoalItem, isGoalText, performWithGoals, runGoal, scriptFromPlan } from '../src/main/appRecon/goalPlanner'
 import { buildAtom, type Rails } from '../src/main/appRecon/goalGuard'
 import { renderStudy, studyPage } from '../src/main/appRecon/goalStudy'
 import { startGoalSites, type GoalSites } from './fixtures/goalSites'
@@ -47,6 +47,14 @@ describe('what is a goal and what is an action', () => {
     // such a plan is not opened page by page: each goal is worked out on the page
     expect(agentFilmsPages(plan)).toBe(false)
     expect(agentFilmsPages(PLAN(SEG('briefly show the pricing page', { target: 'pricing page' }), SEG('tour the home page', { url: 'https://x.test/' })))).toBe(true)
+  })
+
+  it('reads a list made only of goals and a sign-in, and keeps the steps around them in order', () => {
+    const brief = '# steps\n\n1. sign in with the test account\n2. show how a customer would book a colour appointment with the colour specialist for a weekday morning next week\n3. finish by confirming the booking and closing the confirmation'
+    expect(parseStepScript(brief)).toBeNull()
+    const s = goalListScript(brief)!
+    expect(s.items.map((i) => (i.login ? 'login' : isGoalItem(i) ? 'goal' : 'step'))).toEqual(['login', 'goal', 'goal'])
+    expect(goalListScript('1. click Pricing\n2. click Contact')).toBeNull()
   })
 
   it('turns the pages of a plan into steps: an address is opened, a goal is kept whole, with what must be made clear', () => {
@@ -106,6 +114,11 @@ describe('the planner may only do what is on the page and about the goal', () =>
     const add = (goal: string) => buildAtom(act({ target: 'Add to cart', near: 'Merino Socks' }), study(), rails({ goal }))
     expect(add('find a gift for a runner and put it in the cart')).toMatchObject({ atom: { action: 'click', find: { relation: { rel: 'rightOf', to: 'Merino Socks' } } } })
     expect(add('show the regional distribution')).toMatchObject({ reject: expect.stringMatching(/changes or sends data/) })
+  })
+  it('a docs link called "Create a user" is a place, not a write; a delete link is still held back', () => {
+    const st = study({ controls: [...CONTROLS, { i: 11, kind: 'link', label: 'Create a user', y: 900, cx: 100, cy: 915, w: 90, h: 30, inView: false, section: 'Regional distribution', same: 1, href: '/#create-user' }, { i: 12, kind: 'link', label: 'Delete account', y: 910, cx: 100, cy: 925, w: 90, h: 30, inView: false, section: 'Regional distribution', same: 1, href: '/#del' }] })
+    expect(buildAtom(act({ target: 'Create a user' }), st, rails({ goal: 'demonstrate the API playground' }))).toMatchObject({ atom: { action: 'click', label: 'Create a user' } })
+    expect(buildAtom(act({ target: 'Delete account' }), st, rails({ goal: 'demonstrate the API playground' }))).toMatchObject({ reject: expect.stringMatching(/changes or sends data/) })
   })
   it('never repeats an action that was done, and respects the person\'s own rules', () => {
     const done = new Set(['click|east|'])
