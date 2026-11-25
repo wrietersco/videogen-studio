@@ -238,6 +238,8 @@ function locate(spec: FindSpec, minScore: number): Result {
     if (t && t.length <= 160) out.push(t)
     const v = (el as HTMLInputElement).value
     if (v && /^(button|submit)$/i.test((el as HTMLInputElement).type || '')) out.push(v)
+    // a box that holds a document (a request body) is also named by the names written in it ("plan" in {"plan": "pro"})
+    if (el.tagName === 'TEXTAREA' && v && v.length <= 300) out.push(v)
     const st = el.querySelector('svg title')?.textContent
     if (st) out.push(st)
     const ia = el.querySelector('img[alt]')?.getAttribute('alt')
@@ -476,7 +478,7 @@ function locate(spec: FindSpec, minScore: number): Result {
     for (const w of spec.within ?? []) {
       // a word the page may use for the area ("verse", "details") is looked for as it is
       const re = WITHIN[w.toLowerCase()] ?? (w.length >= 3 ? new RegExp(w.toLowerCase().replace(/[^a-z0-9]/g, '.')) : null)
-      if (re && re.test(anc)) s += 30
+      if (re && re.test(anc + ' | ' + [el.id, classTokens(el), el.getAttribute('aria-label') ?? '', el.getAttribute('name') ?? ''].join(' ').toLowerCase())) s += 30
     }
     if (spec.role === 'suggestion') {
       if (el.getAttribute('role') === 'option' || /suggest|autocomplete|dropdown|listbox|option|popup|popover|results|combobox/.test(anc + ' ' + classTokens(el).toLowerCase())) s += 50

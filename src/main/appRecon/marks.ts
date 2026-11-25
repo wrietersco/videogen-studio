@@ -259,6 +259,21 @@ export function colourSpots(pic: { data: Buffer; w: number; h: number; k: number
   return out
 }
 
+/** how wide the run of this colour is, left and right of a point (a bar is wide, a legend swatch is not) */
+function solidWidth(pic: { data: Buffer; w: number; h: number; k: number }, x: number, y: number, c: ColourName): number {
+  const cx = Math.round(x * pic.k)
+  const cy = Math.round(y * pic.k)
+  let n = 0
+  for (const dir of [-1, 1]) {
+    for (let xx = cx; xx >= 0 && xx < pic.w; xx += dir) {
+      const i = (cy * pic.w + xx) * 4
+      if (colourOf(pic.data[i], pic.data[i + 1], pic.data[i + 2]) !== c) break
+      n++
+    }
+  }
+  return n / pic.k
+}
+
 /** a patch of the picture that is the colour all through (a swatch, a filled bar), not a thin line */
 function solidAt(pic: { data: Buffer; w: number; h: number; k: number }, x: number, y: number, want: ColourName): boolean {
   const cx = Math.round(x * pic.k)
@@ -451,6 +466,15 @@ export async function findMark(page: Page, q: MarkQuery): Promise<{ hit?: MarkHi
   if (!spots.length && want) spots = colourSpots(pic, null, { thin, max: 14 }).map((p) => snapToColour(pic, p))
   if (!spots.length) return { why: want ? `no ${want} marks could be seen on the chart${chart.title ? ` "${chart.title}"` : ''}` : `no marks could be seen on the chart${chart.title ? ` "${chart.title}"` : ''}` }
   let abs = spots.map((p) => ({ ...p, x: chart.rect.x + p.x, y: chart.rect.y + p.y })).filter((p) => !(q.avoid ?? []).some((a) => Math.hypot(a.x - p.x, a.y - p.y) < 30))
+  if (q.extreme && !want && !thin) {
+    // a bar chart drawn on a canvas: the tallest bar is the one whose block reaches highest (a legend swatch is a small block near the top, not a bar)
+    const blocks = colourSpots(pic, null, { thin: false, max: 160, spread: 10 })
+      .map((p) => snapToColour(pic, p))
+      .filter((p) => solidWidth(pic, p.x, p.y, p.colour) >= 14 || p.y > (pic.h / pic.k) * 0.2)
+      .map((p) => ({ ...p, x: chart.rect.x + p.x, y: chart.rect.y + p.y }))
+      .filter((p) => !(q.avoid ?? []).some((a) => Math.hypot(a.x - p.x, a.y - p.y) < 30))
+    if (blocks.length) abs = blocks.sort((a, b) => (q.extreme === 'max' ? a.y - b.y : b.y - a.y))
+  }
   if (q.extreme && want) {
     // the top (or bottom) of the line itself: the legend's filled swatch is not part of it
     const dense = colourSpots(pic, want, { thin, max: 120, spread: 8 })

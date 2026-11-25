@@ -138,14 +138,24 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
 
   // ---- repeated structures: siblings that look alike
   const sigOf = (el: Element): string => {
-    const cls = classOf(el).split(/\s+/).filter((c) => c && !/^(active|selected|open|on|is-|has-|hover|focus|current|show|hidden|dragging|drag-over)/i.test(c)).sort().slice(0, 3).join('.')
+    const cls = classOf(el).split(/\s+/).filter((c) => c && !/^(active|selected|open|on|is-|has-|hover|focus|current|show|hidden|dragging|drag-over|overdue|done|late|new|taken|disabled|sel)/i.test(c))[0] ?? ''
     return el.tagName.toLowerCase() + '.' + cls + '|' + (el.getAttribute('role') ?? '')
   }
   interface Group { parent: Element; items: Element[]; sig: string }
   const groups: Group[] = []
   const seen = new Set<Element>()
+  const inPopup = (el: Element): boolean => {
+    for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) {
+      const r = n.getAttribute('role') ?? ''
+      if (/^(dialog|alertdialog)$/.test(r) || n.getAttribute('aria-modal') === 'true' || n.tagName === 'DIALOG') return true
+      if (getComputedStyle(n).position === 'fixed' && /modal|popup|pop-up|overlay|dialog|cookie|consent|toast|banner/i.test(`${n.id} ${classOf(n)}`)) return true
+    }
+    return false
+  }
+  const wantsPopup = /popup|pop-up|dialog|modal|banner|cookie/i.test(`${spec.label} ${spec.within ?? ''}`)
   for (const p of all) {
     if (/^(HTML|HEAD|SCRIPT|STYLE|SELECT|OPTION|SVG|TR|THEAD|COLGROUP)$/.test(p.tagName) || seen.has(p)) continue
+    if (!wantsPopup && inPopup(p)) continue
     const kids = Array.from(p.children).filter((c) => !/^(SCRIPT|STYLE|TEMPLATE|BR|HR)$/.test(c.tagName) && visible(c))
     if (kids.length < 2) continue
     const bySig = new Map<string, Element[]>()
@@ -235,6 +245,9 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
       if (!el) return { ok: false, why: `there are only ${ord.length} ${rest || 'columns'}, not ${n}` }
       scope = el
       reasonScope = `${n === -1 ? 'last' : 'number ' + n} ${rest || 'column'}`
+    } else if (named.length && named.every((w) => /^(morning|afternoon|evening|night)$/.test(w))) {
+      // a part of the day narrows the members; it is not a place on the page
+      filterWords = named
     } else if (named.length) {
       // a heading or a label with those words: its group
       let best: { el: Element; s: number } | null = null

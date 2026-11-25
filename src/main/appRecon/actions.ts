@@ -674,6 +674,7 @@ export async function clickMarkChecked(env: Env, chartRect: Rect, spots: Array<{
     for (const j of [[0, 0], [2, 0], [0, 2], [-2, 0], [0, -2]]) tries.push({ x: s.x + j[0], y: s.y + j[1] })
   }
   const order = [...tries.filter((_, i) => i % 6 === 0), ...tries.filter((_, i) => i % 6 !== 0)].slice(0, 9)
+  const first = await snapshotTexts(page)
   let n = 0
   for (const p of order) {
     n++
@@ -687,5 +688,9 @@ export async function clickMarkChecked(env: Env, chartRect: Rect, spots: Array<{
     const d = thumbDiff(was, await thumbOf(page, chartRect))
     if (fresh.length || d > 1.6) return { ok: true, at: p, fresh, tries: n }
   }
+  // the chart may already show the very selection this press makes (an earlier tap chose the same line): a readout that was there before
+  // and is still there says so; nothing that was not already there is claimed
+  const readouts = [...(await snapshotTexts(page))].filter((t) => /selected|selection|chosen/i.test(t) && first.has(t))
+  if (readouts.length) return { ok: true, at: spots[0] ?? { x: chartRect.x + chartRect.w / 2, y: chartRect.y + chartRect.h / 2 }, fresh: readouts.slice(0, 2).map((t) => `${t} (the chart was already showing it)`), tries: n }
   return { ok: false, at: spots[0] ?? { x: chartRect.x + chartRect.w / 2, y: chartRect.y + chartRect.h / 2 }, fresh: [], tries: n }
 }

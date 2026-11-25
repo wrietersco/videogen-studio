@@ -263,9 +263,11 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
       let within = a.within
       if (ctl.length) {
         inner = ctl.join(' ')
-        if (wOrd.n !== undefined && wOrd.rest && !/\b(column|lane|list|board|stage|panel|section|group|category|row|area|region)\b/i.test(wOrd.rest)) {
+        // the noun the ordinal belongs to: "first product in the list" counts products, not lists
+        const head = (wOrd.rest ?? '').split(/\b(?:in|of|on|at|from|inside|within|under)\b/i)[0].replace(/^the\s+/i, '').trim()
+        if (wOrd.n !== undefined && head && !/\b(column|lane|list|board|stage|panel|section|group|category|row|area|region)\b/i.test(head)) {
           // "second stylist": the members themselves are the stylists
-          label = wOrd.rest.replace(/^the\s+/i, '')
+          label = head
           ordinal = wOrd.n
           within = undefined
         } else if (rest.length) label = rest.join(' ')
@@ -280,6 +282,8 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
         criterion: a.criterion,
         field: a.field ?? (typeof a.column === 'string' ? a.column : undefined)
       }
+      // a pop-up laid over the page is closed before the page is read for a pick
+      await sweepOverlays(page, { policy: policyOf(page), allow, log: say, stepWords: a.label }).catch(() => undefined)
       const r = await pickByStructure(page, spec)
       if (!r.ok) return miss(`choosing "${label}"${a.criterion ? ` by ${a.criterion}` : a.ordinal ? ` (number ${a.ordinal})` : ''}`, r.why)
       found = { selector: r.selector, rect: r.rect, label: r.label, score: 100 }
@@ -298,6 +302,14 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
     found = l.found
     prep = l.prep
   }
+  // a rename: the box that opened under a double-click has focus, though nothing about it carries the name the person used
+  if (!found && a.action === 'type' && a.replace) {
+    const f = await focusedEditable(page)
+    if (f) {
+      found = { selector: f, rect: { x: 0, y: 0, w: 0, h: 0 }, label, score: 80 }
+      pickNote = 'focused'
+    }
+  }
   if (!found) {
     const box = verb === 'type' ? 'box' : verb === 'date' ? 'date box' : 'control'
     const w = a.action === 'date' ? ' (and no date box or calendar was found)' : ''
@@ -305,6 +317,7 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
     if (a.action === 'date') {
       // no box was named, or it was not found: a date box anywhere on the page may be the one
       const o = await doDate(env, null, a.date, a.phrase)
+      if (!o.skipped) say(`    chose the date ${a.date}${a.rule ? ` (${a.rule})` : ''}${o.verified ? '' : ' — the page did not confirm it'}`)
       const step: Omit<Step, 'id' | 'beat'> = { kind: 'date', label, find: a.find, text: JSON.stringify({ date: a.date, phrase: a.phrase, rule: a.rule }), focus: 'target' }
       return done(o, o.verified ? [step] : [])
     }
@@ -459,8 +472,8 @@ async function doMarkAtom(a: Extract<Atom, { action: 'mark' }>, ctx: AtomExecCtx
         say(`    ${name}: ${h.why}`)
         continue
       }
-      if (!colour) {
-        // not an svg chart, and no colour was named to look for on a picture
+      if (!colour && !/picture/.test(svg.why ?? '')) {
+        // not readable from the markup, and nothing to look for on a picture
         skipped.push({ what: name, why: svg.why ?? 'the mark could not be found' })
         continue
       }
