@@ -107,7 +107,9 @@ export class FrameRecorder {
       const worker = async () => {
         while (this.rolling) {
           const ts = Date.now() / 1000
-          const shot = await client.send('Page.captureScreenshot', { format: 'jpeg', quality: 90, optimizeForSpeed: true, clip }).catch(() => null)
+          // the clip is in page coordinates, not screen ones: once the page has been scrolled a clip at 0,0 is blank white, so it follows the view
+          const at = await client.send('Page.getLayoutMetrics').then((m) => ({ x: m.cssVisualViewport?.pageX ?? 0, y: m.cssVisualViewport?.pageY ?? 0 })).catch(() => ({ x: 0, y: 0 }))
+          const shot = await client.send('Page.captureScreenshot', { format: 'jpeg', quality: 90, optimizeForSpeed: true, clip: { ...clip, x: at.x, y: at.y } }).catch(() => null)
           if (!shot) {
             await nap(30)
             continue
