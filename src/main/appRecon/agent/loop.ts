@@ -12,6 +12,7 @@ import { readBrief } from './brief'
 import { applyAnswers, autopilotAnswers, decisionsFor } from './decide'
 import { planSegment, scoutSegment, type ActPlan } from './act'
 import { MAX_ATTEMPTS, nextMove, reviewSegment, type Evidence } from './review'
+import { goalSegments } from '../goalPlanner'
 
 /**
  * PARI — Plan, Act, Review, Iterate — for "Record an app".
@@ -84,10 +85,14 @@ const pathKey = (url: string): string => {
 
 const pageSegs = (plan: FilmPlan): PageSegment[] => plan.segments.filter((s): s is PageSegment => s.kind === 'page')
 
-/** the agent films this plan itself when it names pages to show (a numbered script still goes to the exact-steps path) */
+/**
+ * the agent films this plan itself when it names pages to show (a numbered script still goes to the exact-steps path).
+ * A page that is a goal ("explain the Regional distribution section and give live examples", "find a gift under £50") is no page
+ * to open: such a plan goes the steps way, where each goal is worked out on the real page (goalPlanner.ts).
+ */
 export function agentFilmsPages(plan: FilmPlan): boolean {
   const pages = pageSegs(plan)
-  return pages.length > 0 && pages.every((p) => p.how !== 'script' && !!(p.url || p.target))
+  return pages.length > 0 && pages.every((p) => p.how !== 'script' && !!(p.url || p.target)) && goalSegments(plan).length === 0
 }
 
 export interface ActOutcome {
@@ -96,7 +101,7 @@ export interface ActOutcome {
   /** per page segment: what was planned and the page reached */
   acted: Map<string, { act: ActPlan; reached: AppPage; substituted: boolean; attempts: number; /** seen signed out: filmed before the sign-in */ public?: boolean }>
   /** page segments not filmed, with why */
-  skipped: Map<string, { why: string; attempts: number }>
+  skipped: Map<string, { why: string; attempts: number; /** the words named no link and no address: a goal to work out on the page, not a page to open */ notALink?: boolean }>
   notes: string[]
 }
 
@@ -188,7 +193,7 @@ export async function actStage(inp: {
         const [a] = await settle([ask], inp.hooks)
         if (a?.option === 'stop') throw new PariStopped(`Stopped: "${seg.url ?? seg.target}" could not be opened (${why}).`)
       }
-      out.skipped.set(seg.id, { why, attempts })
+      out.skipped.set(seg.id, { why, attempts, ...(/is not a link/.test(why) ? { notALink: true } : {}) })
       out.notes.push(`Not filmed: ${seg.url ?? seg.target} (${why}).`)
       continue
     }

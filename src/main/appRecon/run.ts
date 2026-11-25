@@ -12,8 +12,9 @@ import { adoptFile, findVoice, writeRecordingRecord, type RecordedCard } from '.
 import { planBeats, type Plan } from './planner'
 import { interpretGuardrails, PolicyGate, type RestrictionChecks } from './policy'
 import { produce, recordingScreen, type CardPlan, type InsertPlan } from './produce'
-import { performScript, scriptPlan, type ScriptOutcome, type VisionPick } from './script'
-import { parseStepScript } from './stepScript'
+import { scriptPlan, type ScriptOutcome, type VisionPick } from './script'
+import { parseStepScript, type StepScript } from './stepScript'
+import { goalNotes, goalSegments, performWithGoals, scriptFromPlan, type GoalReport } from './goalPlanner'
 import { ambientBrief, chooseMusic, clipSeconds, parseMediaAsk, parseMusicAsk, parseStructure, planMedia, withStyle, withoutProductionSentences, type Placement } from './aiMedia'
 import { musicBrief } from '../audio/cue'
 import { soundsFromWords } from '../audio/ambience'
@@ -412,9 +413,26 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       if (starts.length > 1) await openPage(page, inp.startUrl).catch(() => false)
     }
 
-    let scriptOut: ScriptOutcome | null = null
+    let scriptOut = null as ScriptOutcome | null
     let beganAt = ''
-    const directives = inp.reuse || script || agentPages ? [] : parseDirectives(ctxClean)
+    // goals: a brief that says what to show instead of which buttons to press. The pages of the plan become steps, and each goal is
+    // worked out on the real page (goalPlanner.ts); a typed list that holds a goal step is performed the same way, in its order
+    let goalScript: StepScript | null = !inp.reuse && !script && fp && goalSegments(fp).length ? scriptFromPlan(fp) : null
+    let doneScript = null as StepScript | null
+    let goalReports = [] as GoalReport[]
+    const runSteps = async (s: StepScript): Promise<void> => {
+      beganAt = page.url()
+      const g = await performWithGoals({ page, gate, script: s, log: say, signal: inp.signal, vision: visionPicker(inp.chat), chat: inp.chat, brief: ctxClean, secrets, known: [...pages] })
+      scriptOut = g.outcome
+      doneScript = g.script
+      goalReports = g.reports
+      if (g.outcome.failure) {
+        if (inp.signal?.aborted) throw new RunCancelled()
+        throw new Error(g.outcome.failure)
+      }
+      pages.push(await scoutPage(page, scoutDir, 'p-steps-end', { revealIdentifiers: reveal }))
+    }
+    const directives = inp.reuse || script || goalScript || agentPages ? [] : parseDirectives(ctxClean)
     const scripted = directives.some((d) => d.kind === 'type') || (directives.length > 0 && /->|→|=>|⇒|➜|>>/.test(ctxClean))
     if (directives.length) say(`Steps you asked for: ${directives.map((d) => (d.kind === 'open' ? `open "${d.target}"` : `type "${d.text}" into "${d.into || 'the search box'}"`)).join(', then ')}`)
 
@@ -459,17 +477,22 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
         // a fresh, signed-out page behind the same gate: the recording signs in itself, so public pages are filmed before it
         publicPage: useVault ? async () => { const c = await browser.createBrowserContext(); const p = await c.newPage(); await enforcePolicy(p, gate); await prepare(p, redaction); return p } : undefined })
       for (const a of acted.acted.values()) pages.push(a.reached)
-      if (!acted.acted.size) throw new Error(`None of the pages in your brief could be opened, so no video was made: ${[...acted.skipped.values()].map((s) => s.why).join('; ')}.`)
-    } else if (script) {
-      await pause()
-      hooks.progress('explore', `Doing your ${script.items.filter((i) => !i.login).length} steps, exactly as written`)
-      beganAt = page.url()
-      scriptOut = await performScript({ page, gate, script, log: say, signal: inp.signal, vision: visionPicker(inp.chat) })
-      if (scriptOut.failure) {
-        if (inp.signal?.aborted) throw new RunCancelled()
-        throw new Error(scriptOut.failure)
+      if (!acted.acted.size) {
+        // names that are not links and were no address are goals (what to show), not pages: they are worked out on the app's own page
+        // instead of stopping the run. Only an address the person gave that would not open is a reason to stop.
+        const asGoals = !fp.segments.some((s) => s.kind === 'page' && s.url) && [...acted.skipped.values()].some((s) => s.notALink)
+        if (!asGoals) throw new Error(`None of the pages in your brief could be opened, so no video was made: ${[...acted.skipped.values()].map((s) => s.why).join('; ')}.`)
+        say('The names in the brief are not links in the app: they are worked out as things to show on the page.')
+        acted = null
+        goalScript = scriptFromPlan(fp, { asGoals: true })
+        hooks.progress('explore', `Working out ${goalScript.items.length} thing${goalScript.items.length === 1 ? '' : 's'} to show`)
+        await runSteps(goalScript)
       }
-      pages.push(await scoutPage(page, scoutDir, 'p-steps-end', { revealIdentifiers: reveal }))
+    } else if (script || goalScript) {
+      await pause()
+      const todo = (script ?? goalScript) as StepScript
+      hooks.progress('explore', script ? `Doing your ${todo.items.filter((i) => !i.login).length} steps, exactly as written` : `Working out ${todo.items.length} thing${todo.items.length === 1 ? '' : 's'} to show`)
+      await runSteps(todo)
     } else {
       hooks.progress('explore', 'Exploring the app')
       exploration = await explore({ page, gate, startUrl: inp.startUrl, extraStarts: [...starts.slice(1), ...promptUrls], outDir: scoutDir, depth: inp.depth, revealIdentifiers: reveal, log: say, signal: inp.signal, pause, directives, scripted, topics: readUseCase(ctxClean).topics })
@@ -494,9 +517,14 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       ? pariPlan(acted, { startUrl: inp.startUrl, login: signedIn && useVault ? L : null, title: fp?.product || displayHost(inp.startUrl) })
       : reused
       ? { ...reused, notes: [...reused.notes.filter((n) => !n.startsWith('Repaired: ') && !n.startsWith('The saved steps') && !/explored page/.test(n)), ...reuseNotes] }
-      : scriptOut && script
-        ? scriptPlan({ script, outcome: scriptOut, map: safeMap, startUrl: inp.startUrl, beganAt, hasVault: useVault, secrets })
+      : scriptOut && doneScript
+        ? scriptPlan({ script: doneScript, outcome: scriptOut, map: safeMap, startUrl: inp.startUrl, beganAt, hasVault: useVault, secrets })
         : planBeats({ map: safeMap, exploration, context: ctxClean, startUrl: inp.startUrl, targetSec: inp.targetSec ?? inp.launch?.targetSec, hasVault: useVault, secrets, scripted })
+    if (goalReports.length) {
+      // scriptPlan counts the actions worked out for a goal as steps of their own: say it as it was
+      plan.notes[0] = `Your steps were carried out in order. ${goalReports.length === 1 ? 'One of them was a goal' : `${goalReports.length} of them were goals`} (what to show, not what to press): the engine worked out the actions for ${goalReports.length === 1 ? 'it' : 'them'} on the real page. What it decided to show and why, and what it could not do, is listed below.`
+      plan.notes.push(...goalReports.flatMap(goalNotes))
+    }
     writeFileSync(join(inp.runDir, 'playbook.json'), JSON.stringify(plan.playbook, null, 2))
     writeFileSync(join(inp.runDir, 'beats.json'), JSON.stringify(plan.beats, null, 2))
     const base: RunOutput = {
