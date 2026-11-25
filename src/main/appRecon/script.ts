@@ -668,7 +668,7 @@ export function scriptPlan(inp: ScriptPlanInput): Plan {
   for (const k of inp.outcome.skipped ?? []) notes.push(`Step ${k.n} was not fully done: ${k.what} was skipped (${k.why}). The narration does not claim it.`)
   for (const r of inp.outcome.results) {
     if (r.item.login) continue
-    if (r.status === 'not-done') notes.push(`Step ${r.item.written ?? r.item.n} ("${r.item.said.slice(0, 80)}") was not done at all, so it is not in the film and the narration does not mention it.`)
+    if (r.status === 'not-done') notes.push(`Step ${r.item.written ?? r.item.n} ("${r.item.said.slice(0, 80)}") was not done at all, so ${r.item.explain ? 'the film only shows the screen while the voice explains it, and the voice is told it was not done' : 'it is not in the film and the narration does not mention it'}.`)
     else if (r.unchanged) notes.push(`Step ${r.item.written ?? r.item.n}: the screen did not visibly change, so the narration describes only what is on screen.`)
   }
   if (inp.outcome.mostlyUnchanged && st0) notes.push(`Only ${st0.effective} of ${st0.total} steps changed the page as written, so this film is only partly what you asked for. Check the notes above and record it again if you need every step.`)
@@ -676,7 +676,8 @@ export function scriptPlan(inp: ScriptPlanInput): Plan {
   for (const r of inp.outcome.results) {
     if (r.item.login) continue
     // a step that could not be done at all has no beat: the film never shows or says what did not happen (the notes list it)
-    if (r.status === 'not-done') continue
+    // (one the person also wants explained keeps its beat: the voice explains from the screen and is told the step was not done)
+    if (r.status === 'not-done' && !r.item.explain) continue
     // each entry chosen in a dropdown starts a beat of its own, so the page is shown (and explained) for every choice
     const groups: Array<{ steps: typeof r.steps; pick?: ItemResult['picks'][number] }> = [{ steps: [] }]
     let pi = 0
