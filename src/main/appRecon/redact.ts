@@ -69,7 +69,7 @@ export function redactionInitScript(config: RedactionConfig): string {
   const cfg = ${cfg};
   const detect = ${pageDetectorSource(c.kinds)};
   const css = cfg.selectors.map((s) => s + '{filter:${BLUR} !important;}').join('\n') +
-    '\n[data-vg-redact]{filter:${BLUR} !important;display:inline-block;}';
+    '\n[data-vg-redact]{filter:${BLUR} !important;display:inline-block;}\n[data-vg-blur]{filter:${BLUR} !important;}';
   const roots = [];
   Object.defineProperty(window, '__vgRoots', { value: roots });
 
@@ -208,6 +208,7 @@ export function cursorInitScript(touch = false): string {
     if (!document.documentElement) return false;
     if (document.getElementById('__vg_cursor')) return true;
     const st = document.createElement('style');
+    st.setAttribute('data-vg-ui', '');
     st.textContent = '@keyframes __vg_rip{from{transform:translate(-50%,-50%) scale(.2);opacity:.75}to{transform:translate(-50%,-50%) scale(1.6);opacity:0}}';
     document.documentElement.appendChild(st);
     const c = document.createElement('div');
@@ -217,6 +218,7 @@ export function cursorInitScript(touch = false): string {
     document.addEventListener('mousemove', (e) => { c.style.transform = 'translate(' + e.clientX + 'px,' + e.clientY + 'px)'; }, true);
     document.addEventListener('mousedown', (e) => {
       const r = document.createElement('div');
+      r.setAttribute('data-vg-ui', '');
       r.style.cssText = 'position:fixed;z-index:2147483646;pointer-events:none;width:64px;height:64px;border-radius:50%;background:rgba(80,140,255,.45);border:2px solid rgba(80,140,255,.9);left:' + e.clientX + 'px;top:' + e.clientY + 'px;animation:__vg_rip .55s ease-out forwards';
       document.documentElement.appendChild(r);
       setTimeout(() => r.remove(), 700);
