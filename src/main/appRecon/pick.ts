@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 // page.evaluate() callbacks run inside the browser, so they use DOM types
 import type { Page } from 'puppeteer-core'
+import { deepEval } from './deep'
 
 /**
  * Choosing one entry from a dropdown the way a person says it: "select Surah An-Nur"
@@ -52,24 +53,21 @@ export interface Choices {
 
 /** the entries of the dropdown at `selector`, when it is a real <select> */
 export async function readChoices(page: Page, selector: string): Promise<Choices> {
-  return page.evaluate((sel) => {
-    const el = document.querySelector(sel)
-    if (el && el.tagName === 'SELECT') return { native: true, entries: Array.from((el as HTMLSelectElement).options).map((o) => (o.text || o.label || '').replace(/\s+/g, ' ').trim()) }
-    return { native: false, entries: [] as string[] }
-  }, selector)
+  const r = await deepEval(page, selector, (el) => (el.tagName === 'SELECT' ? { native: true, entries: Array.from((el as HTMLSelectElement).options).map((o) => (o.text || o.label || '').replace(/\s+/g, ' ').trim()) } : { native: false, entries: [] as string[] }))
+  return r ?? { native: false, entries: [] }
 }
 
 /** sets entry `index` of a real <select> and tells the page, as a person choosing it would */
 export async function chooseNative(page: Page, selector: string, index: number): Promise<void> {
-  await page.evaluate(
-    (sel, i) => {
-      const el = document.querySelector(sel) as HTMLSelectElement | null
-      if (!el) return
-      el.selectedIndex = i
-      el.dispatchEvent(new Event('input', { bubbles: true }))
-      el.dispatchEvent(new Event('change', { bubbles: true }))
-    },
+  await deepEval(
+    page,
     selector,
+    (el, i) => {
+      const s = el as HTMLSelectElement
+      s.selectedIndex = i
+      s.dispatchEvent(new Event('input', { bubbles: true }))
+      s.dispatchEvent(new Event('change', { bubbles: true }))
+    },
     index
   )
 }

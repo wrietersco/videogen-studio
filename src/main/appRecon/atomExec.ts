@@ -5,7 +5,7 @@ import type { Atom, AtomResult, FindSpec, NewAtom, Step } from '@shared/appRecon
 import type { PolicyGate } from './policy'
 import type { Found } from './resolve'
 import type { Located, VisionPick } from './script'
-import { armWhenever, clickMarkChecked, doClick, doHover, doType, type Env, type Outcome } from './actions'
+import { armWhenever, clickMarkChecked, doClick, doHover, doType, policyOf, type Env, type Outcome } from './actions'
 import { doDate, doDrag, doKey, doScrollUntil, doSlider } from './gestures'
 import { findMark, findSvgMark, hoverText, newTexts, snapshotTexts } from './marks'
 import { pickByStructure, type PickSpec } from './pageModel'
@@ -129,7 +129,7 @@ export async function execNewAtom(atom: NewAtom, ctx: AtomExecCtx): Promise<Atom
   switch (a.action) {
     case 'whenever': {
       armWhenever(page, { condition: a.condition, action: a.then })
-      const swept = await sweepOverlays(page, { policy: undefined, allow, log: say }).catch(() => ({ closed: [] as string[] }))
+      const swept = await sweepOverlays(page, { policy: policyOf(page), allow, log: say }).catch(() => ({ closed: [] as string[] }))
       const step: Omit<Step, 'id' | 'beat'> = { kind: 'whenever', label: a.label, text: JSON.stringify({ condition: a.condition, then: a.then }), focus: 'page' }
       say(`    from now on: ${a.condition} → ${a.then}`)
       return { steps: [step], seen: [], skipped: [], did: 1, changed: swept.closed.length > 0, verified: true }
@@ -324,7 +324,7 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
 }
 
 /** a list or column named by its heading ("the Done column"): the box that holds its cards */
-async function dropZone(page: Page, name: string): Promise<Located | null> {
+export async function dropZone(page: Page, name: string): Promise<Located | null> {
   const clean = name.replace(/\b(the|column|lane|list|board|section|area)\b/gi, ' ').replace(/\s+/g, ' ').trim()
   if (!clean) return null
   const h = await page

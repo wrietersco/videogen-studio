@@ -369,6 +369,8 @@ export async function clearOverlays(page: Page, o: ClearOptions = {}): Promise<C
     const todo = list.filter((ov) => {
       if (tried.has(ov.selector + '|' + ov.text.slice(0, 30))) return false
       if (ov.holdsTarget || ov.hasPassword) return false
+      // the step is about this very overlay ("Accept all cookies", "No thanks"): it is the step's to deal with
+      if (o.stepWords && ov.controls.some((c) => c.label.trim().length > 2 && (o.stepWords!.toLowerCase().includes(c.label.trim().toLowerCase()) || (o.stepWords!.length > 4 && c.label.toLowerCase().includes(o.stepWords!.toLowerCase()))))) return false
       if (ov.extra === 'leave') return false
       if (ov.kind === 'cookie' && policy.cookie === 'leave') return false
       if (ov.kind !== 'cookie' && !ov.extra && policy.popup === 'leave') return false
