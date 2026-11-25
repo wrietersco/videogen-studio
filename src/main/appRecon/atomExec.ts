@@ -284,7 +284,19 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
       }
       // a pop-up laid over the page is closed before the page is read for a pick
       await sweepOverlays(page, { policy: policyOf(page), allow, log: say, stepWords: a.label }).catch(() => undefined)
-      const r = await pickByStructure(page, spec)
+      let r = await pickByStructure(page, spec)
+      if (!r.ok && spec.inner && /control to press/.test(r.why)) {
+        // tools that only show when the pointer is on the member (a card's menu): rest the pointer on it, then look again
+        const holder = await pickByStructure(page, { ...spec, inner: undefined, item: true })
+        if (holder.ok) {
+          const hv = await doHover(env, { selector: holder.selector, label: holder.label }, async (x, y) => {
+            await page.mouse.move(x, y, { steps: 4 })
+            await new Promise((res) => setTimeout(res, 400))
+            return ''
+          })
+          if (!hv.skipped) r = await pickByStructure(page, spec)
+        }
+      }
       if (!r.ok) return miss(`choosing "${label}"${a.criterion ? ` by ${a.criterion}` : a.ordinal ? ` (number ${a.ordinal})` : ''}`, r.why)
       found = { selector: r.selector, rect: r.rect, label: r.label, score: 100 }
       pickNote = r.reason

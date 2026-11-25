@@ -26,6 +26,8 @@ export interface PickSpec {
   field?: string
   /** a control inside the pick that is pressed instead of the pick itself ("the heart" of the second stylist, "the menu" of a card) */
   inner?: string
+  /** return the member itself, not a control in it (to rest the pointer on it first: tools that show on hover) */
+  item?: boolean
 }
 
 export interface Picked {
@@ -122,6 +124,17 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
   const wordsOf = (s: string): string[] => (s || '').toLowerCase().replace(/['’]/g, '').normalize('NFKD').replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean).map((w) => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w))
   const NOISE = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'to', 'that', 'with', 'one', 'button', 'item', 'thing', 'option', 'entry', 'listing'])
   const nounWords = wordsOf(spec.label).filter((w) => !NOISE.has(w))
+  const INNER: Record<string, string[]> = {
+    heart: ['heart', '♡', '♥', '❤', 'favourite', 'favorite', 'wishlist', 'like', 'save'],
+    menu: ['menu', 'more', 'options', 'actions', 'kebab', 'dots', '⋯', '…', '⋮', '···', '...'],
+    gear: ['gear', 'settings', 'cog', 'preferences'],
+    star: ['star', 'rate', 'favourite', '★', '☆'],
+    trash: ['trash', 'delete', 'bin', 'remove'],
+    close: ['close', '×', '✕', 'dismiss'],
+    edit: ['edit', 'pencil', 'rename'],
+    plus: ['plus', 'add', '+'],
+    cart: ['cart', 'basket', 'bag', 'add to']
+  }
   const GENERIC_ITEM = /^(card|tile|product|row|item|result|entry|slot|cell|task|ticket|post|article|listing|option|stylist|time|button|link|record|line|member|plan|package)$/
 
   // ---- every element, the ones in open shadow roots too
@@ -206,9 +219,14 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
       const content = words.filter((w) => !structural.includes(w))
       const SYNS: Record<string, string[]> = { column: ['col', 'lane', 'stage', 'board', 'kanban'], card: ['card', 'tile', 'task', 'item', 'ticket'], row: ['row', 'tr'], list: ['list', 'ul', 'ol'] }
       const wantsContainer = structural.filter((w) => /^(column|lane|board|stage|panel|section|group|category)$/.test(w))
-      const hit = (w: string) => hay.includes(w) || (SYNS[w] ?? []).some((x) => hay.includes(x)) || (w === 'row' && g.sig === 'table-row')
+      // whole words of the class names and tags ("cols" is a column, "colour-list" is not)
+      const tokens = hay.split(/[^a-z0-9]+/).filter(Boolean).map((t) => (t.length > 3 && t.endsWith('s') ? t.slice(0, -1) : t))
+      const hit = (w: string) => tokens.includes(w) || (SYNS[w] ?? []).some((x) => tokens.includes(x) || (x.length > 3 && tokens.some((t) => t.startsWith(x)))) || (w.length > 4 && tokens.some((t) => t.startsWith(w))) || (w === 'row' && g.sig === 'table-row')
       // a group of "columns" has to look like columns, whatever else is in the page
-      if (wantsContainer.length && !wantsContainer.some(hit)) continue
+      // the members of a group of "columns" are the columns themselves: a parent that is called a column does not make its cards columns
+      const itemTokens = itemHay(g.items[0]).split(/[^a-z0-9]+/).filter(Boolean).map((t) => (t.length > 3 && t.endsWith('s') ? t.slice(0, -1) : t))
+      const itemHit = (w: string) => itemTokens.includes(w) || (SYNS[w] ?? []).some((x) => itemTokens.includes(x) || (x.length > 3 && itemTokens.some((t) => t.startsWith(x))))
+      if (wantsContainer.length && !wantsContainer.some(itemHit)) continue
       if (structural.some(hit)) fit += 3
       if (content.length) {
         // the words that are not about structure ("jacket", "afternoon") must be in the members' own words
@@ -218,6 +236,7 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
         fit += 2 + (mine.length === g.items.length ? 0 : 1)
       }
       if (!structural.length && !content.length) fit += 1
+      if (spec.inner && items.some((i) => innerIn(i))) fit += 3
       // an interactive member is what a step can use
       if (items.some((i) => i.matches('a,button,[role=button],[tabindex]') || i.querySelector('a,button,[role=button]'))) fit += 1
       // bigger visible groups beat tiny ones
@@ -280,7 +299,7 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
   if (!cand.length) {
     // a single group without a noun fit: any group inside the scope
     const any = candidatesFor([], scope)
-    if (!any.length) return { ok: false, why: `no list, row or group of "${spec.label}" could be found${spec.within ? ` in ${reasonScope || spec.within}` : ''}` }
+    if (!any.length) return { ok: false, why: `no list, row or group of "${spec.label}" could be found${spec.within ? ` in ${reasonScope || spec.within}` : ''}${scope ? ` [${scope.tagName.toLowerCase()}${scope.id ? '#' + scope.id : ''}.${classOf(scope).split(/\s+/)[0] ?? ''}, ${groups.length} groups]` : ''}` }
     cand.push(any[0])
   }
   // when there are several equally good groups (a card grid and a table of the same things) the biggest on screen wins
@@ -317,33 +336,25 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
     return inner && visible(inner) ? inner : it
   }
   const nameOf = (it: Element): string => (it.getAttribute('aria-label') || (it.querySelector('h1,h2,h3,h4,h5,strong,[class*=title],[class*=name]') ? textOf(it.querySelector('h1,h2,h3,h4,h5,strong,[class*=title],[class*=name]')!) : textOf(it))).slice(0, 60)
-  const INNER: Record<string, string[]> = {
-    heart: ['heart', '♡', '♥', '❤', 'favourite', 'favorite', 'wishlist', 'like', 'save'],
-    menu: ['menu', 'more', 'options', 'actions', 'kebab', 'dots', '⋯', '…', '⋮', '···', '...'],
-    gear: ['gear', 'settings', 'cog', 'preferences'],
-    star: ['star', 'rate', 'favourite', '★', '☆'],
-    trash: ['trash', 'delete', 'bin', 'remove'],
-    close: ['close', '×', '✕', 'dismiss'],
-    edit: ['edit', 'pencil', 'rename'],
-    plus: ['plus', 'add', '+'],
-    cart: ['cart', 'basket', 'bag', 'add to']
-  }
-  const innerIn = (it: Element): Element | null => {
+  function innerIn(it: Element): Element | null {
     const want = wordsOf(spec.inner ?? '').filter((w) => !/^(icon|button|the|little|small)$/.test(w))
     const keys = want.flatMap((w) => INNER[w] ?? [w])
     const cands = Array.from(it.querySelectorAll('button,a,[role=button],[tabindex],[onclick],input,svg,i,span,div')).filter(visible)
     if (!keys.length) return cands.find((c) => c.matches('button,a,[role=button]')) ?? null
-    const hit = cands.find((c) => {
+    const matches = cands.filter((c) => {
       const hay = `${(c as HTMLElement).innerText ?? ''} ${c.getAttribute('aria-label') ?? ''} ${c.getAttribute('title') ?? ''} ${classOf(c)} ${(c as HTMLInputElement).value ?? ''} ${c.getAttribute('data-icon') ?? ''}`.toLowerCase()
       return keys.some((k) => hay.includes(k.toLowerCase()))
     })
+    // the most specific one: a button over a box that holds it, the smallest over the large
+    const area = (e: Element) => { const r = e.getBoundingClientRect(); return r.width * r.height }
+    const hit = matches.sort((x, y) => Number(!x.matches('button,a,[role=button],input')) - Number(!y.matches('button,a,[role=button],input')) || area(x) - area(y))[0]
     // the smallest thing that has it: a button, not the card that holds the button
     if (!hit) return null
     return hit.closest('button,a,[role=button]') ?? hit
   }
   const done = (it: Element, reason: string, values?: Array<{ label: string; value: number }>) => {
-    let t = clickable(it)
-    if (spec.inner) {
+    let t = spec.item ? it : clickable(it)
+    if (spec.inner && !spec.item) {
       const inner = innerIn(it)
       if (!inner) return { ok: false as const, why: `"${nameOf(it)}" has no "${spec.inner}" control to press` }
       t = inner
