@@ -284,7 +284,7 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
     const seen = o.tip ? [`Resting the pointer on "${name}" shows: "${o.tip}"`] : []
     say(`    hovered "${name}"${o.tip ? ` — "${o.tip.slice(0, 80)}"` : ''}`)
     stepsFor.push({ kind: 'hover', selector: found.selector, label, find: wanted('hover', label, a.find as FindSpec), focus: 'target' })
-    return { steps: stepsFor, seen: [...seen, ...(pickNote ? [`Picked ${pickNote}`] : [])], skipped: [], did: 1, changed: !!o.tip, verified: !!o.tip, last: found.selector }
+    return { steps: stepsFor, seen: [...seen, ...(pickNote ? [`Picked ${pickNote}`] : [])], skipped: [], did: 1, changed: !!o.tip, verified: true, last: found.selector }
   }
 
   if (verb === 'type') {
@@ -324,7 +324,9 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
     focus: 'target'
   })
   say(`    ${verb === 'dblclick' ? 'double-clicked' : 'clicked'} "${name}"${o.note ? ` (${o.note})` : ''}`)
-  return { steps: stepsFor, seen, skipped: [], did: o.did, changed: o.changed || fresh.length > 0, verified: o.verified, last: found.selector }
+  // a click that reached the control is done; whether the screen changed is told separately (`changed`), so a press that the page
+  // answers with nothing visible (a "previous" button at the first item) is not pressed again as if it had failed
+  return { steps: stepsFor, seen, skipped: [], did: o.did, changed: o.changed || fresh.length > 0, verified: o.landed !== false, last: found.selector }
 }
 
 /** a list or column named by its heading ("the Done column"): the box that holds its cards */
@@ -443,5 +445,5 @@ async function doMarkAtom(a: Extract<Atom, { action: 'mark' }>, ctx: AtomExecCtx
     did++
     say(`    ${name}${h.tooltip ? ` — tooltip: "${h.tooltip.slice(0, 80)}"` : ''}`)
   }
-  return { steps, seen, skipped, did, changed, verified: did > 0 && verified }
+  return { steps, seen, skipped, did, changed, verified: did > 0 && (hover || verified) }
 }
