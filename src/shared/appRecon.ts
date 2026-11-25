@@ -168,7 +168,9 @@ export const Step = z.object({
   /** the part of the screen the viewer should look at once this step is done */
   focus: z.enum(['target', 'form', 'banner', 'page']).optional(),
   /** how long to stay on this step once done, in ms (scaled by the recording's pace) */
-  holdMs: z.number().optional()
+  holdMs: z.number().optional(),
+  /** a type step: select what the box holds and type over it (false adds to it); a code editor or contenteditable is only replaced when true */
+  replace: z.boolean().optional()
 })
 export type Step = z.infer<typeof Step>
 
