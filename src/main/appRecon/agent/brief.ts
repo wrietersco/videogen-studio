@@ -127,11 +127,35 @@ function planFields(plan: FilmPlan): string[] {
 const FRAMING = /\b(?:create|make|produce|build|want|need)\b[^.!?\n]{0,40}\b(?:video|film|clip|explainer|walkthrough|demo)\b/i
 const FRAMING_WORDS = new Set(['create', 'make', 'produce', 'build', 'want', 'need', 'video', 'film', 'clip', 'explainer', 'walkthrough', 'demo', 'product', 'launch', 'start', 'starting', 'begin', 'beginning', 'clear', 'present', 'presenting', 'off', 'then', 'short', 'nice', 'great'].map(stem))
 
+/** a bare "no" under a heading: "none", "off", "n/a" */
+const NEGATIVE_ANSWER = /^\W*(?:none|no|off|nothing|nil|n\/a|not\s+(?:needed|required|wanted)|skip(?:\s+it)?|disabled?)\W*$/i
+
+/** each line that sits under a heading ("# background music" then "none"), keyed by its normalised text, with that heading */
+export function headingsOf(typed: string): Map<string, string> {
+  const out = new Map<string, string>()
+  let heading = ''
+  for (const unit of unitsOf(typed)) {
+    if (isLeadIn(unit)) { heading = unit.replace(/^#+\s*/, '').replace(/:\s*$/, ''); continue }
+    const key = normText(unit)
+    if (heading && key && !out.has(key)) out.set(key, heading)
+  }
+  return out
+}
+
+/** "none" under "# background music" is the answer, and it is carried when the plan did turn that off; under a heading about something the film is not made of there is nothing to carry */
+function answeredNo(heading: string, plan: FilmPlan): boolean {
+  if (MUSIC_WORD.test(heading)) return plan.music.none
+  if (VOICE_WORD.test(heading)) return !!plan.voice.none
+  return true
+}
+
 /** true when the unit (a sentence or clause) is carried by the plan */
-export function isAccounted(unit: string, plan: FilmPlan, fields: string[] = planFields(plan)): boolean {
+export function isAccounted(unit: string, plan: FilmPlan, fields: string[] = planFields(plan), heading?: string): boolean {
   const norm = normText(unit)
   const toks = tokensOf(unit)
   if (!norm || toks.length === 0) return true
+  // a bare answer under a heading ("# background music" + "none"): understood when the heading's own setting says so
+  if (heading && NEGATIVE_ANSWER.test(unit)) return answeredNo(heading, plan)
   // a bare label ("steps:"), a heading ("# recorded steps to show:"), the sentence that introduces a list, or an address on its own
   if (isLeadIn(unit) || /^\W*https?:\/\/\S+\W*$/.test(unit.trim())) return true
   if (VOICE_WORD.test(unit) && (plan.voice.tone || plan.voice.language || plan.voice.none)) return true
@@ -168,10 +192,11 @@ export function accountFor(typed: string, plan: FilmPlan): FilmPlan {
   const fields = planFields(base)
   // what the writer itself left out counts only when the person really wrote it and nothing in the plan carries it
   const typedNorm = normText(typed)
-  const kept = [...new Set(plan.unplaced.map((u) => u.trim()).filter(Boolean))].filter((u) => typedNorm.includes(normText(u)) && !isAccounted(u, base, fields))
+  const under = headingsOf(typed)
+  const kept = [...new Set(plan.unplaced.map((u) => u.trim()).filter(Boolean))].filter((u) => typedNorm.includes(normText(u)) && !isAccounted(u, base, fields, under.get(normText(u))))
   const lost: string[] = []
   for (const unit of unitsOf(typed)) {
-    if (isAccounted(unit, base, fields)) continue
+    if (isAccounted(unit, base, fields, under.get(normText(unit)))) continue
     const clauses = unit.split(/\s*(?:[,;]|\band\s+then\b|\bthen\b|\band\b|\bbut\b)\s*/i).map((c) => c.trim()).filter(Boolean)
     const missing = clauses.filter((c) => !isAccounted(c, base, fields))
     if (missing.length === clauses.length || missing.length === 0) lost.push(unit)
@@ -197,12 +222,23 @@ const cleanText = (s: string): string => s.replace(/\s+/g, ' ').replace(/^[\s,.;
 
 /** "background music: none" and the markdown form "# background music" with "none" on the next line */
 const MUSIC_OFF = /\bmusic\s*[:=–-]\s*(?:none|off|no|nothing|nil|silent)\b/i
+const VOICE_OFF = /\b(?:voice[\s-]*over|narrat\w+|voice)\s*[:=–-]\s*(?:none|off|no|nothing|nil|silent)\b/i
 export function musicOffIn(typed: string): boolean {
   return MUSIC_OFF.test(normaliseOutline(typed)) || /(?:^|\n)\s*#{0,6}\s*[^\n]*\bmusic\b[^\n]*\n\s*(?:none|off|no|nothing|nil)\.?\s*(?:\n|$)/i.test(typed)
 }
-/** a markdown header about music with its answer on the next line becomes one sentence: "# background music" + "none" → "background music: none" */
+/** "voiceover: none" / "# narration" + "none": the person wants no voice */
+export function voiceOffIn(typed: string): boolean {
+  return VOICE_OFF.test(normaliseOutline(typed))
+}
+/**
+ * A markdown header about music with its answer on a later line (blank lines between are fine) becomes one sentence:
+ * "# background music" + "none" → "background music: none", "# music" + "calm oud, no vocals" → "music: calm oud, no vocals".
+ * A header about the voice-over with a "none" under it is folded the same way.
+ */
 export function normaliseOutline(typed: string): string {
-  return typed.replace(/(^|\n)[ \t]*#{1,6}[ \t]*([^\n]*\bmusic\b[^\n]*?)[ \t]*:?[ \t]*\r?\n[ \t]*(none|off|no|nothing|nil)\.?[ \t]*(?=\r?\n|$)/gi, '$1$2: $3')
+  return typed
+    .replace(/(^|\n)[ \t]*#{1,6}[ \t]*([^\n]*\bmusic\b[^\n]*?)[ \t]*:?[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*([^#\s\-*•\d][^\n]{0,300}?)[ \t]*(?=\r?\n|$)/gi, '$1$2: $3')
+    .replace(/(^|\n)[ \t]*#{1,6}[ \t]*([^\n]*\b(?:voice[\s-]*over|voiceover|narrat\w+|voice)\b[^\n]*?)[ \t]*:?[ \t]*\r?\n(?:[ \t]*\r?\n)*[ \t]*(none|off|no|nothing|nil)\.?[ \t]*(?=\r?\n|$)/gi, '$1$2: $3')
 }
 
 const emptyMusic = (): MusicSpec => ({ none: false, description: '', vocals: 'any', instruments: [], exclude: [], ambience: [], quiet: false })
@@ -289,7 +325,67 @@ function targetOf(doing: string, url?: string): string | undefined {
   return t || undefined
 }
 
-const INTRO_WITH = new RegExp(String.raw`^${LEAD}(?:start|open|begin)\s+(?:the\s+)?(?:intro\w*|video|film)\s+with\b[^:]*:\s*(.+)$`, 'i')
+const FRAME_START = new RegExp(String.raw`^\W*${LEAD}(?:start|begin|open|kick\s+off|lead)\s+(?:off\s+)?(?:the\s+|your\s+|our\s+)?(?:(?:intro(?:duction)?|video|film|opening|narration|voice[\s-]?over|title)\s+)?(?:with|by)\b`, 'i')
+const FRAME_END = new RegExp(String.raw`^\W*${LEAD}(?:end|finish|close|conclude|wrap(?:\s+up)?)\s+(?:off\s+)?(?:the\s+|your\s+|our\s+)?(?:(?:outro|video|film|closing|ending|narration|voice[\s-]?over)\s+)?(?:with|by)\b`, 'i')
+const FRAME_NOUN = /^\s*(?:(?:a|an|the|this|these)\s+)?(?:(?:short|quick|simple|rhetorical|brief|opening|closing|single|one)\s+)*(question|hook|statement|line|sentence|quote|fact|story|joke|claim|reminder|thought|words?|message|asking|saying|stating|telling|wondering)\b/i
+const FRAME_VERB = /^(?:asking|saying|stating|telling|wondering)$/i
+
+/**
+ * "Start the intro with a question: …", "open with …", "begin by asking …" / "end with …", "finish by saying …": words the
+ * person wants at the very start or very end of the film. `text` is what they want said (empty when the sentence only
+ * gives the instruction and the words come from elsewhere).
+ */
+export function framingOf(said: string): { at: 'intro' | 'outro'; asQuestion: boolean; text: string } | null {
+  const t = said.replace(/\s+/g, ' ').trim()
+  const start = FRAME_START.exec(t)
+  const m = start ?? FRAME_END.exec(t)
+  if (!m) return null
+  const rest = t.slice(m[0].length).trim()
+  const kind = FRAME_NOUN.exec(rest)
+  let text = ''
+  let asQuestion = false
+  if (kind) {
+    asQuestion = /question|asking|wonder/i.test(kind[0])
+    const after = rest.slice(kind[0].length)
+    // "asking how many …" carries its words directly; "a question about X: …" carries them after the colon
+    text = FRAME_VERB.test(kind[1]) ? after.replace(/^\s*[:\-–—,]\s*/, '') : (/^[^:]{0,60}?[:–—]\s+(.+)$/s.exec(after)?.[1] ?? '')
+  } else {
+    const c = /^([^:]{0,60}):\s+(.+)$/s.exec(rest)
+    if (!c || /\b(?:page|screen|tab|button|logo|scene|animation|clip)\b/i.test(c[1])) return null
+    text = c[2]
+  }
+  return { at: start ? 'intro' : 'outro', asQuestion, text: text.replace(/\s+/g, ' ').replace(/^[\s,;:-]+/, '').trim() }
+}
+
+/** the narration the person asked for at the start / end: marks it, and keeps only their words in `claims` (not the instruction) */
+export function placeFraming(seg: NarrationSegment): void {
+  const f = framingOf(seg.said)
+  if (!f) return
+  seg.at = f.at
+  if (f.asQuestion) seg.asQuestion = true
+  const claims = seg.claims.map((c) => framingOf(c)?.text || c).filter(Boolean)
+  seg.claims = claims.length ? claims : f.text ? [f.text] : seg.claims
+}
+
+export interface FramedWords { intro?: { text: string; asQuestion: boolean }; outro?: { text: string } }
+
+/** the words asked for at the very start and end of the film, joined, for the title and closing lines */
+export function framedWords(plan: FilmPlan): FramedWords {
+  const out: FramedWords = {}
+  for (const s of plan.segments) {
+    if (s.kind !== 'narration' || !s.at || !s.claims.length) continue
+    // the claims are cut at the person's sentences: said aloud they are sentences again
+    const text = s.claims.map((c) => c.trim()).filter(Boolean).map((c) => (/[.!?]$/.test(c) ? c : `${c}.`)).join(' ')
+    if (s.at === 'intro') out.intro = out.intro ? { text: `${out.intro.text} ${text}`, asQuestion: out.intro.asQuestion || !!s.asQuestion } : { text, asQuestion: !!s.asQuestion }
+    else out.outro = out.outro ? { text: `${out.outro.text} ${text}` } : { text }
+  }
+  return out
+}
+
+/** the plan without the narrations that belong to the title and closing scenes (they are not beats over a page) */
+export function withoutFramed(plan: FilmPlan): FilmPlan {
+  return { ...plan, segments: plan.segments.filter((s) => !(s.kind === 'narration' && s.at)) }
+}
 const CTA_LINE = new RegExp(String.raw`^${LEAD}(?:(?:a|the|with\s+a)\s+)?(?:call\s+to\s+action|cta)\b[^:]*:\s*(.+)$`, 'i')
 const EXPLORE_LINE = new RegExp(String.raw`^${LEAD}(?:you\s+will\s+|we\s+will\s+|i\s+will\s+)?(?:begin\s+|start\s+)?(?:exploring|explore)\s+(.+?)(?:\s+and\s+(?:explain|describe)\s+(.+?))?[.!]*$`, 'i')
 const PAGE_LINE = new RegExp(`^${LEAD}(?:show(?:\\s+me)?|go\\s+(?:in)?to|go\\s+through|walk\\s+through|open|visit|navigate\\s+to|display|take\\s+(?:me|us)\\s+to|head\\s+to|briefly\\s+show)\\b(?!\\s+(?:how|that|what|why|when))`, 'i')
@@ -383,7 +479,7 @@ export function readBriefByRules(input: BriefInput, typedIn?: string): FilmPlan 
 
     // voice
     if (VOICE_WORD.test(unit) && !url.length && !PAGE_LINE.test(unit)) {
-      if (/\b(?:no|without)\s+(?:any\s+)?(?:voice|narration|voice\s*over)\b/i.test(unit)) { voice.none = true; continue }
+      if (/\b(?:no|without)\s+(?:any\s+)?(?:voice|narration|voice\s*over)\b/i.test(unit) || VOICE_OFF.test(unit)) { voice.none = true; continue }
       const lang = /\b(arabic|english|french|spanish|urdu|hindi|turkish|german)\b/i.exec(unit)
       const tone = /\b(calm|warm|friendly|professional|energetic|serious|playful|confident|formal|soft)\b/i.exec(unit)
       if (lang) voice.language = lang[1].toLowerCase()
@@ -398,9 +494,9 @@ export function readBriefByRules(input: BriefInput, typedIn?: string): FilmPlan 
     // a prose outline: "Start the intro with a question: …", "Then you will begin exploring … and explain them one by one", "Then a call to action: …"
     const introFollow = introAt
     introAt = -1
-    const iq = INTRO_WITH.exec(unit)
-    if (iq) {
-      segs.push({ id: '', kind: 'narration', said: unit, required: true, claims: [cleanText(iq[1])], over: 'find' } as NarrationSegment)
+    const iq = framingOf(unit)
+    if (iq?.text) {
+      segs.push({ id: '', kind: 'narration', said: unit, required: true, claims: [iq.text], over: 'find', at: iq.at, ...(iq.asQuestion ? { asQuestion: true } : {}) } as NarrationSegment)
       introAt = segs.length - 1
       continue
     }
@@ -527,6 +623,8 @@ const SEGMENT_SCHEMA = {
     seconds: { type: 'number' },
     claims: { type: 'array', items: { type: 'string' } },
     over: { type: 'string' },
+    at: { type: 'string', enum: ['intro', 'outro'] },
+    asQuestion: { type: 'boolean' },
     card: { type: 'string', enum: ['title', 'problem', 'solution', 'outro'] },
     text: { type: 'string' }
   },
@@ -563,6 +661,7 @@ const SYSTEM = [
   '- "page": a part of the real app filmed in the browser. Put the exact address in `url` ONLY if it appears in the brief, character for character. `how`: "tour" (scroll through the sections: "show sections of the homepage"), "steps" ("go through the steps"), "glance" ("briefly show", emphasis "brief"), "features" ("show different features of X"), "script" (a numbered list of actions to perform exactly; put them in `actions`, in the person\'s words). An address the person pastes in their own words is a page of the app to film, and when a page offers several parts (tabs, sections), the person\'s words say which one to show.',
   '- "ai-clip": an AI-generated video the person asked for (problem statement, intro, outro…). `purpose` and `style` ("infographic" when they said so, otherwise "none"), `subject` in plain words.',
   '- "narration": something to SAY that has no page of its own ("tell that you can refine the research by chatting"); `claims` holds each claim; `over` is "find" (default) or "card".',
+  '  Words the person wants at the very START or END of the film ("Start the intro with a question: …", "End with …") are a narration with `at` "intro" or "outro" (`asQuestion` true when they asked for a question); `claims` holds their words only, without the instruction.',
   '- "card": a drawn scene (title, problem, solution, outro) with optional `text`.',
   '`said` is the person\'s OWN words for the segment, copied verbatim. `explain` lists what the narration over a page must get across ("explain it writes an entire research paper").',
   'Music: describe it faithfully in `music.description` using the person\'s words. NEVER force instrumental: when they ask for vocals, set vocals "any" or "wordless" (wordless when they exclude lyrics or songs); list allowed instruments, exclusions, natural sounds. If no music is mentioned leave description empty and vocals "any".',
@@ -647,7 +746,9 @@ export function normalisePlan(raw: unknown, input: BriefInput, deps: { secrets: 
     } else if (kind === 'narration') {
       const claims = scrubAll(strs(s.claims, 8))
       if (!claims.length) continue
-      const n: NarrationSegment = { ...base, kind: 'narration', claims, over: s.over === 'card' ? 'card' : 'find' }
+      const at = pick(s.at, ['intro', 'outro'] as const)
+      const n: NarrationSegment = { ...base, kind: 'narration', claims, over: s.over === 'card' ? 'card' : 'find', ...(at ? { at } : {}), ...(s.asQuestion === true ? { asQuestion: true } : {}) }
+      placeFraming(n)
       if (typeof s.over === 'string' && /^s\d+$/.test(s.over)) pendingOver.push([n, s.over])
       seg = n
     } else {
@@ -685,7 +786,7 @@ export function normalisePlan(raw: unknown, input: BriefInput, deps: { secrets: 
     ...(scrub(str(r.heroFeature, 160)) ? { heroFeature: scrub(str(r.heroFeature, 160)) } : {}),
     segments: segs,
     music,
-    voice: { ...(direction || scrub(str(v.tone, 240)) ? { tone: direction ?? scrub(str(v.tone, 240)) } : {}), ...(scrub(str(v.language, 40)) ? { language: scrub(str(v.language, 40)) } : {}), ...(v.none === true ? { none: true } : {}) },
+    voice: { ...(direction || scrub(str(v.tone, 240)) ? { tone: direction ?? scrub(str(v.tone, 240)) } : {}), ...(scrub(str(v.language, 40)) ? { language: scrub(str(v.language, 40)) } : {}), ...(v.none === true || voiceOffIn(typed) ? { none: true } : {}) },
     look: { style: lookStyle, noAbstract: bool(l.noAbstract, false) },
     ...(targetSec ? { targetSec } : {}),
     unplaced: scrubAll(strs(r.unplaced, 30)),
