@@ -10,6 +10,7 @@ import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { parseMusicAsk, withStyle } from './aiMedia'
 import { scanNarration, scrubText } from './detect'
 import { narratorTone, neutralProblemTitle, problemLineOk, problemTitleOk, voiceLine } from './narrate'
+import type { SceneBackground } from '../introBg/kit'
 import { produce, readSec, type BeatPlan, type CardPlan, type InsertPlan } from './produce'
 import { carryFile, findVoice, loadVoice, writeRecordingRecord, type PreviousRecording, type RecordedCard, type RecordedInsert, type RecordedLine, type RecordedMusic, type RecordingRecord } from './recordingRecord'
 import { planPieces, remapTake, retimeFootage } from './retime'
@@ -931,6 +932,7 @@ export async function reviseRecording(inp: ReviseInput): Promise<ReviseOutcome> 
     ambience: mp.source === 'ambience' ? (mp.sounds as AmbienceSound[]) : undefined,
     musicLevel: mp.level,
     motif: r.motif,
+    backgrounds: keptBackgrounds(prev.dir, inp.runDir, r.introBackground),
     // a film that was cut is shorter on purpose: its closing card is not stretched back to the old length
     targetSec: a.launch && !a.cut.size ? a.launch.targetSec : undefined,
     keep: false,
@@ -983,4 +985,20 @@ export async function reviseRecording(inp: ReviseInput): Promise<ReviseOutcome> 
 /** the plain-words summary the screen shows under a changed video */
 export function revisionOf(request: string, route: RecordingRevision['route'], source: 'ai' | 'rules', out: { changed: string[]; kept: string[]; cannot: string[] }): RecordingRevision {
   return { request, route, source, changed: out.changed, kept: out.kept, cannot: out.cannot }
+}
+
+/** the AI-designed title and closing backgrounds a run kept, read again so a changed film is rendered on the same ones */
+function keptBackgrounds(fromDir: string, runDir: string, kept: RecordingRecord['introBackground']): { title?: SceneBackground; outro?: SceneBackground } | undefined {
+  if (!kept?.title) return undefined
+  const read = (rel?: string): SceneBackground | undefined => {
+    if (!rel || !carryFile(fromDir, runDir, rel)) return undefined
+    try {
+      const j = JSON.parse(readFileSync(join(runDir, rel), 'utf8')) as SceneBackground
+      return j?.code && typeof j.code.js === 'string' ? j : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const title = read(kept.title)
+  return title ? { title, outro: read(kept.outro) } : undefined
 }

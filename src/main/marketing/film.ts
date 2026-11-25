@@ -18,6 +18,9 @@ import { assemble, type FilmPiece, type PieceShot } from './assemble'
 import { iconFor, type IconName } from './overlays'
 import { planFromCard } from './agent/brief'
 import { directIntro } from './agent/intro'
+import { designFilmBackgrounds } from '../introBg/film'
+import { IntroBackgroundLibrary } from '../introBg/library'
+import { introBackgroundsDir } from '../paths'
 import { renderProductScene, type ProductEntrance } from './productScene'
 import { filmFrame } from '@shared/shapes'
 import { reusedVoice, usableShots, voiceFileOf, writeFilmRecord, type FilmReuse, type FilmVoiceRecord } from './filmRecord'
@@ -46,6 +49,8 @@ export interface FilmInput {
   card: VideoCard
   profile: BusinessProfile
   chat: LLMProvider | null
+  /** where AI-designed scene backgrounds are kept for later films (default: the app's intro-backgrounds folder; null = not kept) */
+  introLibrary?: IntroBackgroundLibrary | null
   speech: SpeechProvider | null
   /** the AI clip, picture and music models; null = the free engine (scenes, captions, built-in score) */
   tools: MediaTools | null
@@ -577,6 +582,33 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
   const clipPrompts = inp.chat && inp.tools && allKinds.includes('clip') ? await writeClipPrompts(allBeats, allKinds, card, p, inp.chat, brand, motif, plan.look.style, say) : new Map<number, string>()
   const clipSec = clipSeconds(targetSec)
   const logo = p.brand.logoFile && existsSync(p.brand.logoFile) ? p.brand.logoFile : undefined
+  // the backgrounds of the animated points and of the closing scene are designed by the AI for this business (never the drawn motif,
+  // which is only the last resort and is reported in the notes)
+  inp.progress('media', 'Designing the scene backgrounds')
+  const designed = await designFilmBackgrounds({
+    chat: inp.chat,
+    library: inp.introLibrary === undefined ? new IntroBackgroundLibrary(introBackgroundsDir) : inp.introLibrary,
+    dir: join(inp.runDir, 'intro-background'),
+    size: frame,
+    topic: `${p.name}: ${card.solution}`,
+    product: p.name,
+    about: `${p.tagline ?? ''} ${p.about}`.trim(),
+    narration: [script.problemLine, ...script.beats.map((b) => b.line), script.close].join(' '),
+    title: { pill: script.beats[0]?.chapter, headline: script.beats[0]?.headline ?? p.name },
+    outro: { pill: clean(plan.close.cta.toUpperCase(), 24), headline: p.name, sub: p.tagline },
+    hasLogo: !!logo,
+    logo,
+    accent: p.brand.accent,
+    backdrop: p.brand.backdrop,
+    colors: p.brand.colors,
+    style: plan.look.style,
+    mood: plan.voice.tone,
+    drawnName: motif,
+    signal: inp.signal,
+    say
+  })
+  check()
+  notes.push(...designed.notes)
   const idOf = (i: number): string => (i === 0 ? 'problem' : script.beats[i - 1].pointId ?? `p${i}`)
   const wantedOf = (i: number): Show => (i === 0 ? plan.problem.show : plan.points.find((x) => x.id === script.beats[i - 1].pointId)?.show ?? 'any')
 
@@ -750,7 +782,7 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
     } else {
       // the animated point: the beat as its own moving card
       const want = Math.min(8, Math.max(4.2, sec - 0.2))
-      const scene = await renderScene({ kind: 'point', motif, pill: b.chapter, headline: b.headline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: want, size: frame }, join(inp.runDir, `scene-beat-${i}.mp4`))
+      const scene = await renderScene({ kind: 'point', motif, pill: b.chapter, headline: b.headline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: want, size: frame, background: designed.title }, join(inp.runDir, `scene-beat-${i}.mp4`))
       pieces.push({ kind: 'scene', file: scene.file, text: b.line, chapter: b.chapter, pcm, sec: Math.max(want, sec), srcSec: scene.durationSec })
       made.push({ id, wanted, made: 'scene', line: b.line, ...(fellBack ? { fellBack } : {}), attempts: Math.max(1, attempts) })
     }
@@ -824,13 +856,13 @@ export async function runMarketingFilm(inp: FilmInput): Promise<FilmResult> {
     } else {
       notes.push('No AI writer is set up, so the drawn opening card is used.')
     }
-    if (!opening) opening = await renderScene({ kind: 'problem', motif, headline: script.problemHeadline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: introSec, size: frame }, join(inp.runDir, 'scene-problem.mp4'))
+    if (!opening) opening = await renderScene({ kind: 'problem', motif, headline: script.problemHeadline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: introSec, size: frame, background: designed.title }, join(inp.runDir, 'scene-problem.mp4'))
     pieces[0] = { ...pieces[0], file: opening.file, sec: problemSec, srcSec: opening.durationSec }
   }
-  const outroScene = await renderScene({ kind: 'outro', motif, pill: clean(plan.close.cta.toUpperCase(), 24), headline: p.name, sub: p.tagline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: Math.min(8, outroSec), size: frame }, join(inp.runDir, 'scene-outro.mp4'))
+  const outroScene = await renderScene({ kind: 'outro', motif, pill: clean(plan.close.cta.toUpperCase(), 24), headline: p.name, sub: p.tagline, accent: p.brand.accent, backdrop: p.brand.backdrop, logo, durationSec: Math.min(8, outroSec), size: frame, background: designed.outro ?? designed.title }, join(inp.runDir, 'scene-outro.mp4'))
   pieces.push({ kind: 'scene', file: outroScene.file, text: closeText, pcm: closePcm, sec: outroSec, srcSec: outroScene.durationSec, chapter: '', fadeOut: true, push: true })
   made.push({ id: 'close', wanted: 'close', made: 'scene', line: closeText, attempts: 1 })
-  elements.push('Animated scenes (HTML/canvas)')
+  elements.push(designed.title ? 'AI-designed scene backgrounds (HTML/canvas/SVG)' : 'Animated scenes (HTML/canvas)')
 
   const keptMusic = !noMusic && inp.reuse?.music && existsSync(inp.reuse.music) ? inp.reuse.music : undefined
   const wantAiMusic = !noMusic && (!!keptMusic || (inp.aiMusic && !!inp.tools?.music && modelPick !== 'builtin:procedural'))

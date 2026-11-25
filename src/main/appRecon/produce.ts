@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { natureAmbience, type AmbienceSound } from '../audio/ambience'
 import { renderScene, type Motif } from './scenes'
+import type { SceneBackground } from '../introBg/kit'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import sharp from 'sharp'
@@ -421,6 +422,8 @@ export interface ProduceInput {
   ambience?: AmbienceSound[]
   /** the title, problem and closing cards are animated scenes built around this motif (still cards when a scene cannot be rendered) */
   motif?: Motif
+  /** AI-designed backgrounds for the title, problem and closing scenes (the drawn motif is only used for a scene that has none, or whose background could not be rendered) */
+  backgrounds?: { title?: SceneBackground; problem?: SceneBackground; outro?: SceneBackground }
   outro?: CardPlan
   /** the film is stretched (by holding the closing card) to this length when the parts are shorter */
   targetSec?: number
@@ -448,6 +451,9 @@ export interface ProduceResult {
   musicError?: string
   /** how many cards were rendered as animated scenes */
   scenes?: number
+  /** the scenes that sit on an AI-designed background, and the ones that had to use the drawn motif instead */
+  aiBackgroundScenes?: Array<'title' | 'problem' | 'outro'>
+  drawnScenes?: Array<'title' | 'problem' | 'outro'>
 }
 
 export async function produce(inp: ProduceInput): Promise<ProduceResult> {
@@ -630,12 +636,29 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
   let partNo = 0
   let sceneCount = 0
   /** the card as an animated scene (at most 8 s is rendered; the last frame is held), or null to use the still card */
+  const aiScenes: Array<'title' | 'problem' | 'outro'> = []
+  const drawnScenes: Array<'title' | 'problem' | 'outro'> = []
   const scene = async (kind: 'title' | 'problem' | 'outro', card: CardPlan, sec: number): Promise<{ file: string; sec: number } | null> => {
-    if (!inp.motif) return null
+    // the problem card sits on the title's background when it has none of its own
+    const background = inp.backgrounds?.[kind] ?? (kind === 'problem' ? inp.backgrounds?.title : undefined)
+    if (!inp.motif && !background) return null
+    const want = Math.min(8, sec)
+    const make = (bg?: SceneBackground) => renderScene({ kind, motif: inp.motif ?? 'cards', pill: card.pill, headline: card.headline, sub: card.sub, accent: card.accent, backdrop: inp.look?.backdrop, logo: card.logo && existsSync(card.logo) ? card.logo : undefined, durationSec: want, size: { width: W, height: H }, background: bg }, join(inp.dir, `scene-${kind}.mp4`))
+    if (background) {
+      try {
+        const r = await make(background)
+        sceneCount++
+        aiScenes.push(kind)
+        return { file: r.file, sec: r.durationSec }
+      } catch (err) {
+        inp.log?.(`The AI background for the ${kind} scene could not be rendered (${String((err as Error)?.message ?? err).slice(0, 100)}), so the drawn motif is used.`)
+        if (!inp.motif) return null
+      }
+    }
     try {
-      const want = Math.min(8, sec)
-      const r = await renderScene({ kind, motif: inp.motif, pill: card.pill, headline: card.headline, sub: card.sub, accent: card.accent, backdrop: inp.look?.backdrop, logo: card.logo && existsSync(card.logo) ? card.logo : undefined, durationSec: want, size: { width: W, height: H } }, join(inp.dir, `scene-${kind}.mp4`))
+      const r = await make()
       sceneCount++
+      drawnScenes.push(kind)
       return { file: r.file, sec: r.durationSec }
     } catch (err) {
       inp.log?.(`The animated ${kind} scene could not be made (${String((err as Error)?.message ?? err).slice(0, 100)}), so a still card is used.`)
@@ -696,5 +719,5 @@ export async function produce(inp: ProduceInput): Promise<ProduceResult> {
     'final video'
   )
   if (!inp.keep) rmSync(wav, { force: true })
-  return { file, durationSec: total, captionsFile, musicSource, musicError, scenes: sceneCount }
+  return { file, durationSec: total, captionsFile, musicSource, musicError, scenes: sceneCount, aiBackgroundScenes: aiScenes, drawnScenes }
 }
