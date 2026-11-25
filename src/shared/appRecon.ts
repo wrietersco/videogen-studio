@@ -141,7 +141,7 @@ export type FindSpec = z.infer<typeof FindSpec>
  */
 export const StepKind = z.enum([
   'goto', 'type', 'click', 'press', 'wait', 'expect', 'handoff', 'scroll', 'reveal', 'select', 'scrollto', 'hover', 'mark',
-  'key', 'drag', 'dblclick', 'slider', 'date', 'scrollUntil', 'whenever'
+  'key', 'drag', 'dblclick', 'slider', 'date', 'scrolluntil', 'whenever', 'pick'
 ])
 export const Step = z.object({
   id: z.string(),
@@ -272,6 +272,8 @@ export interface ScrollUntilAtom {
   action: 'scrollUntil'
   label: string
   text: string
+  /** which way (default down). `find.within` names the row/feed/list that scrolls; none means the page */
+  dir?: 'down' | 'up' | 'left' | 'right'
   find: FindSpec
 }
 /**
@@ -314,8 +316,12 @@ export type Atom =
   | { action: 'click'; label: string; find: FindSpec }
   /** choose one entry in a dropdown ("select Surah An-Nur" in the "Text to Study" dropdown) */
   | { action: 'select'; label: string; option: string; find: FindSpec }
-  /** `replace`: select what is in the box first and type over it ("change plan to team", "rename it to X"); otherwise the text is added */
-  | { action: 'type'; label: string; text: string; find: FindSpec; replace?: boolean }
+  /**
+   * `replace`: select what is in the box first and type over it ("change plan to team", "rename it to X"); otherwise the text is added.
+   * `focused`: type into whatever has focus now (after a key press that opened a palette, or a double-click that opened an inline edit),
+   * falling back to `find` when nothing editable has focus.
+   */
+  | { action: 'type'; label: string; text: string; find: FindSpec; replace?: boolean; focused?: boolean }
   | { action: 'scroll'; dir: 'down' | 'up'; find: FindSpec }
   /** scroll until a named part of the page ("the Whole-Quran even–odd circle") is on screen */
   | { action: 'scrollto'; dir: 'down' | 'up'; label: string; find: FindSpec }
