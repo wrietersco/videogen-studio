@@ -1,5 +1,6 @@
 import type { LLMProvider } from '../providers/types'
 import { scanNarration, scrubText } from './detect'
+import { BULLET } from './stepScript'
 
 /**
  * AI-made supporting media for a recorded app video.
@@ -77,8 +78,8 @@ function sentencesOfLine(line: string): string[] {
 const typedPart = (context: string): string => context.split(/\n\s*Attached notes \(information only\):/)[0] ?? ''
 
 /** a line of a numbered list of steps: "click Generate video" is a step to perform, not a request for AI footage */
-const LIST_LINE = /^\s*(?:(?:step\s*)?\d{1,2}\s*[.):-]|[-*•▪●])\s+/i
-const STEP_VERB = /^\s*(?:(?:step\s*)?\d{1,2}\s*[.):-]|[-*•▪●])?\s*(?:(?:and|then|now|next|please|from|in|on)\b[^,]{0,40},?\s*)?(?:click|press|tap|select|choose|open|go\s+to|navigate|type|enter|scroll|log|sign)\b/i
+const LIST_LINE = BULLET
+const STEP_VERB = /^\s*(?:[>»›→#]+\s*)*(?:(?:step\s*)?\d{1,3}\s*[.):-]|[-*•▪●])?\s*(?:(?:and|then|now|next|please|from|in|on)\b[^,]{0,40},?\s*)?(?:click|press|tap|select|choose|open|go\s+to|navigate|type|enter|scroll|log|sign)\b/i
 
 const PLACE_WORD = /\b(?:intro|outro|opening|closing|ending)\b/i
 

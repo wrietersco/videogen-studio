@@ -3,7 +3,7 @@ import type { CardSegment, ClipSegment, FilmPlan, BriefInput, MusicSpec, Narrati
 import { scrubText } from '../detect'
 import { isDurationSentence, isStyleSentence, parseClipStyle, partSeconds } from '../aiMedia'
 import { parseDirectives } from '../directives'
-import { parseStepScript } from '../stepScript'
+import { BULLET, parseStepScript } from '../stepScript'
 
 /**
  * PLAN stage, part 1: read the WHOLE typed brief into a FilmPlan.
@@ -23,7 +23,8 @@ const notesOf = (context: string): string => (context.match(NOTES_MARK) ? contex
 
 // ------------------------------------------------------------------ units (lines and sentences)
 
-const LIST_LINE = /^\s*(?:(?:step\s*)?\d{1,2}\s*[.):-]|[-*•▪●])\s+/i
+/** a list line of the typed brief: the same pattern as the step script, so ">>6." and "step 6:" count everywhere */
+const LIST_LINE = BULLET
 const SENTENCE_BREAK = /(?<=[.!?])\s+(?=[A-Z"“(])|(?<=[A-Za-z0-9)]{3}[.!?])\s+(?=[a-z])/
 
 /** the typed brief as units: a list line stays whole, any other line is split into sentences */
