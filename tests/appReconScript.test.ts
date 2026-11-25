@@ -309,7 +309,10 @@ describe.skipIf(!findChrome() || !canShowWindow())('a whole video from the steps
     const out = await runAppRecording({ ...base('missing', '1. click ontology\n2. click "Quantum teleporter"\n3. click ontology'), stopAfter: 'plan' }, hooks())
     expect(events).toEqual(['nav-ontology', 'nav-ontology']) // step 3 was still done
     expect(out.plan.notes.join(' ')).toMatch(/Step 2 was not fully done: clicking "Quantum teleporter" was skipped/)
-    expect(out.plan.beats[1].facts.join(' ')).toMatch(/NOT SHOWN/)
+    // a step that could not be done has no beat (nothing is shown or said about it); the notes list it
+    expect(out.plan.beats).toHaveLength(2)
+    expect(out.plan.notes.join(' ')).toMatch(/Step 2 \("click "Quantum teleporter""\) was not done at all/)
+    expect(out.plan.notes[0]).not.toMatch(/exactly as written/)
   }, 120000)
 })
 

@@ -65,11 +65,31 @@ export interface ItemResult {
   seen: string[]
   /** the step was done but the screen looks the same as before it (said so to the narration, and in the run's notes) */
   unchanged?: boolean
+  /** what became of each small action of the step, in the order of `item.atoms` */
+  parts: PartResult[]
+  /**
+   * done: every part was performed and verified; partial: some were; not-done: none (the step is listed in the run notes);
+   * narrated: the step only says something (nothing was to be done on the page); login: the engine's own sign-in
+   */
+  status: 'done' | 'partial' | 'not-done' | 'narrated' | 'login'
+}
+
+export interface PartResult {
+  /** it was performed */
+  done: boolean
+  /** the page showed the expected effect (an action that was performed but not verified is reported as skipped, never as done) */
+  verified: boolean
+  /** the screen changed because of it */
+  changed: boolean
 }
 
 export interface ScriptOutcome {
   results: ItemResult[]
   actions: number
+  /** how the steps went: the film is only `done` when most of them changed the page as written */
+  stats?: { total: number; done: number; partial: number; notDone: number; narrated: number; unchanged: number; effective: number }
+  /** most of the steps did nothing visible: the run is partial, not done */
+  mostlyUnchanged?: boolean
   failure?: string
   /** every part left out, with the step it belonged to */
   skipped: Array<SkippedPart & { n: number; said: string }>
@@ -85,6 +105,19 @@ export interface ScriptInput {
   log: (m: string) => void
   signal?: AbortSignal
   vision?: VisionPick
+  /** a step that is a goal ("show how a customer books ...") has no clicks yet: this makes them from the page (null: it cannot) */
+  planGoal?: (req: { item: ScriptItem; page: Page; log: (m: string) => void }) => Promise<Atom[] | GoalPerformed | null>
+}
+
+/**
+ * What a goal planner answers when it worked on the page itself (it looks at the page after each action, so it has to act as it
+ * plans): the steps it already performed, as results of their own, to be used as they are. performScript does not perform them again.
+ * Every result carries the written number of the goal step in `item.written`, so the notes count the goal as one step.
+ */
+export interface GoalPerformed {
+  performed: ItemResult[]
+  skipped: ScriptOutcome['skipped']
+  actions: number
 }
 
 const where = (f: FindSpec): string => [f.region ? `on the ${f.region}` : '', f.within?.length ? `in the ${f.within.join('/')} area` : '', f.relation ? `${f.relation.rel.replace('Of', ' of')} "${f.relation.to}"` : ''].filter(Boolean).join(', ')
@@ -287,13 +320,19 @@ export async function performScript(inp: ScriptInput): Promise<ScriptOutcome> {
       // the newer kinds (keys, drag, double-click, sliders, dates, scroll-until, whenever, pick) are performed by atomExec.ts
       if (isNewAtom(atom)) {
         const res = await execNewAtom(atom, { page, gate, log: inp.log, relaxed, said: item.said, vision: inp.vision, last: run.last, locate: loc })
-        for (const k of res.skipped) inp.log(`    SKIPPED ${k.what}: ${k.why}`)
-        cur.steps.push(...res.steps)
-        cur.seen.push(...res.seen)
-        cur.skipped.push(...res.skipped)
-        cur.did += res.did
-        cur.changed = res.changed
-        cur.verified = res.verified
+        const tried = res.did > 0 && !res.verified
+        const skips = [...res.skipped]
+        // performed but the page did not show the expected effect: it is not claimed as done, and it is not recorded
+        if (tried && !skips.length) skips.push({ what: `${atom.label}`, why: 'it was tried, but the page did not show the expected result' })
+        for (const k of skips) inp.log(`    SKIPPED ${k.what}: ${k.why}`)
+        cur.skipped.push(...skips)
+        if (!tried) {
+          cur.steps.push(...res.steps)
+          cur.seen.push(...res.seen)
+          cur.did += res.did
+          cur.changed = res.changed
+          cur.verified = res.verified
+        }
         if (res.last) run.last = res.last
         continue
       }
@@ -497,13 +536,25 @@ export async function performScript(inp: ScriptInput): Promise<ScriptOutcome> {
     return run
   }
 
-  for (const item of inp.script.items) {
+  for (const item0 of inp.script.items) {
+    let item = item0
     if (inp.signal?.aborted) return { results, actions, failure: 'Cancelled', skipped: skippedAll }
     if (item.login) {
-      results.push({ item, steps: [], areaText: '', picks: [], skipped: [], seen: [] })
+      results.push({ item, steps: [], areaText: '', picks: [], skipped: [], seen: [], parts: [], status: 'login' })
       continue
     }
     inp.log(`  step ${numberOf(item)}: ${item.said}`)
+    // a goal has no clicks yet: they are made from the page when something can do that
+    if (!item.atoms.length && item.goal && inp.planGoal) {
+      const planned = await inp.planGoal({ item, page, log: inp.log }).catch(() => null)
+      if (planned && !Array.isArray(planned)) {
+        results.push(...planned.performed)
+        skippedAll.push(...planned.skipped)
+        actions += planned.actions
+        continue
+      }
+      if (planned?.length) item = { ...item, atoms: planned, goal: undefined }
+    }
     const acts = item.atoms.some((a) => a.action !== 'open')
     const first = await runAtoms(item, false)
     if ('failure' in first) return fail(item, first.failure)
@@ -542,10 +593,43 @@ export async function performScript(inp: ScriptInput): Promise<ScriptOutcome> {
     const steps = all.steps
     const lastStep = steps[steps.length - 1]
     if (steps.length && !steps.every((s) => s.kind === 'scroll' || s.kind === 'scrollto') && !(lastStep.kind === 'wait' && lastStep.intent === 'inspect')) steps.push({ kind: 'wait', intent: 'inspect', label: 'result', focus: 'page' })
-    for (const s of all.skipped) skippedAll.push({ ...s, n: numberOf(item), said: item.said })
-    results.push({ item, steps, areaText, picks: all.picks, beforeText: run.beforeText, skipped: all.skipped, seen: all.seen, ...(unchanged ? { unchanged: true } : {}) })
+    // nothing is dropped silently: what was written but not understood, and a step with no action at all, are skipped parts with a reason
+    const skipped = [...all.skipped]
+    for (const u of item.unread) skipped.push({ what: `"${u}"`, why: `no action understood in "${u}"` })
+    const onlySays = !item.atoms.length && !item.goal && (item.narration || !!item.explain)
+    if (!item.atoms.length && !onlySays && !item.unread.length) {
+      skipped.push(item.goal
+        ? { what: `the goal "${item.goal.slice(0, 90)}"`, why: 'no concrete action was worked out for it, so nothing was done on the page' }
+        : { what: `the step "${item.said.slice(0, 90)}"`, why: `no action understood in "${item.said.slice(0, 90)}"` })
+    }
+    for (const s of skipped) skippedAll.push({ ...s, n: numberOf(item), said: item.said })
+    const parts: PartResult[] = item.atoms.map((_, i) => {
+      const p = run.per[i]
+      return { done: !!p && p.did > 0, verified: !!p && p.did > 0 && p.verified !== false, changed: !!p?.changed }
+    })
+    const doneParts = parts.filter((x) => x.done && x.verified).length
+    const status: ItemResult['status'] = onlySays ? 'narrated' : !item.atoms.length ? 'not-done' : doneParts === 0 ? 'not-done' : doneParts === parts.length && !skipped.length ? 'done' : 'partial'
+    results.push({ item, steps, areaText, picks: all.picks, beforeText: run.beforeText, skipped, seen: all.seen, parts, status, ...(unchanged ? { unchanged: true } : {}) })
   }
-  return { results, actions, skipped: skippedAll }
+  // how the steps went
+  // a goal worked out by the planner is several results with the same written number: it counts as the one step it was
+  const byStep = new Map<number, ItemResult[]>()
+  for (const r of results) if (r.status !== 'login' && r.status !== 'narrated') byStep.set(numberOf(r.item), [...(byStep.get(numberOf(r.item)) ?? []), r])
+  const counted = [...byStep.values()].map((g): Pick<ItemResult, 'status' | 'unchanged'> => ({
+    status: g.every((r) => r.status === 'done') ? 'done' : g.every((r) => r.status === 'not-done') ? 'not-done' : 'partial',
+    unchanged: g.every((r) => r.unchanged)
+  }))
+  const stats = {
+    total: counted.length,
+    done: counted.filter((r) => r.status === 'done').length,
+    partial: counted.filter((r) => r.status === 'partial').length,
+    notDone: counted.filter((r) => r.status === 'not-done').length,
+    narrated: results.filter((r) => r.status === 'narrated').length,
+    unchanged: counted.filter((r) => r.unchanged).length,
+    effective: counted.filter((r) => r.status === 'done' && !r.unchanged).length
+  }
+  const mostlyUnchanged = stats.total > 0 && stats.effective * 2 < stats.total
+  return { results, actions, skipped: skippedAll, stats, mostlyUnchanged }
 }
 
 
@@ -574,7 +658,16 @@ export function scriptPlan(inp: ScriptPlanInput): Plan {
   const s = (t: string) => scrubText(t, { values: inp.secrets })
   const steps: Step[] = []
   const beats: BeatFacts[] = []
-  const notes: string[] = [`Your ${inp.outcome.results.length} steps are done exactly as written and in order${inp.outcome.results.some((r) => r.item.login) ? ' (the log-in step is done by the sign-in you set up)' : ''}; nothing else was explored.`]
+  const st0 = inp.outcome.stats
+  const loginNote = inp.outcome.results.some((r) => r.item.login) ? ' (the log-in step is done by the sign-in you set up)' : ''
+  // "exactly as written" is said only when it is true: every step was done and the page showed it
+  const allDone = !st0 || (st0.partial === 0 && st0.notDone === 0)
+  const nSteps = new Set(inp.outcome.results.map((r) => numberOf(r.item))).size
+  const notes: string[] = [
+    allDone
+      ? `Your ${nSteps} steps are done exactly as written and in order${loginNote}; nothing else was explored.`
+      : `Of your ${nSteps} steps, ${st0.done} were done as written${st0.partial ? `, ${st0.partial} only in part` : ''}${st0.notDone ? ` and ${st0.notDone} could not be done at all` : ''} (each one is listed below), in order${loginNote}; nothing else was explored.`
+  ]
   let sid = 0
   const id = () => `s${++sid}`
   const L = inp.map.login
@@ -594,10 +687,18 @@ export function scriptPlan(inp: ScriptPlanInput): Plan {
     notes.push('Step 1 (signing in) was done before recording started, so it is not shown on camera.')
   }
   for (const k of inp.outcome.skipped ?? []) notes.push(`Step ${k.n} was not fully done: ${k.what} was skipped (${k.why}). The narration does not claim it.`)
-  for (const r of inp.outcome.results) if (r.unchanged && !r.item.login) notes.push(`Step ${r.item.written ?? r.item.n}: the screen did not visibly change, so the narration describes only what is on screen.`)
+  for (const r of inp.outcome.results) {
+    if (r.item.login) continue
+    if (r.status === 'not-done') notes.push(`Step ${r.item.written ?? r.item.n} ("${r.item.said.slice(0, 80)}") was not done at all, so ${r.item.explain ? 'the film only shows the screen while the voice explains it, and the voice is told it was not done' : 'it is not in the film and the narration does not mention it'}.`)
+    else if (r.unchanged) notes.push(`Step ${r.item.written ?? r.item.n}: the screen did not visibly change, so the narration describes only what is on screen.`)
+  }
+  if (inp.outcome.mostlyUnchanged && st0) notes.push(`Only ${st0.effective} of ${st0.total} steps changed the page as written, so this film is only partly what you asked for. Check the notes above and record it again if you need every step.`)
   const first = beat
   for (const r of inp.outcome.results) {
     if (r.item.login) continue
+    // a step that could not be done at all has no beat: the film never shows or says what did not happen (the notes list it)
+    // (one the person also wants explained keeps its beat: the voice explains from the screen and is told the step was not done)
+    if (r.status === 'not-done' && !r.item.explain) continue
     // each entry chosen in a dropdown starts a beat of its own, so the page is shown (and explained) for every choice
     const groups: Array<{ steps: typeof r.steps; pick?: ItemResult['picks'][number] }> = [{ steps: [] }]
     let pi = 0
@@ -608,7 +709,8 @@ export function scriptPlan(inp: ScriptPlanInput): Plan {
     const hasMain = !!r.item.explain || r.item.atoms.some((a) => a.action !== 'select') || r.item.notes.length > 0
     if (groups.length > 1 && !groups[0].steps.length && !hasMain) groups.shift()
     for (const g of groups) {
-      for (const st of g.steps) steps.push({ ...st, id: id(), beat })
+      // a step that changed nothing is not held on screen (the film's length follows what was really shown)
+      for (const st of g.steps) steps.push({ ...st, id: id(), beat, ...(r.unchanged ? { holdMs: Math.min(st.holdMs ?? 1500, 1500) } : {}) })
       if (!steps.some((x) => x.beat === beat)) steps.push({ id: id(), beat, kind: 'wait', intent: groups.length > 1 ? 'inspect' : undefined, focus: 'page' })
       const lastOf = steps[steps.length - 1]
       if (groups.length > 1 && !g.pick && steps.some((x) => x.beat === beat && x.kind !== 'wait') && !(lastOf.kind === 'wait' && lastOf.intent === 'inspect')) steps.push({ id: id(), beat, kind: 'wait', intent: 'inspect', focus: 'page' })
@@ -622,17 +724,25 @@ export function scriptPlan(inp: ScriptPlanInput): Plan {
       } else {
         const left = r.skipped.length > 0
         const facts: string[] = [left ? `The person's own instruction for this step (part of it could not be done on the page, see below): "${s(r.item.said)}"` : `The person's own instruction for this step: "${s(r.item.said)}"`]
-        const notDone = (label: string): boolean => r.skipped.some((k) => k.what.toLowerCase().includes(label.toLowerCase()))
-        for (const a of r.item.atoms) {
-          if (a.action === 'select' || a.action === 'mark') continue // each choice has its beat below; a chart mark is told by what was seen
+        // facts come only from parts that were performed and verified
+        r.item.atoms.forEach((a, i) => {
+          if (a.action === 'select' || a.action === 'mark') return // each choice has its beat below; a chart mark is told by what was seen
+          const ok = !!r.parts[i]?.done && r.parts[i]?.verified !== false
+          if (!ok) return
           if (a.action === 'open') facts.push('Opens the page the person named')
-          else if (notDone(a.action === 'scroll' ? '\u0000' : a.label)) continue
           else if (a.action === 'click') facts.push(`Clicks "${s(a.label)}"${where(a.find) ? ` (${where(a.find)})` : ''}`)
-          else if (a.action === 'type') facts.push(`Types "${s(a.text)}" into the ${s(a.label)} box`)
+          else if (a.action === 'type') facts.push(a.replace ? `Replaces the text in the ${s(a.label)} box with "${s(a.text)}"` : `Types "${s(a.text)}" into the ${s(a.label)} box`)
           else if (a.action === 'hover') facts.push(`Rests the pointer on "${s(a.label)}"`)
           else if (a.action === 'scrollto') facts.push(`Scrolls ${a.dir} to the part of the page called "${s(a.label)}"`)
           else if (a.action === 'scroll') facts.push(`Scrolls ${a.dir}${where(a.find) ? ` (${where(a.find)})` : ''} through the area`)
-        }
+          else if (a.action === 'key') facts.push(`Uses the keyboard: ${s(a.label)}`)
+          else if (a.action === 'drag') facts.push(`Drags "${s(a.from)}" to "${s(a.to)}"${a.position ? ` (${a.position === 'top' || a.position === 'bottom' ? `at the ${a.position}` : `${a.position === 'before' ? 'above' : 'below'}${a.ref ? ` "${s(a.ref)}"` : ' a card'}`})` : ''}`)
+          else if (a.action === 'dblclick') facts.push(`Double-clicks "${s(a.label)}"`)
+          else if (a.action === 'slider') facts.push(`Moves the "${s(a.label)}" slider${a.min !== undefined && a.max !== undefined ? ` to cover ${a.min} to ${a.max}` : a.value !== undefined ? ` to about ${a.value}` : ''}`)
+          else if (a.action === 'date') facts.push(`Picks the date ${a.date} (the person said "${s(a.phrase)}")`)
+          else if (a.action === 'scrollUntil') facts.push(`Scrolls until "${s(a.text)}" is on screen`)
+          else if (a.action === 'pick') facts.push(`Chooses the ${s(a.label)}${a.ordinal ? ` (number ${a.ordinal})` : ''}${a.criterion ? ` with the ${a.criterion.replace('-', ' ')} ${a.field ? s(a.field) : 'value'}` : ''}`)
+        })
         for (const o of r.seen) facts.push(s(o))
         for (const k of r.skipped) facts.push(`NOT SHOWN: ${s(k.what)} could not be done on the page (${s(k.why)}). Do not say or imply that it was done; describe only what is on screen.`)
         if (r.unchanged) facts.push('The screen did not visibly change during this step. Do not say that something opened, changed or was revealed; describe only what is on screen.')
@@ -641,7 +751,7 @@ export function scriptPlan(inp: ScriptPlanInput): Plan {
         if (r.item.explain && text) facts.push(`What that area of the screen says (explain from this, do not invent anything beyond it): ${s(text).slice(0, 1500)}`)
         for (const n of r.item.notes) facts.push(`Also in the step: ${s(n)}`)
         // what is said without any model must not claim what was not done
-        const nothingDone = left && r.item.atoms.every((a) => a.action === 'open' || a.action === 'select' || (a.action === 'mark' ? r.skipped.some((k) => k.what.includes(a.noun)) : a.action === 'scroll' ? false : notDone(a.label)))
+        const nothingDone = left && r.item.atoms.every((a, i) => a.action === 'open' || a.action === 'select' || !r.parts[i]?.done)
         const line = nothingDone ? 'This is what the page shows at this point.' : r.unchanged || left ? 'Take a look at what is on screen here.' : plainStep(r.item)
         beats.push({ beat, kind: 'step', chapter: chapterOf(r.item), facts, fallback: r.item.explain ? `${line.replace(/\.$/, '')}. Take a moment to read what this area lists.` : line, launchFallback: line, long: !!r.item.explain })
       }

@@ -11,7 +11,8 @@ import { prepare } from '../src/main/appRecon/recorder'
 import { runAppRecording, type RunHooks } from '../src/main/appRecon/run'
 import { parseStepScript } from '../src/main/appRecon/stepScript'
 import { agentFilmsPages } from '../src/main/appRecon/agent/loop'
-import { goalListScript, goalNotes, goalSegments, isGoalItem, isGoalText, performWithGoals, runGoal, scriptFromPlan } from '../src/main/appRecon/goalPlanner'
+import { goalNotes, goalPlanHook, goalSegments, isGoalItem, isGoalText, runGoal, scriptFromPlan } from '../src/main/appRecon/goalPlanner'
+import { performScript } from '../src/main/appRecon/script'
 import { buildAtom, type Rails } from '../src/main/appRecon/goalGuard'
 import { renderStudy, studyPage } from '../src/main/appRecon/goalStudy'
 import { startGoalSites, type GoalSites } from './fixtures/goalSites'
@@ -26,7 +27,7 @@ describe('what is a goal and what is an action', () => {
     const mixed = parseStepScript('1. open `http://localhost:4712/`\n2. click the button `Load sample data`\n3. explain the Regional distribution section on the dashboard and give live examples\n4. scroll back to the top')!
     expect(mixed.items.map(isGoalItem)).toEqual([false, false, true, false])
     const shop = parseStepScript('1. open `http://localhost:4715/`\n2. find a gift under £50 for a runner\n3. add it to the cart')!
-    expect(shop.items.map(isGoalItem)).toEqual([false, true, true])
+    expect(shop.items.map(isGoalItem)).toEqual([false, true, false])
     const tasks = parseStepScript('1. log in\n2. walk through what happens when a task is overdue\n3. open Settings and turn on Dark mode')!
     expect(tasks.items.map(isGoalItem)).toEqual([false, true, false])
     const forge = parseStepScript('1. open `http://localhost:4714/`\n2. open the sidebar\n3. demonstrate the API playground\'s error handling\n4. click Yes, helpful')!
@@ -51,10 +52,9 @@ describe('what is a goal and what is an action', () => {
 
   it('reads a list made only of goals and a sign-in, and keeps the steps around them in order', () => {
     const brief = '# steps\n\n1. sign in with the test account\n2. show how a customer would book a colour appointment with the colour specialist for a weekday morning next week\n3. finish by confirming the booking and closing the confirmation'
-    expect(parseStepScript(brief)).toBeNull()
-    const s = goalListScript(brief)!
-    expect(s.items.map((i) => (i.login ? 'login' : isGoalItem(i) ? 'goal' : 'step'))).toEqual(['login', 'goal', 'goal'])
-    expect(goalListScript('1. click Pricing\n2. click Contact')).toBeNull()
+    const s = parseStepScript(brief)!
+    expect(s.items.map((i) => (i.login ? 'login' : isGoalItem(i) ? 'goal' : 'step'))).toEqual(['login', 'goal', 'step'])
+    expect(parseStepScript('1. click Pricing\n2. click Contact')!.items.some(isGoalItem)).toBe(false)
   })
 
   it('turns the pages of a plan into steps: an address is opened, a goal is kept whole, with what must be made clear', () => {
@@ -182,7 +182,7 @@ describe.skipIf(!runnable)('the goal planner on real pages', () => {
     sites.events.length = 0
     return { page, gate: g }
   }
-  const goal = (said: string, extra: object = {}) => ({ n: 3, written: 3, said, login: false, atoms: [], notes: [], ...extra })
+  const goal = (said: string, extra: object = {}) => ({ n: 3, written: 3, said, goal: said, login: false, atoms: [], notes: [], unread: [], ...extra })
   const deps = (o: { page: Page; gate: PolicyGate }, chat: LLMProvider | null, brief = '') => ({ page: o.page, gate: o.gate, chat, log: () => undefined, brief, secrets: [], known: [] })
 
   it('studies a long page as an outline: headings in order, controls under them, the data in the rows', async () => {
@@ -348,13 +348,19 @@ describe.skipIf(!runnable)('the goal planner on real pages', () => {
       decision('continue', [{ do: 'click', target: 'West', why: 'A middle value for comparison.' }]),
       decision('done', [], { reason: 'Two regions shown.' })
     ])
-    const out = await performWithGoals({ page: o.page, gate: o.gate, script, log: () => undefined, chat: model, brief: '', secrets: [], known: [] })
+    const hook = goalPlanHook({ gate: o.gate, chat: model, brief: '', secrets: [], known: [], script: () => script })
+    const out = await performScript({ page: o.page, gate: o.gate, script, log: () => undefined, planGoal: hook.plan })
     expect(sites.events).toEqual(['tab:residential', 'pick:East', 'pick:West', 'tab:commercial'])
-    expect(out.reports).toHaveLength(1)
-    expect(out.outcome.failure).toBeUndefined()
-    // the script that was performed has the goal replaced by the actions worked out for it, in the same place
-    expect(out.script.items.map((i) => i.atoms.map((a) => a.action).join('+'))).toEqual(['click', 'scrollto+click', 'click', 'click'])
-    expect(out.outcome.results.map((r) => r.item.written ?? r.item.n)).toEqual([1, 2, 2, 3])
+    expect(hook.reports).toHaveLength(1)
+    expect(out.failure).toBeUndefined()
+    // the goal is replaced, in its place, by the actions worked out for it; each result keeps the written number of the goal
+    expect(out.results.map((r) => r.item.atoms.map((a) => a.action).join('+'))).toEqual(['click', 'scrollto+click', 'click', 'click'])
+    expect(out.results.map((r) => r.item.written ?? r.item.n)).toEqual([1, 2, 2, 3])
+    // and the goal counts as the one step it was
+    expect(out.stats).toMatchObject({ total: 3, done: 3 })
+    // the planner was told what comes before and after the goal
+    expect(model.prompts[0].prompt).toMatch(/ALREADY DONE[\s\S]*Residential/)
+    expect(model.prompts[0].prompt).toMatch(/COME AFTER[\s\S]*Commercial/)
     await o.page.close()
   }, 120000)
 
@@ -362,9 +368,10 @@ describe.skipIf(!runnable)('the goal planner on real pages', () => {
     const o = await open('/')
     const script = parseStepScript('1. click the button `Residential`\n2. click the button `Commercial`')!
     const model = fakeModel([])
-    const out = await performWithGoals({ page: o.page, gate: o.gate, script, log: () => undefined, chat: model, brief: '', secrets: [], known: [] })
+    const hook = goalPlanHook({ gate: o.gate, chat: model, brief: '', secrets: [], known: [], script: () => script })
+    await performScript({ page: o.page, gate: o.gate, script, log: () => undefined, planGoal: hook.plan })
     expect(model.prompts).toHaveLength(0)
-    expect(out.reports).toHaveLength(0)
+    expect(hook.reports).toHaveLength(0)
     expect(sites.events).toEqual(['tab:residential', 'tab:commercial'])
     await o.page.close()
   }, 120000)
@@ -410,7 +417,7 @@ describe.skipIf(!runnable || !canShowWindow())('a whole brief that only says wha
     const out = await runAppRecording(base('whole', brief, chat), hooks())
     expect(sites.events.filter((e) => e.startsWith('add:'))).toEqual(['add:Merino Trail Socks'])
     const notes = out.plan.notes.join('\n')
-    expect(notes).toMatch(/was a goal/)
+    expect(notes).toMatch(/Goal in step 1/)
     expect(notes).toMatch(/Max price/)
     expect(notes).not.toMatch(/is not a link/)
     // what the film will say comes from actions that were performed on the real page

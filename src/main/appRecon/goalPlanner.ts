@@ -5,7 +5,7 @@ import type { LLMProvider } from '../providers/types'
 import { scrubText } from './detect'
 import type { PolicyGate } from './policy'
 import { performScript, type ItemResult, type ScriptInput, type ScriptOutcome, type VisionPick } from './script'
-import { BULLET, parseStepScript, type Atom, type ScriptItem, type StepScript } from './stepScript'
+import type { Atom, ScriptItem, StepScript } from './stepScript'
 import { buildAtom, bestSection, BASE_ACTIONS, describeAtom, tokens, type Capable, type ModelAction, type Rails } from './goalGuard'
 import { diffStudy, renderStudy, screenshotForModel, studyPage, type PageStudy, type StudyControl } from './goalStudy'
 
@@ -61,8 +61,13 @@ export function isGoalText(text: string): boolean {
   return /\bexplain\b/i.test(t) && EXPLAIN_TOPIC.test(t)
 }
 
-/** a step the typed-step reader could not turn into an action, and that reads as a goal */
+/** a step the typed-step reader marked as a goal (it has no atoms and carries the person's words in `goal`) */
 export function isGoalItem(item: ScriptItem): boolean {
+  return !item.login && !item.atoms.length && !!item.goal
+}
+
+/** the older, wording-only reading of a step as a goal (kept for plans that are not read by the step reader) */
+export function looksLikeGoalItem(item: ScriptItem): boolean {
   if (item.login) return false
   if (item.atoms.length === 0) {
     if (isGoalText(item.said)) return true
@@ -71,21 +76,6 @@ export function isGoalItem(item: ScriptItem): boolean {
   }
   // clicks whose "label" is a sentence ("click how errors are handled") are goals in disguise
   return item.atoms.every((a) => a.action === 'click' && (a.label.trim().split(/\s+/).length >= 6 || /^(?:how|what|why|which|where|when)\b/i.test(a.label.trim())))
-}
-
-/**
- * A written list whose lines are all goals reads as no list at all in the typed-step reader (it needs one line with an action).
- * It is read here by adding one probe step and dropping it again, so the steps around the goals (a sign-in, a final click) are
- * still done in order. Null when the list holds no goal.
- */
-export function goalListScript(context: string): StepScript | null {
-  const typed = context.split(/\n\s*Attached notes \(information only\):/)[0] ?? ''
-  if (typed.split('\n').filter((l) => BULLET.test(l)).length < 2) return null
-  const probe = parseStepScript(`${typed}\n999. click "goal probe"`)
-  if (!probe) return null
-  const items = probe.items.filter((i) => i.said !== 'click "goal probe"')
-  if (!items.some(isGoalItem)) return null
-  return { ...probe, items }
 }
 
 const segText = (s: PageSegment): string => [s.said, ...(s.explain ?? []), s.target ?? ''].join('. ')
@@ -105,16 +95,16 @@ export function scriptFromPlan(plan: FilmPlan, o: { asGoals?: boolean } = {}): S
   for (const s of plan.segments) {
     if (s.kind !== 'page') continue
     const explain = s.explain?.length ? s.explain.join(' ') : undefined
-    const base = { n: ++n, login: false, notes: [] as string[], ...(explain ? { explain } : {}) }
+    const base = { n: ++n, login: false, notes: [] as string[], unread: [] as string[], ...(explain ? { explain } : {}) }
     if (s.url) {
       items.push({ ...base, said: `Open ${s.url}`, atoms: [{ action: 'open', label: 'Open page', url: s.url }] })
     } else if (o.asGoals || isGoalText(segText(s))) {
-      items.push({ ...base, said: s.said.trim(), atoms: [] })
+      items.push({ ...base, said: s.said.trim(), atoms: [], goal: s.said.trim() })
     } else if (s.target) {
       items.push({ ...base, said: `Open ${s.target}`, atoms: [{ action: 'click', label: s.target, find: { target: s.target, kind: 'click' } }] })
     }
   }
-  return { items, goal: plan.goal }
+  return { items, goal: plan.goal, source: 'plan', tone: [], whenever: [] }
 }
 
 // ------------------------------------------------------------------ what the model is asked
@@ -380,7 +370,7 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
   const B: Budget = { ...DEFAULT_BUDGET, ...deps.budget }
   const caps = deps.caps ?? DEFAULT_CAPS
   const scrub = (t: string): string => scrubText(t, { values: deps.secrets })
-  const goal = goalItem.said.trim()
+  const goal = (goalItem.goal ?? goalItem.said).trim()
   const explain = goalItem.explain ?? goal
   const written = goalItem.written ?? goalItem.n
   const report: GoalReport = { n: written, said: goal, sections: [], status: 'partial', reason: '', shown: [], refused: [], live: 0, turns: 0, modelCalls: 0, ms: 0, mode: deps.chat ? 'model' : 'rules' }
@@ -483,10 +473,11 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
       login: false,
       atoms,
       notes: built.map((b) => b.why).filter(Boolean),
+      unread: [],
       ...(first ? { explain } : {})
     }
     const before = study
-    const out = await performScript({ page: deps.page, gate: deps.gate, script: { items: [item], goal: '' }, log: deps.log, signal: deps.signal, vision: deps.vision })
+    const out = await performScript({ page: deps.page, gate: deps.gate, script: { items: [item], goal: '', source: 'plan', tone: [], whenever: [] }, log: deps.log, signal: deps.signal, vision: deps.vision })
     if (out.failure) { finish(report.live >= 1 ? 'partial' : 'stopped', out.failure); break }
     const r = out.results[0]
     actions += out.actions
@@ -519,8 +510,10 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
   // a goal that produced no action still has to be said in the film's notes: honest about what was and was not shown
   if (!results.length) {
     const why = report.reason || 'nothing on the page could be used for it'
-    const item: ScriptItem = { n: goalItem.n * 100 + 1, written, said: goal, login: false, atoms: [], notes: [], explain }
-    const r: ItemResult = { item, steps: [], areaText: '', picks: [], skipped: report.status === 'unreachable' || report.status === 'stopped' ? [{ what: `the goal "${goal.slice(0, 90)}"`, why }] : [], seen: [] }
+    const item: ScriptItem = { n: goalItem.n * 100 + 1, written, said: goal, login: false, atoms: [], notes: [], unread: [], explain }
+    const left = report.status === 'unreachable' || report.status === 'stopped'
+    // a goal that is only to be said (the page already shows it) is narrated; one that could not be shown is not done, and says why
+    const r: ItemResult = { item, steps: [], areaText: '', picks: [], skipped: left ? [{ what: `the goal "${goal.slice(0, 90)}"`, why }] : [], seen: [], parts: [], status: left ? 'not-done' : 'narrated' }
     if (r.skipped.length) skipped.push({ ...r.skipped[0], n: written, said: goal })
     items.push(item)
     results.push(r)
@@ -547,65 +540,42 @@ export function goalNotes(r: GoalReport): string[] {
   return out
 }
 
-// ------------------------------------------------------------------ a whole script, goals included
+// ------------------------------------------------------------------ the hook of performScript
 
-export interface GoalScriptInput extends ScriptInput {
+export interface GoalHookDeps {
+  gate: PolicyGate
   chat: LLMProvider | null
+  vision?: VisionPick
   brief: string
   secrets: string[]
+  /** pages of the app read so far (the list may grow while the run goes on) */
   known: AppPage[]
+  /** the script being performed (to tell the planner what comes before and after the goal) */
+  script: () => StepScript | null
+  signal?: AbortSignal
   caps?: Capable
   budget?: Partial<Budget>
 }
 
-export interface GoalScriptOutcome {
-  outcome: ScriptOutcome
-  /** the script as it was performed: each goal replaced by the actions that were worked out for it */
-  script: StepScript
-  reports: GoalReport[]
-}
-
 /**
- * performScript, with the goals of the script worked out where they stand: the steps before a goal are performed, then the goal
- * is planned and acted on the page the earlier steps left, then the steps after it. A script with no goal is performed unchanged.
+ * The goal planner as performScript's `planGoal` hook: it is called for a step that is a goal (`item.goal`, no atoms), works the
+ * goal out on the live page (planning, acting and looking, a few actions at a time) and answers with what it already performed.
+ * `reports` collects one report per goal for the run notes.
  */
-export async function performWithGoals(inp: GoalScriptInput): Promise<GoalScriptOutcome> {
-  const goals = inp.script.items.filter(isGoalItem)
-  if (!goals.length) return { outcome: await performScript(inp), script: inp.script, reports: [] }
-  const results: ItemResult[] = []
-  const skipped: ScriptOutcome['skipped'] = []
-  const expanded: ScriptItem[] = []
+export function goalPlanHook(deps: GoalHookDeps): { plan: NonNullable<ScriptInput['planGoal']>; reports: GoalReport[] } {
   const reports: GoalReport[] = []
-  let actions = 0
-  let batch: ScriptItem[] = []
-  const flush = async (): Promise<string | undefined> => {
-    if (!batch.length) return undefined
-    const o = await performScript({ ...inp, script: { items: batch, goal: inp.script.goal } })
-    results.push(...o.results)
-    skipped.push(...o.skipped)
-    actions += o.actions
-    expanded.push(...batch)
-    batch = []
-    return o.failure
-  }
-  const said = (i: ScriptItem): string => i.said.replace(/\s+/g, ' ').trim().slice(0, 140)
-  const all = inp.script.items
-  for (const item of inp.script.items) {
-    if (inp.signal?.aborted) break
-    if (!isGoalItem(item)) { batch.push(item); continue }
-    const at = all.indexOf(item)
-    let failure = await flush()
-    if (failure) return { outcome: { results, actions, skipped, failure }, script: { ...inp.script, items: expanded }, reports }
-    const g = await runGoal(item, { page: inp.page, gate: inp.gate, chat: inp.chat, vision: inp.vision, log: inp.log, signal: inp.signal, brief: inp.brief, secrets: inp.secrets, known: inp.known, caps: inp.caps, budget: inp.budget, around: { before: all.slice(0, at).filter((i) => !i.login).map(said), after: all.slice(at + 1).map(said) } })
-    results.push(...g.results)
-    skipped.push(...g.skipped)
-    actions += g.actions
-    expanded.push(...g.items)
+  const plan: NonNullable<ScriptInput['planGoal']> = async ({ item, page, log }) => {
+    // what the person's other steps say, so the goal does not redo the steps before it or do the steps after it
+    const all = deps.script()?.items ?? []
+    const at = all.findIndex((i) => i === item)
+    const said = (i: ScriptItem): string => i.said.replace(/\s+/g, ' ').trim().slice(0, 140)
+    const before = at < 0 ? [] : all.slice(0, at).filter((i) => !i.login)
+    const after = at < 0 ? [] : all.slice(at + 1)
+    const g = await runGoal(item, { page, gate: deps.gate, chat: deps.chat, vision: deps.vision, log, signal: deps.signal, brief: deps.brief, secrets: deps.secrets, known: deps.known, caps: deps.caps, budget: deps.budget, around: { before: before.map(said), after: after.map(said) } })
     reports.push(g.report)
-    failure = undefined
+    return { performed: g.results, skipped: g.skipped, actions: g.actions }
   }
-  const failure = await flush()
-  return { outcome: { results, actions, skipped, ...(failure ? { failure } : {}) }, script: { ...inp.script, items: expanded }, reports }
+  return { plan, reports }
 }
 
 export { BASE_ACTIONS }

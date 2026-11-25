@@ -12,9 +12,9 @@ import { adoptFile, findVoice, writeRecordingRecord, type RecordedCard } from '.
 import { planBeats, type Plan } from './planner'
 import { interpretGuardrails, PolicyGate, type RestrictionChecks } from './policy'
 import { produce, recordingScreen, type CardPlan, type InsertPlan } from './produce'
-import { scriptPlan, type ScriptOutcome, type VisionPick } from './script'
-import { parseStepScript, type StepScript } from './stepScript'
-import { goalListScript, goalNotes, goalSegments, performWithGoals, scriptFromPlan, type GoalReport } from './goalPlanner'
+import { performScript, scriptPlan, type ScriptOutcome, type VisionPick } from './script'
+import { parseProseScript, parseStepScript, scriptFromActions, type StepScript } from './stepScript'
+import { goalNotes, goalPlanHook, goalSegments, scriptFromPlan } from './goalPlanner'
 import { ambientBrief, chooseMusic, clipSeconds, parseMediaAsk, parseMusicAsk, parseStructure, planMedia, withStyle, withoutProductionSentences, type Placement } from './aiMedia'
 import { musicBrief } from '../audio/cue'
 import { soundsFromWords } from '../audio/ambience'
@@ -31,7 +31,7 @@ import { buildAppMap, scoutPage } from './scout'
 import { captureSiteBrand, type SiteBrand } from './siteBrand'
 import { lookFromPalette } from './style'
 import { filmFrame } from '@shared/shapes'
-import type { PariReport } from '@shared/agentBrief'
+import type { FilmPlan, PariReport } from '@shared/agentBrief'
 import { actStage, agentFilmsPages, buildReport, clipRequests, narrationBrief, planStage, PariStopped, reviewStage, wantsProblemCard, type ActOutcome, type PariHooks, type PlanOutcome } from './agent/loop'
 import { musicPrompt } from './agent/musicBrief'
 import { framedWords, withoutFramed } from './agent/brief'
@@ -207,6 +207,19 @@ export interface RunOutput {
   pari?: PariReport
   /** everything the video is made of was kept, so it can be changed later without recording again */
   editable?: boolean
+  /** most of the typed steps changed nothing: the film is made, but it is only partly what was asked (the notes say which steps) */
+  partial?: { reason: string }
+}
+
+/** the steps of a brief that has no list: its sentences, or the actions the AI plan wrote for a "script" page (null: it names none) */
+function stepsFromProse(brief: string, plan: FilmPlan | null): StepScript | null {
+  const prose = parseProseScript(brief)
+  const actions = plan ? plan.segments.flatMap((s) => (s.kind === 'page' && s.how === 'script' ? s.actions ?? [] : [])) : []
+  const fromPlan = actions.length ? scriptFromActions(actions, plan?.goal ?? '') : null
+  const clicks = (x: StepScript | null): number => (x ? x.items.reduce((n, i) => n + i.atoms.length + (i.login ? 1 : 0), 0) : 0)
+  if (!prose) return fromPlan
+  if (!fromPlan) return prose
+  return clicks(fromPlan) >= clicks(prose) ? { ...fromPlan, tone: prose.tone, goal: prose.goal || fromPlan.goal } : prose
 }
 
 export class RunCancelled extends Error {
@@ -251,7 +264,9 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
   const ctxClean = withoutProductionSentences(inp.context)
   // a numbered list of steps is a script: it is performed exactly, and nothing else is opened
   const agentPages = !!fp && !inp.reuse && agentFilmsPages(fp)
-  const script = inp.reuse || agentPages ? null : parseStepScript(ctxClean)
+  // no numbered list: the sentences of a prose brief, or the actions the AI plan wrote for its "script" page, are the steps
+  // (whichever reads more clicks); a brief that names no steps at all is still explored as before
+  const script: StepScript | null = inp.reuse || agentPages ? null : parseStepScript(ctxClean) ?? stepsFromProse(ctxClean, fp)
   // the addresses pasted into the brief ("What should the video show?") are pages of the app too, on every path but a typed script
   const promptUrls = script ? [] : readUrls(ctxClean)
   const { guardrails, enforced, advisory } = interpretGuardrails(inp.guardrailText, [...starts, ...promptUrls], inp.checks)
@@ -415,20 +430,19 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
 
     let scriptOut = null as ScriptOutcome | null
     let beganAt = ''
-    // goals: a brief that says what to show instead of which buttons to press. The pages of the plan become steps, and each goal is
-    // worked out on the real page (goalPlanner.ts); a typed list that holds a goal step is performed the same way, in its order
-    let goalScript: StepScript | null = inp.reuse || script ? null : goalListScript(ctxClean) ?? (fp && goalSegments(fp).length ? scriptFromPlan(fp) : null)
+    // goals: a step that says what to show instead of which buttons to press (item.goal) is worked out on the real page by the
+    // goal planner (goalPlanner.ts), through the `planGoal` hook of performScript, in its place in the list. A brief with no list whose
+    // plan names goals gets a list made of its pages (scriptFromPlan).
+    let goalScript: StepScript | null = inp.reuse || script ? null : fp && goalSegments(fp).length ? scriptFromPlan(fp) : null
     let doneScript = null as StepScript | null
-    let goalReports = [] as GoalReport[]
+    const goals = goalPlanHook({ gate, chat: inp.chat, vision: visionPicker(inp.chat), brief: ctxClean, secrets, known: pages, script: () => doneScript, signal: inp.signal })
     const runSteps = async (s: StepScript): Promise<void> => {
       beganAt = page.url()
-      const g = await performWithGoals({ page, gate, script: s, log: say, signal: inp.signal, vision: visionPicker(inp.chat), chat: inp.chat, brief: ctxClean, secrets, known: [...pages] })
-      scriptOut = g.outcome
-      doneScript = g.script
-      goalReports = g.reports
-      if (g.outcome.failure) {
+      doneScript = s
+      scriptOut = await performScript({ page, gate, script: s, log: say, signal: inp.signal, vision: visionPicker(inp.chat), planGoal: goals.plan })
+      if (scriptOut.failure) {
         if (inp.signal?.aborted) throw new RunCancelled()
-        throw new Error(g.outcome.failure)
+        throw new Error(scriptOut.failure)
       }
       pages.push(await scoutPage(page, scoutDir, 'p-steps-end', { revealIdentifiers: reveal }))
     }
@@ -520,15 +534,13 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       : scriptOut && doneScript
         ? scriptPlan({ script: doneScript, outcome: scriptOut, map: safeMap, startUrl: inp.startUrl, beganAt, hasVault: useVault, secrets })
         : planBeats({ map: safeMap, exploration, context: ctxClean, startUrl: inp.startUrl, targetSec: inp.targetSec ?? inp.launch?.targetSec, hasVault: useVault, secrets, scripted })
-    if (goalReports.length) {
-      // scriptPlan counts the actions worked out for a goal as steps of their own: say it as it was
-      plan.notes[0] = `Your steps were carried out in order. ${goalReports.length === 1 ? 'One of them was a goal' : `${goalReports.length} of them were goals`} (what to show, not what to press): the engine worked out the actions for ${goalReports.length === 1 ? 'it' : 'them'} on the real page. What it decided to show and why, and what it could not do, is listed below.`
-      plan.notes.push(...goalReports.flatMap(goalNotes))
-    }
+    // what the goal planner decided to show and why, and what it could not do
+    if (goals.reports.length && scriptOut && doneScript) plan.notes.push(...goals.reports.flatMap(goalNotes))
     writeFileSync(join(inp.runDir, 'playbook.json'), JSON.stringify(plan.playbook, null, 2))
     writeFileSync(join(inp.runDir, 'beats.json'), JSON.stringify(plan.beats, null, 2))
     const base: RunOutput = {
       plan, map: safeMap, compat, stoppedBy: exploration.stoppedBy, pages: scriptOut ? scriptOut.results.length : exploration.visits.length, actions: exploration.actions,
+      ...(scriptOut?.mostlyUnchanged && scriptOut.stats ? { partial: { reason: `Only ${scriptOut.stats.effective} of ${scriptOut.stats.total} steps changed the page as written.` } } : {}),
       blockedHosts: gate.blockedHosts(), enforced, advisory, redactionMisses: 0, runDir: inp.runDir, brandNotes: site?.notes ?? []
     }
     if (inp.stopAfter === 'explore' || inp.stopAfter === 'plan') return base
@@ -658,9 +670,11 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     check()
 
     // ------------------------------------------------------------ the title and closing backgrounds: designed by the AI for this film, never a template
-    hooks.progress('produce', 'Designing the opening and closing backgrounds')
+    // a walkthrough has no title or closing scene (it starts on the page and ends on it): nothing is designed for it
+    const hasScenes = !!(narration.intro || narration.outro)
+    if (hasScenes) hooks.progress('produce', 'Designing the opening and closing backgrounds')
     const sceneSecs = { title: 6, outro: 6 }
-    const designed = await designFilmBackgrounds({
+    const designed = !hasScenes ? { notes: [] as string[], results: {} as Awaited<ReturnType<typeof designFilmBackgrounds>>['results'], title: undefined, outro: undefined } : await designFilmBackgrounds({
       chat: inp.chat,
       library: inp.introLibrary === undefined ? new IntroBackgroundLibrary(introBackgroundsDir) : inp.introLibrary,
       dir: join(inp.runDir, 'intro-background'),
