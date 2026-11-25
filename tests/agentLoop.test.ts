@@ -112,6 +112,13 @@ describe('reviewing a film made from typed steps', () => {
     expect(buildReport(plan, null, checks).shortfalls).toEqual([])
   })
 
+  it('says only partly done when steps were skipped, and names them in the shortfalls', () => {
+    const checks = reviewStage({ plan, acted: null, take: null, clipsMade: new Map(), lines, problemDrawn: false, scripted: { said: ['open: https://x.test/a#circle', 'select Surah An-Nur'], actions: 3, choices: 1, skipped: ['step 5: hovering a line on the chart (there is no chart on the screen)'] } })
+    expect(checks[0].status).toBe('partial')
+    expect(checks[0].evidence.join(' ')).toMatch(/left out: step 5/)
+    expect(buildReport(plan, null, checks).shortfalls.join(' ')).toMatch(/Only partly done[\s\S]*hovering a line on the chart/)
+  })
+
   it('still says so when the steps were not run at all', () => {
     const checks = reviewStage({ plan, acted: null, take: null, clipsMade: new Map(), lines, problemDrawn: false })
     expect(checks[0].status).toBe('skipped')

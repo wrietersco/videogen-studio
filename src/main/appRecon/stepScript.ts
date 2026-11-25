@@ -28,9 +28,17 @@ export type Atom =
   | { action: 'select'; label: string; option: string; find: FindSpec }
   | { action: 'type'; label: string; text: string; find: FindSpec }
   | { action: 'scroll'; dir: 'down' | 'up'; find: FindSpec }
+  /** scroll until a named part of the page ("the Whole-Quran even–odd circle") is on screen */
+  | { action: 'scrollto'; dir: 'down' | 'up'; label: string; find: FindSpec }
+  /** rest the pointer on something so its tooltip shows */
+  | { action: 'hover'; label: string; find: FindSpec }
+  /** click or hover marks of a chart ("blue, green and orange lines"), found by their colour on screen */
+  | { action: 'mark'; verb: 'click' | 'hover'; label: string; colours: string[]; noun: string; find: FindSpec }
 
 export interface ScriptItem {
   n: number
+  /** the number the person wrote in front of the step (their list can skip numbers: 3, 5, 6) */
+  written?: number
   /** the person's own words for this step, number removed */
   said: string
   /** this step is the engine's own sign-in */
@@ -86,7 +94,33 @@ function picksIn(text: string): string[] {
   }
   return out
 }
-const BULLET = /^\s*(?:(?:step\s*)?\d{1,2}\s*[.):\-]|[-*•▪●])\s+(.*\S)\s*$/i
+/** a list line: "3.", "step 3:", "6)", "- ", also with quote or arrow marks in front (">>6.", "→ 7.") */
+export const BULLET = /^\s*(?:[>»›→#]+\s*)*(?:(?:step\s*)?(\d{1,3})\s*[.):\-]|[-*•▪●])\s+(.*\S)\s*$/i
+const HOVER = /^(?:(?:and|then|now|next|please)\s+)*(?:hover(?:\s+(?:over|on|above))?|mouse\s*-?over|move\s+(?:the\s+)?(?:mouse|pointer|cursor)\s+(?:over|to|onto)|point\s+(?:at|to)|rest\s+(?:the\s+)?(?:mouse|pointer|cursor)\s+(?:on|over))\s+(.*)$/i
+/** scroll to a named part of the page */
+const SCROLL_TO = /\bscroll(?:\s*-?\s*(?:down|up))?\s+(?:to|until|towards?|till)\s+(?:you\s+(?:see|reach|find)\s+)?(?:the\s+)?(.+)$/i
+const PAGE_EDGE = /^(?:the\s+)?(?:very\s+)?(?:bottom|end|top|beginning|start|footer|header)(?:\s+of\s+the\s+page)?$/i
+/** "…to show the details", "…to see the result": why the action is done, not part of the control's name */
+const PURPOSE = /\s+(?:in\s+order\s+to|so\s+that|to)\s+(?:show|see|display|reveal|learn|understand|illustrate|demonstrate|find\s+out)\b.*$/i
+const COLOUR = '(?:(?:light|dark|bright|pale|deep)\\s+)?(?:blue|green|orange|red|yellow|purple|violet|pink|teal|cyan|brown|grey|gray|black|white|indigo|magenta|gold|golden|turquoise|navy|lime|maroon)'
+const MARK_NOUN = '(?:lines?|curves?|bars?|points?|dots?|slices?|segments?|arcs?|rings?|areas?|markers?|wedges?|sectors?|paths?|series|traces?|columns?|squares?|diamonds?)'
+const CHART_WORD = '(?:chart|graph|plot|circle|diagram|figure|visuali[sz]ation|map|timeline)s?'
+/** "click blue, green and orange lines on the charts", "hover over a line on the chart" */
+const MARK_RE = new RegExp(
+  `\\b(click(?:\\s+on)?|tap(?:\\s+on)?|press|select|hover(?:\\s+(?:over|on))?|mouse\\s*-?over)\\s+(?:on\\s+)?(?:(?:a|an|the|any|one|some|each|every)\\s+)?(?:(${COLOUR}(?:\\s*(?:,|and|&|or)\\s*(?:and\\s+|or\\s+)?${COLOUR})*)\\s+)?(${MARK_NOUN})\\b(?:\\s+(?:on|in|of|from|inside|within)\\s+(?:the\\s+)?((?:[\\w–-]+\\s+){0,5}?${CHART_WORD}))?`,
+  'i'
+)
+const COLOUR_ALIAS: Record<string, string> = { grey: 'gray', violet: 'purple', golden: 'yellow', gold: 'yellow', turquoise: 'teal', indigo: 'purple', navy: 'blue', maroon: 'red', lime: 'green', magenta: 'pink' }
+/** the colour names in some words, in the order said ("blue, green and orange" → blue, green, orange) */
+export const coloursIn = (text: string): string[] => {
+  const out: string[] = []
+  for (const m of text.toLowerCase().matchAll(new RegExp(COLOUR, 'g'))) {
+    const w = m[0].trim().split(/\s+/).pop() ?? ''
+    const c = COLOUR_ALIAS[w] ?? w
+    if (c && !out.includes(c)) out.push(c)
+  }
+  return out
+}
 const LOGIN = /^(?:(?:and|then|first|please)\s+)*(?:log\s?-?\s?(?:in|into|on)|sign\s?-?\s?(?:in|into|on)|authenticate|login)\b/i
 const EXPLAIN = /\b(?:(?:to|and|then)\s+)?(explain|describe|tell(?:\s+(?:me|us|the viewer))?|talk\s+about|mention|highlight|discuss|point\s+out|summari[sz]e|cover|narrate|walk\s+(?:me\s+)?through)\b/i
 const SCROLL = /\b(?:scroll\s*-?\s*(down|up)|scrolldown|scrollup|scroll(?:\s+(?:to\s+(?:the\s+)?(?:bottom|end)|through|all\s+the\s+way))?)\b/i
@@ -142,9 +176,17 @@ function clickAtom(raw: string, place: { region?: FindSpec['region']; within: st
   let label = q ? q[1].trim() : clean(clean(before).replace(ARTICLE, '').replace(NOUN_TAIL, '').replace(/\b(?:the\s+)?(?:suggestion|option|result|entry)\b/i, ''))
   const role = roleOf(`${before} ${after}`) ?? (relation && !q ? 'icon' : undefined)
   if (!q) label = label.replace(ARTICLE, '')
+  const within = [...place.within]
+  // "the arabic word in the verse": what is clicked, and the part of the page it is in
+  if (!q) {
+    const loc = /^(.+?)\s+(?:in|inside|within)\s+(?:the\s+)?([\w'’-]+(?:\s+[\w'’-]+){0,2})$/i.exec(label)
+    if (loc && !/\b(?:sign|log)$/i.test(loc[1])) {
+      label = clean(loc[1])
+      within.push(loc[2].toLowerCase().replace(/\s+(?:area|section|panel|pane|tab|text)$/, ''))
+    }
+  }
   if (!label) return null
   // a quoted name can carry a trailing "tab"/"icon" outside the quotes: it is the control's kind, not part of its name
-  const within = [...place.within]
   if (role === 'suggestion' && !within.includes('suggestion')) within.push('suggestion')
   return { action: 'click', label, find: { target: label, kind: 'click', ...(place.region ? { region: place.region } : {}), ...(within.length ? { within } : {}), ...(relation ? { relation } : {}), ...(role ? { role } : {}) } }
 }
@@ -177,31 +219,80 @@ function parseLine(n: number, said: string): ScriptItem {
     return { ...p, within: p.within.filter((w) => w !== 'suggestion') } // "dropdown" is what it is, not where it sits
   })()
 
-  // "explain ..." takes the rest of the line: it is what to make clear, not something to click
-  const ex = EXPLAIN.exec(guarded)
-  let doing = guarded
-  if (ex) {
-    doing = guarded.slice(0, ex.index)
-    const what = clean(unshield(guarded.slice(ex.index + ex[0].length)))
-    item.explain = what || clean(unshield(guarded.slice(ex.index)))
+  // "explain ..." takes the rest of its sentence: it is what to make clear, not something to click. A later sentence is read
+  // again (it can ask for another click: "use and explain the tab X. click the word in the verse")
+  const marks: Atom[] = []
+  const explains: string[] = []
+  const clauses: string[] = []
+  for (const sentence of guarded.split(/(?<=[.!?])\s+(?=\S)/)) {
+    const ex = EXPLAIN.exec(sentence)
+    let doing = sentence
+    if (ex) {
+      doing = sentence.slice(0, ex.index)
+      const restG = sentence.slice(ex.index + ex[0].length)
+      const what = clean(unshield(restG))
+      explains.push(what || clean(unshield(sentence.slice(ex.index))))
+      // "use and explain the tab X": the verb in front is about the thing named after "explain"
+      const bare = /(?:^|[\s,;])(use|open|click(?:\s+on)?|select|choose|explore|try|visit|check\s+out|tap)\s*$/i.exec(doing)
+      if (bare && what) doing = `${doing} ${restG.split(/\s+(?:and|so|then)\s+|[;]/i)[0]}`
+    }
+    // chart marks named by colour or kind ("click blue, green and orange lines on the charts") stay whole: their commas are a list
+    doing = doing.replace(MARK_RE, (m0: string, verb: string, cols: string | undefined, noun: string, chart: string | undefined) => {
+      const v = /hover|mouse/i.test(verb) ? 'hover' : 'click'
+      const colours = cols ? coloursIn(cols) : []
+      const label = clean(`${colours.join(', ')} ${noun}${chart ? ` on the ${chart}` : ''}`)
+      marks.push({ action: 'mark', verb: v, label, colours, noun: noun.toLowerCase().replace(/s$/, ''), find: { target: label, kind: v === 'hover' ? 'hover' : 'click', ...(colours.length ? { colours } : {}), noun: noun.toLowerCase().replace(/s$/, ''), ...(chart ? { chart: clean(chart) } : {}) } })
+      return `\u0002${marks.length - 1}\u0002`
+    })
+    clauses.push(...doing.split(/,\s*(?:and\s+|then\s+)?|\s+and\s+|\s+then\s+|\bthen\b/i).map(clean).filter(Boolean))
   }
+  if (explains.length) item.explain = explains.join(' ')
   // a leading place: "from left menu," / "in search bar,"
   let place: { region?: FindSpec['region']; within: string[] } = { within: [] }
   let first = true
-  const clauses = doing.split(/(?<=[.!?])\s+|,\s*(?:and\s+|then\s+)?|\s+and\s+|\s+then\s+|\bthen\b/i).map(clean).filter(Boolean)
   for (const raw of clauses) {
-    const clause = unshield(raw)
+    const markAt = /\u0002(\d+)\u0002/.exec(raw)
+    if (markAt) {
+      first = false
+      item.atoms.push(marks[Number(markAt[1])])
+      continue
+    }
+    let clause = unshield(raw)
+    // why it is done ("to show the details") is for the narration, not part of the control's name
+    const why = PURPOSE.exec(clause)
+    if (why && !SCROLL_TO.test(clause.slice(0, why.index))) {
+      item.notes.push(clean(clause.slice(why.index)))
+      clause = clause.slice(0, why.index)
+    }
     if (first && LOGIN.test(clause)) { item.login = true; first = false; continue }
     first = false
+    // "go to ``": the address was taken out above, what is left of the words is nothing
+    if (urls.length && /^(?:(?:go|navigate|head)\s*(?:to)?|open(?:\s+up)?|visit|load|browse\s+to)?$/i.test(clause.replace(/[`'"“”‘’\s:]+/g, ' ').trim())) continue
     // what is said about the dropdown and the entries is done as the choices below, not clicked
     if (picks.length && (DROPDOWN_ANY.test(clause) || picksIn(clause).length)) continue
     const lead = /^(?:from|in|on|at|inside|within|under|using)\s+(?:the\s+)?(.+)$/i.exec(clause)
     // "from the left menu click ontology" (no comma): the place and the action in one clause
     const inline = /^(?:from|in|on|at|inside|within)\s+(?:the\s+)?(.+?)\s+((?:click|press|tap|select|choose|open|type|enter|search|scroll|explore)\b.*)$/i.exec(clause)
-    const verbHere = !!inline || TYPE_VERB.test(clause) || CLICK_VERB.test(clause) || SCROLL.test(clause)
+    const verbHere = !!inline || TYPE_VERB.test(clause) || CLICK_VERB.test(clause) || SCROLL.test(clause) || HOVER.test(clause)
     if (lead && !verbHere) { place = placeOf(lead[1]); continue }
     const text = inline ? inline[2] : clause
     if (inline) place = placeOf(inline[1])
+    // "scroll down to Whole-Quran even–odd circle": the part of the page named is where the scrolling ends
+    const st = SCROLL_TO.exec(text)
+    if (st) {
+      const target = clean(unshield(st[1]).replace(Q, '').replace(/\s+(?:section|area|part|heading|block)$/i, ''))
+      if (target && !PAGE_EDGE.test(target)) {
+        const dir = /\bup\b/i.test(text.slice(0, st.index + 14)) ? 'up' : 'down'
+        item.atoms.push({ action: 'scrollto', dir, label: target, find: { target, kind: 'scroll' } })
+        continue
+      }
+    }
+    const hv = HOVER.exec(text)
+    if (hv) {
+      const q2 = QUOTED.exec(hv[1])
+      const obj = q2 ? q2[1].trim() : clean(clean(hv[1]).replace(ARTICLE, '').replace(NOUN_TAIL, ''))
+      if (obj) { item.atoms.push({ action: 'hover', label: obj, find: { target: obj, kind: 'hover', ...(place.region ? { region: place.region } : {}), ...(place.within.length ? { within: place.within } : {}) } }); continue }
+    }
     const sc = SCROLL.exec(text)
     if (sc && !QUOTED.test(text)) {
       const dir = /up/i.test(sc[1] ?? sc[0]) ? 'up' : 'down'
@@ -256,12 +347,17 @@ export function parseStepScript(context: string): StepScript | null {
   let n = 0
   for (const line of lines) {
     const m = BULLET.exec(line)
-    if (m) items.push(parseLine(++n, clean(m[1])))
+    if (m) {
+      const it = parseLine(++n, clean(m[2]))
+      if (m[1]) it.written = Number(m[1])
+      items.push(it)
+    }
     else if (line.trim()) {
       // a wrapped line belongs to the step above it
       if (items.length && /^\s{2,}\S/.test(line)) {
         const last = items[items.length - 1]
         const merged = parseLine(last.n, `${last.said} ${clean(line)}`)
+        merged.written = last.written
         items[items.length - 1] = merged
       } else rest.push(line.trim())
     }

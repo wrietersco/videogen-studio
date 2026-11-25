@@ -11,6 +11,8 @@ import { classifyField } from './sensitivity'
 import { asPhone } from './browser'
 import { redactionInitScript, cursorInitScript, verifyScript, type RedactionConfig } from './redact'
 import { findElement, scrollArea } from './resolve'
+import { findMark, pickChart } from './marks'
+import { scrollToSection } from './sections'
 import { chooseNative, matchOption, readChoices } from './pick'
 import { judgeLogin, type LoginVerdict } from './loginCheck'
 import { isInterstitial } from './explore'
@@ -50,8 +52,11 @@ export async function inspectView(page: Page, pace: number): Promise<void> {
       last = now
     }
   }
+  // a step that took the viewer to a part of the page (a scroll, a chart, a panel) is left exactly there: the tour below is only for
+  // a result drawn at the top of the page, and it never ends by sending the page back to the top
+  const y0 = await page.evaluate(() => scrollY).catch(() => 0)
   const room = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight).catch(() => 0)
-  if (room > 120) {
+  if (room > 120 && y0 < 40) {
     const stops = Math.min(4, Math.ceil(room / 300))
     for (let i = 1; i <= stops; i++) {
       await page.evaluate((y) => scrollTo({ top: y, behavior: 'smooth' }), (room * i) / stops).catch(() => undefined)
@@ -186,6 +191,10 @@ export interface RunResult {
   /** with repair on: the steps as they should be recorded, and what was changed */
   playbook?: Playbook
   repairs?: string[]
+  /** steps that could not be done on the page and were left out (the film goes on without them) */
+  skipped?: Array<{ step: string; label: string; why: string }>
+  /** runs of beats that were filmed on the very same screen, though steps were done in them (the voice would describe screens the film never shows) */
+  stuck?: Array<{ from: number; to: number }>
 }
 
 /** the control a saved step meant, found again by its name when its address in the page changed; null unless exactly one fits */
@@ -366,6 +375,12 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
   }
 
   const repairs: string[] = []
+  const skipped: NonNullable<RunResult['skipped']> = []
+  const skipStep = (step: Step, why: string) => {
+    skipped.push({ step: step.id, label: step.label ?? step.find?.target ?? step.selector ?? '', why })
+    say(step.id, `SKIPPED: ${why}`)
+  }
+  const seenViews: Array<{ beat: number; sig: string; acted: boolean }> = []
   const dropped = new Set<string>()
   // the steps are copied: finding a control again by its description changes the copy, never the saved playbook
   const steps = playbook.steps.map((st) => ({ ...st, expect: st.expect ? { ...st.expect } : undefined }))
@@ -416,6 +431,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           const found = await locate(step)
           if (found === 'gone') continue
           const r = found
+          if (!r && step.find) { skipStep(step, `no box called "${step.label ?? step.find.target}" was found`); continue }
           if (!r) return { ok: false, failure: `${step.id}: could not find "${step.label ?? step.selector}"`, beats, navigations, log, redactionMisses: misses }
           await glide(r.x + Math.min(r.w * 0.5, 120), r.y + r.h / 2, 600)
           await sleep(180 * pace)
@@ -444,6 +460,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           const found = await locate(step)
           if (found === 'gone') continue
           const r = found
+          if (!r && step.find) { skipStep(step, `no control called "${step.label ?? step.find.target}" was found`); continue }
           if (!r) return { ok: false, failure: `${step.id}: could not find "${step.label ?? step.selector}"`, beats, navigations, log, redactionMisses: misses }
           const info = await page.$eval(step.selector!, (el) => {
             const h = el as HTMLElement
@@ -453,6 +470,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           })
           const label = info.label
           const verdict = o.gate.checkClick({ label: label || step.label || '', intent: step.intent, kind: info.kind as 'button' | 'link', href: info.href, hint: info.hint })
+          if (!verdict.allow && step.find) { skipStep(step, `your own rules do not allow it (${verdict.reason})`); continue }
           if (!verdict.allow) return { ok: false, failure: `${step.id}: blocked by guardrails — ${verdict.reason}`, beats, navigations, log, redactionMisses: misses }
           // a page that is still drawing (help icons, banners) moves its controls: wait until this one holds still, and look again
           // after the pointer arrives, so the click lands on the control and not where it used to be
@@ -486,12 +504,14 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           const found = await locate(step)
           if (found === 'gone') continue
           const r = found
+          if (!r && step.find) { skipStep(step, `no dropdown called "${step.label ?? step.find.target}" was found`); continue }
           if (!r) return { ok: false, failure: `${step.id}: could not find the dropdown "${step.label ?? step.selector}"`, beats, navigations, log, redactionMisses: misses }
           const choices = await readChoices(page, step.selector!)
           await glide(r.x + Math.min(r.w * 0.5, 160), r.y + r.h / 2, 700)
           await sleep(450 * pace)
           if (choices.native) {
             const at = matchOption(choices.entries, step.text)
+            if (at < 0 && step.find) { skipStep(step, `the dropdown has no entry called "${step.text}"`); continue }
             if (at < 0) return { ok: false, failure: `${step.id}: the dropdown has no entry called "${step.text}"`, beats, navigations, log, redactionMisses: misses }
             const verdict = o.gate.checkClick({ label: choices.entries[at], kind: 'button' })
             if (!verdict.allow) return { ok: false, failure: `${step.id}: blocked by guardrails — ${verdict.reason}`, beats, navigations, log, redactionMisses: misses }
@@ -511,6 +531,55 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           }
           await sleep(pace === 0 ? 300 : 900) // the page redraws for the new entry
           lastSel = step.selector
+        } else if (step.kind === 'scrollto') {
+          // the page travels to the part the person named, the way a hand scrolls, over as long as the explanation of it allows
+          const need = (o.beatMinSec?.get(beat) ?? 0) * 1000
+          const budget = pace === 0 ? 0 : Math.max(2200, Math.min(6000, need - (Date.now() - startMs) - 1500))
+          const out = await scrollToSection(page, step.label ?? step.find?.target ?? '', { budgetMs: budget, instant: pace === 0, mouseTo: (x, y) => glide(x, y, 500) })
+          if (out.found) say(step.id, `scrolled to "${out.label}"${out.moved ? '' : ' (it was already on screen)'}`)
+          else skipStep(step, `no part of the page called "${step.label ?? step.find?.target}" was found`)
+        } else if (step.kind === 'hover' && (step.selector || step.find)) {
+          const found = await locate(step)
+          if (found === 'gone') continue
+          if (!found) { skipStep(step, `nothing called "${step.label ?? step.find?.target}" was found`); continue }
+          await glide(found.x + found.w / 2, found.y + found.h / 2, 800)
+          await sleep(1100 * pace) // the tooltip appears and is read
+          say(step.id, `rested the pointer on "${step.label ?? step.selector}"`)
+          lastSel = step.selector
+          focusRect = found
+          focusKind = step.focus
+        } else if (step.kind === 'mark' && step.find) {
+          // a mark of a chart: found by its colour on screen. The place the rehearsal used is tried first.
+          const info = ((): { verb?: string; colour?: string; fx?: number; fy?: number; tap?: boolean } => {
+            try {
+              return JSON.parse(step.text ?? '{}')
+            } catch {
+              return {}
+            }
+          })()
+          const hover = info.verb === 'hover'
+          const chart = await pickChart(page, step.find.chart ?? '')
+          let at: { x: number; y: number } | null = null
+          if (chart && typeof info.fx === 'number' && typeof info.fy === 'number') at = { x: chart.rect.x + info.fx * chart.rect.w, y: chart.rect.y + info.fy * chart.rect.h }
+          if (chart && !at) {
+            const res = await findMark(page, { spec: step.find, colour: info.colour, hover, move: (x, y) => glide(x, y, 350), allowTap: hover && o.gate.checkClick({ label: `${info.colour ?? ''} ${step.find.noun ?? 'mark'} on a chart`.trim(), kind: 'button' }).allow })
+            if (res.hit) at = { x: res.hit.x, y: res.hit.y }
+            else { skipStep(step, res.why ?? 'no such mark was found'); continue }
+          }
+          if (!chart || !at) { skipStep(step, 'there is no chart on the screen'); continue }
+          if (!hover) {
+            const verdict = o.gate.checkClick({ label: `${info.colour ?? ''} ${step.find.noun ?? 'mark'} on a chart`.trim(), kind: 'button' })
+            if (!verdict.allow) { skipStep(step, `your own rules do not allow it (${verdict.reason})`); continue }
+          }
+          await glide(at.x, at.y, 800)
+          await sleep((hover ? 1500 : 450) * pace)
+          if (!hover || info.tap) {
+            await page.mouse.click(at.x, at.y) // a phone shows its tooltip on a tap
+            await sleep(900 * pace)
+          }
+          say(step.id, `${hover ? 'rested the pointer on' : 'clicked'} a ${step.label ?? 'mark'} of the chart`)
+          focusRect = { x: Math.max(0, at.x - 80), y: Math.max(0, at.y - 80), w: 160, h: 160 }
+          focusKind = 'target'
         } else if (step.kind === 'press' && step.text) {
           await sleep(200 * pace)
           const nav = page.waitForNavigation({ waitUntil: 'load', timeout: 6000 }).catch(() => null)
@@ -580,9 +649,26 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
     const left = need - (Date.now() - startMs)
     if (left > 0 && pace !== 0) await sleep(left)
     if (focusKind && focusKind !== 'page' && focusRect) focus = { ...focusRect, zoom: 1 }
+    // what the screen looks like at the end of the beat (to see later whether the film ever left one screen)
+    const sig = await page
+      .evaluate(() => {
+        let sc = 0
+        for (const e of Array.from(document.querySelectorAll('*')).slice(0, 3000)) if (e !== document.scrollingElement && (e as HTMLElement).scrollTop > 0) sc += (e as HTMLElement).scrollTop
+        return `${location.pathname}${location.search}${location.hash}|${Math.round(scrollY / 12)}|${Math.round(sc / 12)}|${(document.body?.innerText ?? '').length}`
+      })
+      .catch(() => '')
+    seenViews.push({ beat, sig, acted: steps.some((s) => s.beat === beat && s.kind !== 'wait' && s.kind !== 'goto') })
     beats.push({ beat, startSec: startedAt, endSec: t(), focus, url: page.url() })
     await o.afterBeat?.(beat)
   }
   const kept = steps.filter((st) => !dropped.has(st.id))
-  return { ok: true, beats, navigations, log, redactionMisses: misses, ...(o.repair ? { playbook: { ...playbook, steps: kept }, repairs } : {}) }
+  // beats with steps in them that all ended on the same screen: the voice talks about things the film never shows
+  const stuck: NonNullable<RunResult['stuck']> = []
+  for (let i = 0; i < seenViews.length; ) {
+    let j = i
+    while (j + 1 < seenViews.length && seenViews[j + 1].sig === seenViews[i].sig && seenViews[j + 1].sig) j++
+    if (j - i >= 2 && seenViews.slice(i + 1, j + 1).some((v) => v.acted)) stuck.push({ from: seenViews[i].beat, to: seenViews[j].beat })
+    i = j + 1
+  }
+  return { ok: true, beats, navigations, log, redactionMisses: misses, ...(skipped.length ? { skipped } : {}), ...(stuck.length ? { stuck } : {}), ...(o.repair ? { playbook: { ...playbook, steps: kept }, repairs } : {}) }
 }

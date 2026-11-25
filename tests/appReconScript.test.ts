@@ -304,10 +304,12 @@ describe.skipIf(!findChrome() || !canShowWindow())('a whole video from the steps
     expect(out.video).toBeTruthy()
   }, 300000)
 
-  it('stops and names the step when one cannot be done, before anything is recorded', async () => {
+  it('skips a step that cannot be done and says so, and the steps after it are still done', async () => {
     events = []
-    await expect(runAppRecording(base('missing', '1. click ontology\n2. click "Quantum teleporter"\n3. click ontology'), hooks())).rejects.toThrow(/Step 2 .*Quantum teleporter.* no video was made/)
-    expect(events).toEqual(['nav-ontology']) // step 3 was not tried
+    const out = await runAppRecording({ ...base('missing', '1. click ontology\n2. click "Quantum teleporter"\n3. click ontology'), stopAfter: 'plan' }, hooks())
+    expect(events).toEqual(['nav-ontology', 'nav-ontology']) // step 3 was still done
+    expect(out.plan.notes.join(' ')).toMatch(/Step 2 was not fully done: clicking "Quantum teleporter" was skipped/)
+    expect(out.plan.beats[1].facts.join(' ')).toMatch(/NOT SHOWN/)
   }, 120000)
 })
 
