@@ -13,7 +13,7 @@ import { planBeats, type Plan } from './planner'
 import { interpretGuardrails, PolicyGate, type RestrictionChecks } from './policy'
 import { produce, recordingScreen, type CardPlan, type InsertPlan } from './produce'
 import { performScript, scriptPlan, type ScriptOutcome, type VisionPick } from './script'
-import { parseStepScript } from './stepScript'
+import { parseProseScript, parseStepScript, scriptFromActions, type StepScript } from './stepScript'
 import { ambientBrief, chooseMusic, clipSeconds, parseMediaAsk, parseMusicAsk, parseStructure, planMedia, withStyle, withoutProductionSentences, type Placement } from './aiMedia'
 import { musicBrief } from '../audio/cue'
 import { soundsFromWords } from '../audio/ambience'
@@ -30,7 +30,7 @@ import { buildAppMap, scoutPage } from './scout'
 import { captureSiteBrand, type SiteBrand } from './siteBrand'
 import { lookFromPalette } from './style'
 import { filmFrame } from '@shared/shapes'
-import type { PariReport } from '@shared/agentBrief'
+import type { FilmPlan, PariReport } from '@shared/agentBrief'
 import { actStage, agentFilmsPages, buildReport, clipRequests, narrationBrief, planStage, PariStopped, reviewStage, wantsProblemCard, type ActOutcome, type PariHooks, type PlanOutcome } from './agent/loop'
 import { musicPrompt } from './agent/musicBrief'
 import { framedWords, withoutFramed } from './agent/brief'
@@ -206,6 +206,19 @@ export interface RunOutput {
   pari?: PariReport
   /** everything the video is made of was kept, so it can be changed later without recording again */
   editable?: boolean
+  /** most of the typed steps changed nothing: the film is made, but it is only partly what was asked (the notes say which steps) */
+  partial?: { reason: string }
+}
+
+/** the steps of a brief that has no list: its sentences, or the actions the AI plan wrote for a "script" page (null: it names none) */
+function stepsFromProse(brief: string, plan: FilmPlan | null): StepScript | null {
+  const prose = parseProseScript(brief)
+  const actions = plan ? plan.segments.flatMap((s) => (s.kind === 'page' && s.how === 'script' ? s.actions ?? [] : [])) : []
+  const fromPlan = actions.length ? scriptFromActions(actions, plan?.goal ?? '') : null
+  const clicks = (x: StepScript | null): number => (x ? x.items.reduce((n, i) => n + i.atoms.length + (i.login ? 1 : 0), 0) : 0)
+  if (!prose) return fromPlan
+  if (!fromPlan) return prose
+  return clicks(fromPlan) >= clicks(prose) ? { ...fromPlan, tone: prose.tone, goal: prose.goal || fromPlan.goal } : prose
 }
 
 export class RunCancelled extends Error {
@@ -250,7 +263,9 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
   const ctxClean = withoutProductionSentences(inp.context)
   // a numbered list of steps is a script: it is performed exactly, and nothing else is opened
   const agentPages = !!fp && !inp.reuse && agentFilmsPages(fp)
-  const script = inp.reuse || agentPages ? null : parseStepScript(ctxClean)
+  // no numbered list: the sentences of a prose brief, or the actions the AI plan wrote for its "script" page, are the steps
+  // (whichever reads more clicks); a brief that names no steps at all is still explored as before
+  const script: StepScript | null = inp.reuse || agentPages ? null : parseStepScript(ctxClean) ?? stepsFromProse(ctxClean, fp)
   // the addresses pasted into the brief ("What should the video show?") are pages of the app too, on every path but a typed script
   const promptUrls = script ? [] : readUrls(ctxClean)
   const { guardrails, enforced, advisory } = interpretGuardrails(inp.guardrailText, [...starts, ...promptUrls], inp.checks)
@@ -501,6 +516,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     writeFileSync(join(inp.runDir, 'beats.json'), JSON.stringify(plan.beats, null, 2))
     const base: RunOutput = {
       plan, map: safeMap, compat, stoppedBy: exploration.stoppedBy, pages: scriptOut ? scriptOut.results.length : exploration.visits.length, actions: exploration.actions,
+      ...(scriptOut?.mostlyUnchanged && scriptOut.stats ? { partial: { reason: `Only ${scriptOut.stats.effective} of ${scriptOut.stats.total} steps changed the page as written.` } } : {}),
       blockedHosts: gate.blockedHosts(), enforced, advisory, redactionMisses: 0, runDir: inp.runDir, brandNotes: site?.notes ?? []
     }
     if (inp.stopAfter === 'explore' || inp.stopAfter === 'plan') return base
@@ -630,9 +646,11 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     check()
 
     // ------------------------------------------------------------ the title and closing backgrounds: designed by the AI for this film, never a template
-    hooks.progress('produce', 'Designing the opening and closing backgrounds')
+    // a walkthrough has no title or closing scene (it starts on the page and ends on it): nothing is designed for it
+    const hasScenes = !!(narration.intro || narration.outro)
+    if (hasScenes) hooks.progress('produce', 'Designing the opening and closing backgrounds')
     const sceneSecs = { title: 6, outro: 6 }
-    const designed = await designFilmBackgrounds({
+    const designed = !hasScenes ? { notes: [] as string[], results: {} as Awaited<ReturnType<typeof designFilmBackgrounds>>['results'], title: undefined, outro: undefined } : await designFilmBackgrounds({
       chat: inp.chat,
       library: inp.introLibrary === undefined ? new IntroBackgroundLibrary(introBackgroundsDir) : inp.introLibrary,
       dir: join(inp.runDir, 'intro-background'),

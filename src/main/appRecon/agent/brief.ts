@@ -3,7 +3,7 @@ import type { CardSegment, ClipSegment, FilmPlan, BriefInput, MusicSpec, Narrati
 import { scrubText } from '../detect'
 import { isDurationSentence, isStyleSentence, parseClipStyle, partSeconds } from '../aiMedia'
 import { parseDirectives } from '../directives'
-import { BULLET, parseStepScript } from '../stepScript'
+import { BULLET, isToneSentence, parseStepScript } from '../stepScript'
 
 /**
  * PLAN stage, part 1: read the WHOLE typed brief into a FilmPlan.
@@ -160,6 +160,8 @@ export function isAccounted(unit: string, plan: FilmPlan, fields: string[] = pla
   // a bare label ("steps:"), a heading ("# recorded steps to show:"), the sentence that introduces a list, or an address on its own
   if (isLeadIn(unit) || /^\W*https?:\/\/\S+\W*$/.test(unit.trim())) return true
   if (VOICE_WORD.test(unit) && (plan.voice.tone || plan.voice.language || plan.voice.none)) return true
+  // how the film should sound or feel, who it is for, who the person is ("my customers are not techy so keep it simple", "Warm, quick, no jargon."): voice and context, never an instruction that was left out
+  if (isToneSentence(unit)) return true
   // "Start the intro with a question: do you know ...?": the directive is the plan's order (what comes first); what is
   // asked for is the words after it
   const directive = /^\W*(?:then\s+)?(?:start|begin|open|kick\s+off)\s+(?:the\s+)?(?:intro(?:duction)?|video|film|opening)?\s*(?:with|by)\s+(?:a\s+|an\s+|the\s+)?(?:short\s+)?(?:question|hook|statement|line|sentence)?\s*[:,\-–—]\s*/i.exec(unit)

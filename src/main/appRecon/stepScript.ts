@@ -145,6 +145,13 @@ const joinsLabel = (verb: string): boolean => new RegExp(`^(?:${JOIN_V.join('|')
 const ACTION_WORDS = new Set(
   ['click', 'press', 'tap', 'hit', 'select', 'choose', 'pick', 'open', 'expand', 'collapse', 'go', 'navigate', 'switch', 'move', 'visit', 'head', 'use', 'explore', 'check', 'tick', 'untick', 'uncheck', 'toggle', 'turn', 'enable', 'disable', 'mark', 'sort', 'add', 'remove', 'close', 'dismiss', 'accept', 'reject', 'decline', 'increase', 'decrease', 'confirm', 'finish', 'submit', 'place', 'save', 'send', 'apply', 'download', 'copy', 'run', 'clear', 'reset', 'book', 'buy', 'order', 'pay', 'continue', 'proceed', 'cancel', 'type', 'enter', 'input', 'search', 'write', 'put', 'fill', 'set', 'change', 'update', 'rename', 'replace', 'edit', 'drag', 'drop', 'slide', 'scroll', 'hover', 'wait', 'flip', 'tab', 'reschedule', 'log', 'sign', 'refresh', 'reload', 'upload', 'share', 'start', 'stop', 'play', 'pause', 'delete', 'undo', 'redo', 'skip', 'checkout', 'bring', 'hide', 'double', 'right', 'swipe', 'zoom', 'drag', 'paste', 'focus', 'unfocus', 'filter', 'tick', 'look', 'find', 'show', 'display', 'open', 'read', 'try', 'make']
 )
+/** words that start something said about the step, not something to do */
+const NOT_A_VERB = new Set(
+  ['so', 'because', 'which', 'that', 'this', 'these', 'those', 'to', 'with', 'for', 'while', 'as', 'if', 'it', 'its', 'they', 'them', 'we', 'you', 'your', 'i', 'the', 'a', 'an', 'my', 'our', 'when', 'where', 'what', 'how', 'why', 'also', 'just', 'only', 'not', 'no', 'all', 'any', 'each', 'every', 'both', 'then', 'and', 'or', 'but', 'there', 'here', 'is', 'are', 'was', 'were', 'be', 'been', 'has', 'have', 'had', 'will', 'would', 'can', 'could', 'should', 'may', 'might', 'of', 'in', 'on', 'at', 'by', 'from', 'into', 'onto', 'up', 'down', 'out', 'off', 'over', 'about', 'keep', 'make', 'stay', 'remember', 'note', 'avoid', "don't", 'do', 'never', 'always', 'please', 'nothing', 'something', 'everything', 'one', 'two', 'three', 'more', 'less', 'very', 'really', 'quite', 'maybe', 'perhaps', 'ok', 'okay', 'size', 'colour', 'color', 'tab', 'option', 'item', 'price', 'plan', 'step', 'page', 'menu', 'section', 'card', 'row', 'column', 'name', 'email', 'phone', 'address', 'time', 'date']
+)
+/** a lowercase word that opens a clause like a command ("flibber the zorp"): not understood, so it is reported instead of dropped */
+const looksImperative = (head: string): boolean => /^[a-z]{3,}$/.test(head) && !head.endsWith('ing') && !NOT_A_VERB.has(head)
+
 /** a sentence about what the film should be like, or what the video is for: voice, tone, context. It asks for no action */
 const TONE_WORDS = /\b(?:warm|friendly|welcoming|calm|upbeat|energetic|enthusiastic|casual|simple|simply|short|quick|fast|slow|no\s+jargon|jargon|techy|technical|non-?technical|fancy|loud|quiet|music|voice|voiceover|narrat\w+|tone|sound|sounds|style|vibe|feel|mood|professional|fun|playful|formal|brand|audience|customers?\s+are|viewers?|beginners?)\b/i
 
@@ -317,7 +324,7 @@ function wheneverFrom(sentence: string): Whenever | null {
 const SLIDER_NUM = /[£$€]?\s*(\d+(?:[.,]\d+)?)/g
 
 /** the whole text a step says is a goal rather than clicks */
-const GOAL_RE = /^(?:(?:and|then|now|next|please)\s+)*(?:(?:show|demonstrate|walk\s+(?:me\s+|us\s+)?through|explain|illustrate|display)\b.*\b(?:how|what\s+happens|when|would|difference|handles?|handling|workflow|process|examples?)\b|(?:find|figure\s+out|work\s+out|look\s+for|discover|compare)\b)/i
+const GOAL_RE = /^(?:(?:and|then|now|next|please)\s+)*(?:(?:show|demonstrate|walk\s+(?:me\s+|us\s+)?through|illustrate)\b.*\b(?:how|what\s+happens|when|would|difference|handles?|handling|workflow|process|examples?)\b|explain\b.*\bwhat\s+happens\s+(?:when|if)\b|(?:find|figure\s+out|work\s+out|look\s+for|discover|compare)\b)/i
 const EXAMPLES_RE = /\b(?:live\s+)?examples?\b|\bdemonstrate\b/i
 const NARRATE_RE = /^(?:(?:and|then|now|next|please|also|finally|lastly)[,\s]+)*(?:provide|give|conclude|summari[sz]e|wrap\s+up|recap|thank|say|tell|state|read|mention|describe|talk|point|note|highlight|show\s+(?:the|what|me|us|that|it|its|them)|display\s+the|see\s+(?:the|what)|watch|look\s+at|notice|observe|end\s+(?:with|by)|finish\s+(?:with|by)|close\s+(?:with|by)|let(?:'s)?\s+see|so\b)/i
 
@@ -488,6 +495,10 @@ function parseLine(n: number, said: string): ScriptItem {
     text = clean(text).replace(LEAD_RE, '')
     // "…keyboard only to turn on X": the "to" only joins the verb
     text = text.replace(new RegExp(`^to\\s+(?=(?:${ALL_V.join('|')}|type|enter|press|hit)\\b)`, 'i'), '')
+    // "finish by confirming the booking", "and closing the confirmation": the verb is the one after "by" / the gerund
+    text = text.replace(/^(?:finish|end|start|begin)\s+(?:by|with)\s+/i, '')
+    const ger = /^(\w+ing)\b/i.exec(text)
+    if (ger && gerundBase(ger[1])) text = text.replace(/^\w+ing\b/i, gerundBase(ger[1]) as string)
     // "twice", "three times": the part is done that often
     let times = 1
     const rep = REPEAT.exec(text)
@@ -509,7 +520,7 @@ function parseLine(n: number, said: string): ScriptItem {
       const head = (/^[\w'’-]+/.exec(text)?.[0] ?? '').toLowerCase()
       if (GOAL_RE.test(text) || EXAMPLES_RE.test(text)) item.goal = clean(`${item.goal ?? ''} ${clause}`)
       else if (NARRATE_RE.test(text)) { item.narration = true; item.notes.push(clause) }
-      else if (ACTION_WORDS.has(head)) item.unread.push(clause)
+      else if (ACTION_WORDS.has(head) || looksImperative(head)) item.unread.push(clause)
       else item.notes.push(clause)
     }
   }
@@ -517,7 +528,9 @@ function parseLine(n: number, said: string): ScriptItem {
     const label = dd?.label ?? ''
     item.atoms.push({ action: 'select', label: label || 'dropdown', option, find: { target: label, kind: 'select', ...(ddPlace.region ? { region: ddPlace.region } : {}), ...(ddPlace.within.length ? { within: ddPlace.within } : {}) } })
   }
-  if (!item.goal && !item.atoms.length && item.explain && EXAMPLES_RE.test(said)) item.goal = said
+  // a step in which nothing was read at all is listed as not understood
+  if (!item.atoms.length && !item.login && !item.explain && !item.narration && !item.unread.length && !(EXAMPLES_RE.test(said) || GOAL_RE.test(said))) item.unread.push(said)
+  if (!item.goal && !item.atoms.length && (item.explain || item.narration) && (EXAMPLES_RE.test(said) || GOAL_RE.test(said.replace(/^[\s\d.):-]+/, '')))) item.goal = said
   // a goal beside clicks that were understood is a wish for the narration ("show an example of each"), not a step to plan
   if (item.goal && item.atoms.length) { item.notes.push(item.goal); item.goal = undefined }
   return item
@@ -610,7 +623,7 @@ function parseLine(n: number, said: string): ScriptItem {
     }
     const sc = SCROLL.exec(text)
     if (sc && !QUOTED.test(text)) {
-      const dir = /up/i.test(sc[1] ?? sc[0]) ? 'up' : 'down'
+      const dir = /up/i.test(sc[1] ?? sc[0]) || /\bto\s+the\s+(?:very\s+)?(?:top|start|beginning)\b/i.test(text) ? 'up' : 'down'
       return toAtoms({ action: 'scroll', dir, find: { target: 'scroll', kind: 'scroll', ...(place.region ? { region: place.region } : {}), ...(place.within.length ? { within: place.within } : {}) } })
     }
 
@@ -810,6 +823,8 @@ function parseLine(n: number, said: string): ScriptItem {
     if (!words.length || words.length > 5) return false
     if (/^(?:so|because|which|that|this|then|to|if|when|but|or|who|where|how|what|why)\b/i.test(t)) return false
     if (EXPLAIN.test(t) || NARRATE_RE.test(t) || TONE_WORDS.test(t)) return false
+    // "flibber the zorp": a lowercase word that looks like a verb, then its object, is an instruction nobody could read, not another name
+    if (words.length >= 2 && /^[a-z]/.test(words[0]) && looksImperative(words[0].toLowerCase()) && !/^(?:the|a|an|my|our|your|his|her|its)$/i.test(words[0]) && !/\bas\s+(?:the|a|an|my)\b/i.test(t)) return false
     if (ACTION_WORDS.has(words[0].toLowerCase()) && !/^(?:the|a|an)$/i.test(words[0])) return false
     return true
   }
@@ -1158,8 +1173,14 @@ export function plainStep(item: ScriptItem): string {
 export function isToneSentence(sentence: string): boolean {
   const s = clean(sentence)
   if (!s) return false
+  if (/^(?:hi|hello|hey|thanks?|thank\s+you|cheers)\b/i.test(s) && s.split(/\s+/).length <= 3) return true
+  if (/^(?:hi|hello|hey)[,!\s]+(?:i|we|this)\b/i.test(s) || /\b(?:i|we)\s+(?:run|own|have|work|am|manage|are)\s+(?:a|an|the|my|our|at|in|for)\b/i.test(s) && !/\b(?:click|press|open|book|sign|log|pick|choose|type|enter|select|tick|scroll|drag|hover)\b/i.test(s)) return true
   if (stepIsTone(s)) return true
+  // any word that asks for something to be done on the page makes it an instruction, whatever else it says
+  const doing = new Set(['make', 'try', 'look', 'read', 'find', 'show', 'display', 'open', 'right'])
+  for (const w of s.toLowerCase().split(/[^\p{L}\p{N}'-]+/u)) if (ACTION_WORDS.has(w) && !doing.has(w) && w !== 'run' && w !== 'set') return false
+  if (/\b(?:show|display|find|open|explain|demonstrate|walk)\b/i.test(s)) return false
   const it = parseLine(1, s)
   if (it.atoms.length || it.login || it.goal || it.explain) return false
-  return TONE_WORDS.test(s) || /^(?:hi|hello|hey|thanks?|thank\s+you)\b/i.test(s) || /\bi\s+(?:run|own|have|work|am|manage)\b/i.test(s)
+  return TONE_WORDS.test(s)
 }

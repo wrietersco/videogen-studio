@@ -273,7 +273,7 @@ export function planBeats(inp: PlanInput): Plan {
   if (signIn && loginFocus) {
     const out = candidates.flatMap((v) => v.page.controls).find((c) => /log\s?-?out|sign\s?-?out/i.test(c.label))
     if (out) {
-      steps.push({ id: id(), beat, kind: 'click', selector: out.selector, label: out.label, intent: 'logout', expect: L.passwordSelector ? { selectorVisible: L.passwordSelector } : undefined, focus: 'banner' })
+      steps.push({ id: id(), beat, kind: 'click', selector: out.selector, label: out.label, intent: 'logout', focus: 'banner' }) // no `expect`: the sign-out is the engine's own addition, so a site that does not show the sign-in form again must never stop the film
       beats.push({ beat, kind: 'logout', chapter: 'Sign out safely', facts: ['The person signs out and the session ends'], fallback: LOGIN_LINES.walk[4], launchFallback: LOGIN_LINES.launch[4] })
       beat++
     } else notes.push('No sign-out control was found, so the video ends after signing in')

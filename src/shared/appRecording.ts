@@ -128,6 +128,8 @@ export interface RunRecord {
   advisory?: string[]
   /** the screen recording and everything the video is made of were kept, so changes can be typed and applied without recording again */
   editable?: boolean
+  /** the film is made, but most of the typed steps changed nothing: it is only partly what was asked (the notes say which) */
+  partial?: { reason: string }
   /** the video this one was made from by typing changes (that video is kept) */
   parentRunId?: string
   revision?: RecordingRevision
