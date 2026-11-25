@@ -101,7 +101,50 @@ export async function pickChart(page: Page, hint = ''): Promise<ChartBox | null>
       c = await page.evaluate(chartsOnScreen, hint).catch(() => null)
     }
   }
+  for (let i = 0; c && i < 2; i++) {
+    const btn = await page.evaluate(coverDismissAt, c.rect).catch(() => null)
+    if (!btn) break
+    await page.mouse.click(btn.x, btn.y)
+    await sleep(700)
+    c = (await page.evaluate(chartsOnScreen, hint).catch(() => null)) ?? c
+  }
   return c ? { title: c.title, rect: c.rect, kind: c.kind } : null
+}
+
+/**
+ * in the page: a help card, tour or banner laid over the chart (a first-visit "How to read this circle" with a "Got it") hides the
+ * marks and takes every hover and click. Returns where its dismiss button is (viewport pixels), or null when nothing covers the chart.
+ */
+function coverDismissAt(rect: { x: number; y: number; w: number; h: number }): { x: number; y: number; label: string } | null {
+  const WORDS = /^(?:got it|ok|okay|close|dismiss|skip|skip tour|no thanks|not now|maybe later|done|hide|hide this|understood|×|✕|✖|x)$/i
+  const pts = [
+    [0.5, 0.5],
+    [0.25, 0.3],
+    [0.75, 0.3],
+    [0.25, 0.7],
+    [0.75, 0.7]
+  ]
+  for (const [fx, fy] of pts) {
+    const x = rect.x + rect.w * fx
+    const y = rect.y + rect.h * fy
+    if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) continue
+    const top = document.elementFromPoint(x, y)
+    if (!top || top.closest('canvas,svg')) continue
+    // the layer that lies over the chart: the nearest positioned ancestor that holds a button which only closes it
+    let layer: Element | null = top
+    for (let i = 0; i < 8 && layer && layer !== document.body; i++, layer = layer.parentElement) {
+      const pos = getComputedStyle(layer).position
+      if (pos !== 'absolute' && pos !== 'fixed' && pos !== 'sticky') continue
+      for (const b of Array.from(layer.querySelectorAll('button,[role=button],a'))) {
+        const label = ((b as HTMLElement).innerText || b.getAttribute('aria-label') || b.getAttribute('title') || '').trim()
+        if (!WORDS.test(label)) continue
+        const r = b.getBoundingClientRect()
+        if (r.width < 4 || r.height < 4 || r.bottom < 0 || r.top > innerHeight) continue
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2, label }
+      }
+    }
+  }
+  return null
 }
 
 // ---------------------------------------------------------------- colours
