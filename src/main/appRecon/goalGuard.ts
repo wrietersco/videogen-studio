@@ -222,7 +222,8 @@ export function buildAtom(a: ModelAction, study: PageStudy, r: Rails): Built {
     const rel = inst.relation
     c = inst.c
     const key = `${kind}|${c.label.toLowerCase()}|${(a.near ?? '').toLowerCase()}`
-    if (r.done.has(key) && kind === 'click' && !c.collapsed && !CLOSER.test(c.label.trim())) return { reject: `"${c.label}" was already pressed and changed the page` }
+    // pressed twice already (the first press may have been swallowed by a popup that came up): a third time would not help
+    if (r.done.has(`${key}#2`) && kind === 'click' && !c.collapsed && !CLOSER.test(c.label.trim())) return { reject: `"${c.label}" was already pressed twice and changed the page each time` }
     const leaves = c.kind === 'link' && !!c.href && c.href.startsWith('/') && !c.href.startsWith(new URL(study.url).pathname + '#') && c.href.split('#')[0] !== new URL(study.url).pathname + new URL(study.url).search
     if (c.kind === 'link' && c.href && !c.href.startsWith('/')) return { reject: `"${c.label}" leads out of the app (${c.href})` }
     // a link in the feature itself (a product, a task, a row) is the feature at work; one from elsewhere must be given as the way there

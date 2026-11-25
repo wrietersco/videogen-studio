@@ -492,7 +492,7 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
       const ran = !notDone(b.label)
       const live = ran && interactive.has(b.atom.action) && !r.unchanged && (verified !== false)
       // an action that changed nothing may be tried again (a click that a popup swallowed)
-      if (ran && !r.unchanged) done.add(b.key)
+      if (ran && !r.unchanged) done.add(done.has(b.key) ? `${b.key}#2` : b.key)
       if (live) report.live++
       report.shown.push({ what: describeAtom(b.atom), why: b.why, ...(ran ? {} : { skipped: r.skipped.find((s) => s.what.toLowerCase().includes(b.label.toLowerCase()))?.why ?? 'it could not be done' }) })
     }

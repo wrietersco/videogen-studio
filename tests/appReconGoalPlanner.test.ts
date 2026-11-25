@@ -121,8 +121,9 @@ describe('the planner may only do what is on the page and about the goal', () =>
     expect(buildAtom(act({ target: 'Delete account' }), st, rails({ goal: 'demonstrate the API playground' }))).toMatchObject({ reject: expect.stringMatching(/changes or sends data/) })
   })
   it('never repeats an action that was done, and respects the person\'s own rules', () => {
-    const done = new Set(['click|east|'])
-    expect(buildAtom(act({ target: 'East' }), study(), rails({ done }))).toMatchObject({ reject: expect.stringMatching(/already pressed/) })
+    // once is allowed again (the first press may have gone to a popup); the third time is refused
+    expect(buildAtom(act({ target: 'East' }), study(), rails({ done: new Set(['click|east|']) }))).toMatchObject({ atom: { action: 'click' } })
+    expect(buildAtom(act({ target: 'East' }), study(), rails({ done: new Set(['click|east|', 'click|east|#2']) }))).toMatchObject({ reject: expect.stringMatching(/already pressed twice/) })
     const strict = new PolicyGate(interpretGuardrails('', ['http://x.test/'], { noSettings: true }).guardrails)
     expect(strict).toBeTruthy()
   })
@@ -334,7 +335,7 @@ describe.skipIf(!runnable)('the goal planner on real pages', () => {
     const out = await runGoal(goal('explain the Regional distribution section and give live examples') as never, deps(o, model))
     expect(Date.now() - t).toBeLessThan(90000)
     expect(out.report.turns).toBeLessThanOrEqual(8)
-    expect(out.report.live).toBe(1)
+    expect(out.report.live).toBe(2)
     expect(out.report.status).not.toBe('done')
     expect(out.report.reason).toMatch(/refused|planning rounds|limit/)
     await o.page.close()
@@ -363,6 +364,20 @@ describe.skipIf(!runnable)('the goal planner on real pages', () => {
     expect(model.prompts[0].prompt).toMatch(/COME AFTER[\s\S]*Commercial/)
     await o.page.close()
   }, 120000)
+
+  // a real model, cheapest vision-capable one; only when a key is present (OPENAI_API_KEY, model from GOAL_TEST_MODEL)
+  it.skipIf(!process.env.OPENAI_API_KEY)('with a real model: finds the far-down section and shows at least two live examples without leaving it', async () => {
+    const { OpenAIProvider } = await import('../src/main/providers/openai')
+    const chat = new OpenAIProvider(() => process.env.OPENAI_API_KEY as string, () => process.env.GOAL_TEST_MODEL ?? 'gpt-4o-mini')
+    const o = await open('/')
+    const out = await runGoal(goal('explain the Regional distribution section on the dashboard and give live examples', { explain: 'the Regional distribution section on the dashboard and give live examples' }) as never, deps(o, chat as never))
+    expect(await o.page.evaluate(() => scrollY)).toBeGreaterThan(1500)
+    expect(out.report.live).toBeGreaterThanOrEqual(2)
+    expect(sites.events.filter((e) => e.startsWith('pick:') || e.startsWith('step:')).length).toBeGreaterThanOrEqual(2)
+    expect(sites.events).not.toContain('dark-mode')
+    expect(sites.events).not.toContain('delete-data')
+    await o.page.close()
+  }, 300000)
 
   it('a script with no goal in it is performed exactly as before, with no model call', async () => {
     const o = await open('/')
