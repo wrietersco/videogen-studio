@@ -308,7 +308,7 @@ export interface ReviewInput {
   lines: string[]
   problemDrawn: boolean
   /** the typed steps were performed exactly (the exact-steps path): the words of each step done, and how much was done */
-  scripted?: { said: string[]; actions: number; choices: number }
+  scripted?: { said: string[]; actions: number; choices: number; /** parts of steps that could not be done and were left out, in words */ skipped?: string[] }
 }
 
 const flat = (s: string): string => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
@@ -323,6 +323,7 @@ function scriptedCheck(seg: PageSegment, s: NonNullable<ReviewInput['scripted']>
   if (seg.how !== 'script' && !done.length) return null
   const proof = [`${s.said.length} typed step${s.said.length === 1 ? '' : 's'} done in order`, `${s.actions} action${s.actions === 1 ? '' : 's'} performed`]
   if (s.choices) proof.push(`${s.choices} dropdown choice${s.choices === 1 ? '' : 's'} made`)
+  if (s.skipped?.length) return { segment: seg.id, status: 'partial', evidence: [...proof, ...s.skipped.map((k) => `left out: ${k}`)], note: `Done on the real page, except ${s.skipped.length === 1 ? 'one part' : `${s.skipped.length} parts`} that could not be done and are not in the film (the narration does not claim them): ${s.skipped.slice(0, 4).join('; ')}.`, attempts: 1 }
   return { segment: seg.id, status: 'done', evidence: proof, note: 'Done by the exact-steps run: every step was performed on the real page, then filmed.', attempts: 1 }
 }
 

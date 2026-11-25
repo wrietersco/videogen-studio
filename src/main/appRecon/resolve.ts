@@ -33,6 +33,9 @@ function locate(spec: FindSpec, minScore: number): Result {
   const STOP = new Set(['the', 'a', 'an', 'of', 'on', 'in', 'to', 'icon', 'button', 'tab', 'link', 'item', 'option', 'section', 'page', 'pane', 'panel', 'bar', 'box', 'field', 'menu', 'just', 'right', 'left', 'above', 'below', 'top', 'my', 'this', 'that'])
   const norm = (s: string): string[] =>
     (s || '')
+      // arrows say which way a control goes: "< match" is the previous one, "match >" the next one
+      .replace(/[<‹«◀◄←⟵❮⏴]/g, ' prev ')
+      .replace(/[>›»▶►→⟶❯⏵]/g, ' next ')
       .replace(/([a-z])([A-Z])/g, '$1 $2')
       .toLowerCase()
       .normalize('NFKD')
@@ -198,10 +201,14 @@ function locate(spec: FindSpec, minScore: number): Result {
     return best?.el ?? null
   })()
 
+  const ARABIC = /[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/
+  const arabicWanted = key.includes('arabic')
   const scored: Array<{ el: Element; s: number; label: string }> = []
   for (const el of clickable) {
     if (el === refs) continue
     let s = scoreText(el, key, spec.target)
+    // "the arabic word": the page's words are Arabic script, which a plain-letter match cannot read
+    if (arabicWanted && s < minScore && ARABIC.test(textOf(el)) && textOf(el).length <= 40) s = 60
     if ((spec.kind === 'type' || spec.kind === 'select') && s < minScore && !key.length) s = 50
     if (spec.kind === 'type' && (el as HTMLInputElement).type === 'search') s += 25
     if (spec.kind === 'type' && s < minScore && /search|filter|find|query/.test(`${el.id} ${classTokens(el)} ${el.getAttribute('name') ?? ''} ${el.getAttribute('placeholder') ?? ''}`.toLowerCase()) && key.every((w) => /search|filter|find|query|text|input/.test(w))) s = 60
@@ -209,14 +216,16 @@ function locate(spec: FindSpec, minScore: number): Result {
     const r = rectOf(el)
     const cx = (r.left + r.right) / 2
     const cy = (r.top + r.bottom) / 2
-    const reg = spec.region
+    // a phone stacks the page in one column: "on the right" says nothing about where a control is there
+    const reg = vw < 700 && (spec.region === 'left' || spec.region === 'right') ? undefined : spec.region
     if (reg === 'left') s += cx < vw * 0.38 ? 25 : -45
     if (reg === 'right') s += cx > vw * 0.58 ? 25 : -45
     if (reg === 'top') s += cy < vh * 0.32 ? 25 : -35
     if (reg === 'bottom') s += cy > vh * 0.68 ? 25 : -35
     const anc = ancestry(el)
     for (const w of spec.within ?? []) {
-      const re = WITHIN[w.toLowerCase()]
+      // a word the page may use for the area ("verse", "details") is looked for as it is
+      const re = WITHIN[w.toLowerCase()] ?? (w.length >= 3 ? new RegExp(w.toLowerCase().replace(/[^a-z0-9]/g, '.')) : null)
       if (re && re.test(anc)) s += 30
     }
     if (spec.role === 'suggestion') {
@@ -261,11 +270,11 @@ function locate(spec: FindSpec, minScore: number): Result {
 }
 
 /** looks for the control, waiting while the page draws it (menus open, suggestions arrive) */
-export async function findElement(page: Page, spec: FindSpec, waitMs = 8000): Promise<{ found: Found | null; miss?: Miss }> {
+export async function findElement(page: Page, spec: FindSpec, waitMs = 8000, minScore = MIN_SCORE): Promise<{ found: Found | null; miss?: Miss }> {
   const until = Date.now() + waitMs
   let miss: Miss | undefined
   for (;;) {
-    const r = (await page.evaluate(locate, spec, MIN_SCORE).catch(() => null)) as Result | null
+    const r = (await page.evaluate(locate, spec, minScore).catch(() => null)) as Result | null
     if (r?.ok) return { found: { selector: r.selector, rect: r.rect, label: r.label, score: r.score } }
     if (r && !r.ok) miss = { closest: r.closest }
     if (Date.now() >= until) return { found: null, miss }

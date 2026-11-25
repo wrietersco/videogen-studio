@@ -12,7 +12,7 @@ import { adoptFile, findVoice, writeRecordingRecord, type RecordedCard } from '.
 import { planBeats, type Plan } from './planner'
 import { interpretGuardrails, PolicyGate, type RestrictionChecks } from './policy'
 import { produce, recordingScreen, type CardPlan, type InsertPlan } from './produce'
-import { performScript, scriptPlan, type ScriptOutcome } from './script'
+import { performScript, scriptPlan, type ScriptOutcome, type VisionPick } from './script'
 import { parseStepScript } from './stepScript'
 import { ambientBrief, chooseMusic, clipSeconds, parseMediaAsk, parseMusicAsk, parseStructure, planMedia, withStyle, withoutProductionSentences, type Placement } from './aiMedia'
 import { musicBrief } from '../audio/cue'
@@ -94,6 +94,24 @@ export async function openingPicture(tools: MediaTools, clipPrompt: string, inde
   }
   notes.push(`AI clip ${index + 1} started from a keyframe picture.`)
   return { imageFile }
+}
+
+/** a model that looks at the screen to name the control a step means (only when the chosen model can see pictures) */
+export function visionPicker(chat: LLMProvider | null): VisionPick | undefined {
+  if (!chat || chat.supportsVision?.() === false) return undefined
+  return async ({ shot, said, candidates }) => {
+    const list = candidates.map((c) => `${c.i}. [${c.kind}] ${c.text || '(no text)'}  (${Math.round(c.rect.x)},${Math.round(c.rect.y)})`).join('\n')
+    const out = await chat.generateJSON<{ index?: number | null }>({
+      system: 'You help a screen recorder do a step a person wrote on a web page. You are given the step, a screenshot of the page and a numbered list of the controls on it. Name the control the step means. If none of them fits, answer null.',
+      prompt: `The step: "${said}"\n\nControls on the page:\n${list}\n\nWhich number is the control the step means?`,
+      schemaName: 'pick_control',
+      jsonSchema: { type: 'object', properties: { index: { type: ['integer', 'null'] } }, required: ['index'], additionalProperties: false },
+      images: [{ mimeType: 'image/jpeg', base64: shot.toString('base64') }],
+      temperature: 0,
+      maxTokens: 120
+    })
+    return typeof out?.index === 'number' ? out.index : null
+  }
 }
 
 export type Stage = 'explore' | 'plan' | 'script' | 'record' | 'produce'
@@ -437,7 +455,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       await pause()
       hooks.progress('explore', `Doing your ${script.items.filter((i) => !i.login).length} steps, exactly as written`)
       beganAt = page.url()
-      scriptOut = await performScript({ page, gate, script, log: say, signal: inp.signal })
+      scriptOut = await performScript({ page, gate, script, log: say, signal: inp.signal, vision: visionPicker(inp.chat) })
       if (scriptOut.failure) {
         if (inp.signal?.aborted) throw new RunCancelled()
         throw new Error(scriptOut.failure)
@@ -531,6 +549,9 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
 
     // ------------------------------------------------------------ AI media (only now: the recording is verified, so nothing is paid for in vain)
     const mediaNotes: string[] = []
+    // steps the recording could not do are left out and said, never a silent hole in the film
+    for (const k of run.skipped ?? []) mediaNotes.push(`A step was skipped while filming (${k.label || k.step}): ${k.why}.`)
+    for (const k of run.stuck ?? []) mediaNotes.push(`Parts ${k.from + 1} to ${k.to + 1} of the film stayed on one screen although steps were done in them, so the voice may describe things that are not shown there.`)
     const motif = pickMotif(`${inp.launch ? `${inp.launch.feature} ${inp.launch.tagline}` : ''} ${ctxClean}`)
     const inserts: InsertPlan[] = []
     const tools = inp.media?.tools ?? null
@@ -688,7 +709,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       const lines = [narration.introText ?? '', ...narration.lines.map((l) => l.text), narration.problem?.text ?? '', ...inserts.map((i) => i.text ?? ''), narration.outroText ?? ''].filter(Boolean)
       const planClips = fp.segments.some((s) => s.kind === 'ai-clip')
       const clipsSkipped = !planClips ? undefined : assigned.video === 'none' || assigned.video === 'skip' ? 'you chose not to make AI clips' : !tools ? 'AI clips are not available on this account' : undefined
-      const checks = reviewStage({ plan: fp, acted, take, clipsMade, clipsSkipped, lines, problemDrawn: !!narration.problem, scripted: scriptOut ? { said: scriptOut.results.filter((r) => !r.item.login).map((r) => r.item.said), actions: scriptOut.actions, choices: scriptOut.results.reduce((n, r) => n + r.picks.length, 0) } : undefined })
+      const checks = reviewStage({ plan: fp, acted, take, clipsMade, clipsSkipped, lines, problemDrawn: !!narration.problem, scripted: scriptOut ? { said: scriptOut.results.filter((r) => !r.item.login).map((r) => r.item.said), actions: scriptOut.actions, choices: scriptOut.results.reduce((n, r) => n + r.picks.length, 0), skipped: [...scriptOut.skipped.map((k) => `step ${k.n}: ${k.what} (${k.why})`), ...(run.skipped ?? []).map((k) => `${k.label || k.step} (${k.why})`)] } : undefined })
       for (const c of checks) inp.pari.emit({ kind: 'pari-check', check: c })
       report = buildReport(fp, pari, checks)
       inp.pari.emit({ kind: 'pari-report', report })

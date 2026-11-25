@@ -120,16 +120,22 @@ export type Guardrails = z.infer<typeof Guardrails>
 export const FindSpec = z.object({
   /** the name the person used: visible text, an icon's tooltip or label, or the box's placeholder */
   target: z.string(),
-  kind: z.enum(['click', 'type', 'scroll', 'select']),
+  kind: z.enum(['click', 'type', 'scroll', 'select', 'hover']),
   region: z.enum(['left', 'right', 'top', 'bottom']).optional(),
   /** words for the area it sits in: menu, search, pane, header, dropdown ... */
   within: z.array(z.string()).optional(),
   relation: z.object({ rel: z.enum(['above', 'below', 'leftOf', 'rightOf', 'near']), to: z.string() }).optional(),
-  role: z.enum(['suggestion', 'tab', 'icon']).optional()
+  role: z.enum(['suggestion', 'tab', 'icon']).optional(),
+  /** colours of the chart marks meant ("blue, green and orange lines"): found by looking at the pixels, so SVG, canvas and WebGL charts all work */
+  colours: z.array(z.string()).optional(),
+  /** what kind of mark (line, bar, point, slice ...) */
+  noun: z.string().optional(),
+  /** which chart, in the person's words ("the even-odd circle") */
+  chart: z.string().optional()
 })
 export type FindSpec = z.infer<typeof FindSpec>
 
-export const StepKind = z.enum(['goto', 'type', 'click', 'press', 'wait', 'expect', 'handoff', 'scroll', 'reveal', 'select'])
+export const StepKind = z.enum(['goto', 'type', 'click', 'press', 'wait', 'expect', 'handoff', 'scroll', 'reveal', 'select', 'scrollto', 'hover', 'mark'])
 export const Step = z.object({
   id: z.string(),
   /** which narrated beat of the video this step belongs to */
