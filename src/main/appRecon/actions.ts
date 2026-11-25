@@ -344,6 +344,9 @@ export async function doClick(env: Env, target: { selector: string; label: strin
       h = await deepHandle(page, sel)
       if (!h) break
     }
+    // a control the page keeps switched off swallows every press: said as it is, not as a click that failed
+    const off = await h.evaluate((el) => !!(el as HTMLButtonElement).disabled || el.getAttribute('aria-disabled') === 'true' || !!el.closest('fieldset:disabled')).catch(() => false)
+    if (off) return { ...out, skipped: { what, why: 'it is disabled: the page keeps it switched off until something it needs is done first' } }
     const aim = await aimAt(page, h, o.prefer ?? 'centre')
     out.rect = (await h.boundingBox().then((b) => (b ? { x: b.x, y: b.y, w: b.width, h: b.height } : undefined)).catch(() => undefined)) ?? out.rect
     if (!aim.visible) return { ...out, skipped: { what, why: 'it is not visible on the page' } }

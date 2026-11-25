@@ -160,6 +160,17 @@ function draw(){const first=new Date(y,m,1).getDay(),n=new Date(y,m+1,0).getDate
  cal.querySelectorAll('[data-d]').forEach(b=>b.onclick=()=>{document.getElementById('out').textContent='Chosen: '+M[m]+' '+b.dataset.d+', '+y;ev('day:'+y+'-'+(m+1)+'-'+b.dataset.d)})}draw();
 </script></body></html>`,
 
+  // ------------------------------------------------------------ a booking step: a calendar with no telling class names, and a Continue that stays disabled until a day is chosen
+  '/book': `${head('Book')}<style>.grid{display:grid;grid-template-columns:repeat(7,40px)}.grid button{margin:1px}.grid .sel{background:#cde}</style><div class="wrap"><h2>Pick a date</h2>
+<div class="cal"><div class="cal-h"><button type="button" id="pm" aria-label="Previous month">◀</button><b id="mt"></b><button type="button" id="nm" aria-label="Next month">▶</button></div><div class="grid" id="g"></div></div>
+<button id="go" disabled onclick="ev('continue')">Continue</button><div id="out"></div></div>
+<script>${ev}
+const M=['January','February','March','April','May','June','July','August','September','October','November','December'];let vm=new Date(2026,10,1),sel=null;const $=id=>document.getElementById(id);
+function render(){$('mt').textContent=M[vm.getMonth()]+' '+vm.getFullYear();$('pm').onclick=()=>{vm=new Date(vm.getFullYear(),vm.getMonth()-1,1);render()};$('nm').onclick=()=>{vm=new Date(vm.getFullYear(),vm.getMonth()+1,1);render()};
+ const g=$('g');g.innerHTML='';const lead=(vm.getDay()+6)%7;for(let i=0;i<lead;i++)g.insertAdjacentHTML('beforeend','<div></div>');const n=new Date(vm.getFullYear(),vm.getMonth()+1,0).getDate();
+ for(let d=1;d<=n;d++){const dt=new Date(vm.getFullYear(),vm.getMonth(),d);const b=document.createElement('button');b.type='button';b.textContent=d;b.setAttribute('aria-label',dt.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',year:'numeric'}));b.dataset.date=dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(d).padStart(2,'0');b.disabled=dt.getDay()===0||dt.getDay()===1;if(sel===b.dataset.date)b.className='sel';b.onclick=()=>{sel=b.dataset.date;ev('day:'+sel);$('go').disabled=false;render()};g.appendChild(b)}}
+render();</script></body></html>`,
+
   // ------------------------------------------------------------ svg chart
   '/chart': `${head('Chart')}<div class="wrap"><h2>Monthly consumption</h2>
 <svg id="ch" width="420" height="240" viewBox="0 0 420 240"><g><line x1="40" y1="40" x2="400" y2="40" stroke="#ddd"/><line x1="40" y1="80" x2="400" y2="80" stroke="#ddd"/><line x1="40" y1="120" x2="400" y2="120" stroke="#ddd"/><line x1="40" y1="160" x2="400" y2="160" stroke="#ddd"/><line x1="40" y1="200" x2="400" y2="200" stroke="#999"/>

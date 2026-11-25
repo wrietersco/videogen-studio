@@ -498,10 +498,24 @@ function calendarIn(): { sel: string; month: number; year: number; days: number;
     }
     return parts.join(' > ')
   }
-  const cands = Array.from(document.querySelectorAll('[role=grid],[role=dialog],table,[class*=calendar i],[class*=datepicker i],[class*=date-picker i],[class*=picker i],[class*=flatpickr],[class*=ui-datepicker],[class*=DayPicker],[class*=rdp]')).filter(vis)
+  // the box that holds the days: whatever has a month of numbers 1..31 as its own little cells (a class name is not needed)
+  const leaves = Array.from(document.querySelectorAll('button,td,[role=gridcell],[role=button],div,span,li,a')).filter((e) => e.children.length === 0 && /^\d{1,2}$/.test((e.textContent ?? '').trim()) && vis(e))
+  const byParent = new Map<Element, Element[]>()
+  for (const l of leaves) { const p = l.parentElement; if (p) byParent.set(p, [...(byParent.get(p) ?? []), l]) }
+  const cands: Element[] = []
+  for (const [p, ls] of byParent) {
+    // the days may sit a level lower (rows of a table, weeks)
+    const group = ls.length >= 27 ? p : p.parentElement && (byParent.get(p.parentElement)?.length ?? 0) >= 0 ? null : null
+    if (group) cands.push(group)
+  }
+  for (const [p, ls] of byParent) {
+    if (ls.length >= 27) continue
+    const up = p.parentElement
+    if (up && Array.from(up.querySelectorAll('td,button,[role=gridcell],[role=button],div,span,li,a')).filter((e) => e.children.length === 0 && /^\d{1,2}$/.test((e.textContent ?? '').trim()) && vis(e)).length >= 27 && !cands.includes(up)) cands.push(up)
+  }
   let best: { el: Element; days: number } | null = null
   for (const c of cands) {
-    const cells = Array.from(c.querySelectorAll('td,button,[role=gridcell],[role=button],div,span')).filter((e) => e.children.length === 0 && /^\d{1,2}$/.test((e.textContent ?? '').trim()) && vis(e))
+    const cells = Array.from(c.querySelectorAll('td,button,[role=gridcell],[role=button],div,span,li,a')).filter((e) => e.children.length === 0 && /^\d{1,2}$/.test((e.textContent ?? '').trim()) && vis(e))
     const n = new Set(cells.map((e) => Number((e.textContent ?? '').trim()))).size
     if (n >= 27 && (!best || c.querySelectorAll('*').length < best.el.querySelectorAll('*').length)) best = { el: c, days: n }
   }

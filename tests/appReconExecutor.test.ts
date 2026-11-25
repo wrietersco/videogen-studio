@@ -419,6 +419,21 @@ describe('the action layer on pages with traps', () => {
     await page.close()
   }, 60000)
 
+  it('picks a day on a calendar with no telling class names, and says a disabled Continue is disabled', async () => {
+    site.events.length = 0
+    const page = await open('/book', 300)
+    const early = await run(page, { action: 'click', label: 'Continue', find: find('Continue') })
+    expect(early.did).toBe(0)
+    expect(early.skipped[0].why).toMatch(/disabled/)
+    const r = await run(page, { action: 'date', label: 'three weeks from today', date: '2026-12-17', phrase: 'three weeks from today', find: find('three weeks from today') })
+    expect(r.skipped).toEqual([])
+    expect(seenEvents()).toContain('day:2026-12-17')
+    const go = await run(page, { action: 'click', label: 'Continue', find: find('Continue') })
+    expect(go.skipped).toEqual([])
+    expect(seenEvents()).toContain('continue')
+    await page.close()
+  }, 90000)
+
   it('finds the tallest bar and a bar by its month on an SVG chart, and clicks it', async () => {
     site.events.length = 0
     const page = await open('/chart', 200)
