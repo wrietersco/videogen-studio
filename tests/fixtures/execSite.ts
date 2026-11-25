@@ -141,6 +141,25 @@ document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLower
   // ------------------------------------------------------------ content that arrives late
   '/late': `${head('Late')}<div class="wrap"><h1>Report</h1><div id="slot"></div></div><script>setTimeout(()=>{document.getElementById('slot').innerHTML='<p>Report ready for download</p>'},3000)</script></body></html>`,
 
+  // ------------------------------------------------------------ stylists with hearts, times of day, an open calendar, a board with card menus, a banner that stays
+  '/salon': `${head('Salon')}<div class="wrap"><h2>Stylists</h2>
+<div id="stylists"><div class="card st"><b>Mei</b> Cuts <button aria-label="Favourite" onclick="ev('heart:Mei')">♡</button></div><div class="card st"><b>Daniel</b> Colour <button aria-label="Favourite" onclick="ev('heart:Daniel')">♡</button></div><div class="card st"><b>Sana</b> Styling <button aria-label="Favourite" onclick="ev('heart:Sana')">♡</button></div></div>
+<h2>Times</h2><div id="times"><button class="slot" onclick="ev('slot:09:30')">09:30</button><button class="slot" onclick="ev('slot:11:00')">11:00</button><button class="slot" onclick="ev('slot:14:00')">14:00</button><button class="slot" onclick="ev('slot:15:30')">15:30</button><button class="slot" onclick="ev('slot:18:30')">18:30</button></div>
+<h2>Pick a day</h2><div id="cal" role="grid" aria-label="Calendar" style="width:260px"></div><div id="out"></div>
+<h2>Board</h2><div style="display:flex;gap:10px">
+<div class="col"><h3>To do</h3><div class="card tk">A1 <button aria-label="Card menu" onclick="ev('menu:A1')">⋯</button></div><div class="card tk">A2 <button aria-label="Card menu" onclick="ev('menu:A2')">⋯</button></div></div>
+<div class="col"><h3>Doing</h3><div class="card tk">B1 <button aria-label="Card menu" onclick="ev('menu:B1')">⋯</button></div><div class="card tk">B2 <button aria-label="Card menu" onclick="ev('menu:B2')">⋯</button></div></div>
+<div class="col"><h3>Done</h3><div class="card tk">C1 <button aria-label="Card menu" onclick="ev('menu:C1')">⋯</button></div><div class="card tk">C2 <button aria-label="Card menu" onclick="ev('menu:C2')">⋯</button></div></div></div></div>
+<div id="cookie" role="dialog" aria-label="Cookie consent" style="position:fixed;left:0;right:0;bottom:0;background:#222;color:#fff;padding:14px;z-index:50"><span>We use cookies.</span> <button onclick="ev('cookie-accept')">Accept all</button><button onclick="ev('cookie-essential');this.parentElement.hidden=true">Only necessary</button></div>
+<style>#cookie{display:block}</style>
+<script>${ev}
+const M=['January','February','March','April','May','June','July','August','September','October','November','December'];let y=2026,m=10;const cal=document.getElementById('cal');
+function draw(){const first=new Date(y,m,1).getDay(),n=new Date(y,m+1,0).getDate();let h='<div style="display:flex;justify-content:space-between"><button aria-label="Previous month" id="pm">‹</button><strong>'+M[m]+' '+y+'</strong><button aria-label="Next month" id="nm">›</button></div>';
+ for(let i=0;i<first;i++)h+='<span></span>';for(let d=1;d<=n;d++)h+='<button aria-label="'+M[m]+' '+d+', '+y+'" data-d="'+d+'" style="width:34px">'+d+'</button>';cal.innerHTML=h;
+ cal.querySelector('#pm').onclick=()=>{m--;if(m<0){m=11;y--}draw()};cal.querySelector('#nm').onclick=()=>{m++;if(m>11){m=0;y++}draw()};
+ cal.querySelectorAll('[data-d]').forEach(b=>b.onclick=()=>{document.getElementById('out').textContent='Chosen: '+M[m]+' '+b.dataset.d+', '+y;ev('day:'+y+'-'+(m+1)+'-'+b.dataset.d)})}draw();
+</script></body></html>`,
+
   // ------------------------------------------------------------ svg chart
   '/chart': `${head('Chart')}<div class="wrap"><h2>Monthly consumption</h2>
 <svg id="ch" width="420" height="240" viewBox="0 0 420 240"><g><line x1="40" y1="40" x2="400" y2="40" stroke="#ddd"/><line x1="40" y1="80" x2="400" y2="80" stroke="#ddd"/><line x1="40" y1="120" x2="400" y2="120" stroke="#ddd"/><line x1="40" y1="160" x2="400" y2="160" stroke="#ddd"/><line x1="40" y1="200" x2="400" y2="200" stroke="#999"/>

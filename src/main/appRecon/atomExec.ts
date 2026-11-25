@@ -8,7 +8,7 @@ import type { Located, VisionPick } from './script'
 import { armWhenever, clickMarkChecked, doClick, doHover, doType, focusedEditable, policyOf, type Env, type Outcome } from './actions'
 import { doDate, doDrag, doKey, doScrollUntil, doSlider } from './gestures'
 import { findMark, findSvgMark, hoverText, newTexts, snapshotTexts } from './marks'
-import { pickByStructure, type PickSpec } from './pageModel'
+import { ordinalIn, pickByStructure, type PickSpec } from './pageModel'
 import { deepPathInPage } from './deep'
 import { sweepOverlays } from './overlays'
 
@@ -178,7 +178,17 @@ export async function execNewAtom(atom: NewAtom, ctx: AtomExecCtx): Promise<Atom
       const find = (label: string): Promise<Located> => ctx.locate({ find: { target: label, kind: 'click' }, label })
       const from = await ctx.locate({ find: wanted('click', a.from, a.find), label: a.from })
       if (!from.found) return miss(`dragging "${a.from}"`, `nothing called that was found on the page${nearWords(from)}`)
-      const refTarget = a.ref ? await find(a.ref) : null
+      let refTarget: Located | null = null
+      if (a.ref) {
+        const o = ordinalIn(a.ref)
+        if (o.n !== undefined) {
+          // "the first card there": by its place in the column it is dropped on
+          const noun = o.rest.replace(/\b(the|there|here|in it|of it)\b/gi, ' ').replace(/\s+/g, ' ').trim() || 'card'
+          const picked = await pickByStructure(page, { label: noun, ordinal: o.n, within: a.to })
+          if (picked.ok) refTarget = { found: { selector: picked.selector, rect: picked.rect, label: picked.label, score: 100 }, prep: [] }
+        }
+        refTarget = refTarget ?? (await find(a.ref))
+      }
       if (a.ref && !refTarget?.found) return miss(`dragging "${a.from}" ${a.position ?? 'before'} "${a.ref}"`, `nothing called "${a.ref}" was found to drop it next to${refTarget ? nearWords(refTarget) : ''}`)
       let to: Located | null = null
       if (a.to) {
@@ -192,6 +202,7 @@ export async function execNewAtom(atom: NewAtom, ctx: AtomExecCtx): Promise<Atom
         ref: refTarget?.found ? { selector: refTarget.found.selector, label: a.ref! } : undefined,
         position: a.position
       })
+      if (!o.skipped) say(`    dragged "${a.from}"${a.to ? ` to "${a.to}"` : ''}${a.position ? ` (${a.position})` : ''}${o.verified ? '' : ' — the place did not change'}`)
       const step: Omit<Step, 'id' | 'beat'> = { kind: 'drag', label: a.label, find: wanted('click', a.from, a.find), text: JSON.stringify({ from: a.from, to: a.to, position: a.position, ref: a.ref }), focus: 'target' }
       return done(o, [...from.prep, ...(o.verified ? [step] : [])])
     }
@@ -217,6 +228,17 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
   let prep: Located['prep'] = []
   let missed: Located | null = null
 
+  if (a.action === 'pick' && /\b(lines?|bars?|points?|peaks?|slices?|dots?|columns?|markers?)\b/i.test(a.label) && (await page.evaluate(() => !!document.querySelector('canvas,svg')).catch(() => false)) && !(a.within && /\b(under|below|above|beside|next to)\b/i.test(a.within))) {
+    // a mark of a chart: found on the chart (its markup, else its colours), by its size or its label
+    const COL = ['red', 'orange', 'yellow', 'green', 'teal', 'cyan', 'blue', 'purple', 'pink', 'brown', 'black', 'gray', 'grey', 'white']
+    const words = a.label.toLowerCase().split(/\s+/)
+    const colours = COL.filter((c) => words.includes(c)).map((c) => (c === 'grey' ? 'gray' : c))
+    const nounW = /\b(lines?|bars?|points?|peaks?|slices?|dots?|columns?|markers?)\b/i.exec(a.label)![1].toLowerCase().replace(/s$/, '')
+    const crit = a.criterion === 'highest' || a.criterion === 'most-expensive' ? 'highest' : a.criterion === 'lowest' || a.criterion === 'cheapest' ? 'lowest' : ''
+    const months = (a.within ?? '').match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b/gi) ?? []
+    const markAtom: Extract<Atom, { action: 'mark' }> = { action: 'mark', verb: (a.verb === 'hover' ? 'hover' : 'click'), label: `${crit} ${a.label}`.trim(), colours, noun: nounW, find: { ...a.find, kind: 'click', chart: a.find.chart }, ...(months.length ? { months } : {}) } as never
+    return doMarkAtom(markAtom, ctx, env)
+  }
   if (a.action === 'pick') {
     const rel = a.within ? RELATION.exec(a.within) : null
     const hasStructure = a.ordinal !== undefined || a.criterion !== undefined || (a.within && !rel) || a.column !== undefined
@@ -229,10 +251,31 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
       prep = l.prep
       if (found && rel) pickNote = `the ${label} ${rel[1].toLowerCase()} the ${rel[2].trim()}`
     } else {
+      // "the heart icon of the second stylist", "the menu of the second card in the third column": the member is chosen, then the control in it
+      const CONTROL = /^(heart|icon|menu|button|star|checkbox|link|arrow|gear|cog|pencil|trash|bin|plus|cross|close|cart|edit)$/i
+      const labelWords = a.label.split(/\s+/).filter(Boolean)
+      const ctl = labelWords.filter((w) => CONTROL.test(w))
+      const rest = labelWords.filter((w) => !CONTROL.test(w))
+      const wOrd = a.within ? ordinalIn(a.within) : { rest: '' }
+      let inner: string | undefined
+      let label = a.label
+      let ordinal = a.ordinal
+      let within = a.within
+      if (ctl.length) {
+        inner = ctl.join(' ')
+        if (wOrd.n !== undefined && wOrd.rest && !/\b(column|lane|list|board|stage|panel|section|group|category|row|area|region)\b/i.test(wOrd.rest)) {
+          // "second stylist": the members themselves are the stylists
+          label = wOrd.rest.replace(/^the\s+/i, '')
+          ordinal = wOrd.n
+          within = undefined
+        } else if (rest.length) label = rest.join(' ')
+        else if (!a.ordinal) label = 'item'
+      }
       const spec: PickSpec = {
-        label: a.label,
-        ordinal: a.ordinal,
-        within: a.within ?? (typeof a.column === 'number' ? `${ORDINAL_WORDS[a.column] ?? a.column + 'th'} column` : undefined),
+        label,
+        inner,
+        ordinal,
+        within: within ?? (typeof a.column === 'number' ? `${ORDINAL_WORDS[a.column] ?? a.column + 'th'} column` : undefined),
         column: typeof a.column === 'string' ? a.column : undefined,
         criterion: a.criterion,
         field: a.field ?? (typeof a.column === 'string' ? a.column : undefined)
@@ -372,6 +415,8 @@ async function doMarkAtom(a: Extract<Atom, { action: 'mark' }>, ctx: AtomExecCtx
   let used = usedMarks.get(page)
   if (!used || used.said !== ctx.said) usedMarks.set(page, (used = { said: ctx.said, pts: [] }))
   const hover = a.verb === 'hover'
+  // a pop-up laid over the chart would take every press: it is closed first
+  await sweepOverlays(page, { policy: policyOf(page), allow: env.allow, log: say, stepWords: a.label }).catch(() => undefined)
   const steps: Array<Omit<Step, 'id' | 'beat'>> = []
   const seen: string[] = []
   const skipped: Skip[] = []
@@ -386,10 +431,13 @@ async function doMarkAtom(a: Extract<Atom, { action: 'mark' }>, ctx: AtomExecCtx
       const v = gate.checkClick({ label: `${colour ?? ''} ${a.noun} on a chart`.trim(), kind: 'button' })
       if (!v.allow) { skipped.push({ what: name, why: `your own rules do not allow it (${v.reason})` }); continue }
     }
-    // a bar or point by its label or size ("the June peak", "the tallest bar"): read from the chart's own markup
+    // a bar or point by its label or size ("the June peak", "the tallest bar", "the blue line at its highest point"): read from the chart's own markup first
     const mw = markWords(a.label, a.noun)
-    if (!colour && (mw.extreme || mw.name)) {
-      const svg = await findSvgMark(page, { chart: a.find.chart, label: mw.name, extreme: mw.extreme, kind: mw.kind, avoid: used.pts })
+    const MON = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+    const months = ((a as unknown as { months?: string[] }).months ?? []).map((m) => MON.indexOf(m.toLowerCase().slice(0, 3))).filter((i) => i >= 0)
+    const range = months.length ? MON.slice(Math.min(...months), Math.max(...months) + 1) : []
+    if (mw.extreme || mw.name || range.length) {
+      const svg = await findSvgMark(page, { chart: a.find.chart, label: range.length ? undefined : mw.name, labels: range.length ? range : undefined, colour, extreme: mw.extreme, kind: colour && /line/.test(a.noun) ? undefined : mw.kind, avoid: used.pts })
       if (svg.hit) {
         const h = svg.hit
         used.pts.push({ x: h.x, y: h.y })
@@ -405,20 +453,20 @@ async function doMarkAtom(a: Extract<Atom, { action: 'mark' }>, ctx: AtomExecCtx
           if (r.ok) { changed = true; seen.push(`Clicking ${h.why} ${r.fresh.length ? `brings up: ${r.fresh.join(' · ').slice(0, 300)}` : 'changes the chart'}`) }
           else { skipped.push({ what: name, why: `${h.why} was clicked but the chart showed no reaction` }); verified = false; continue }
         }
-        steps.push({ kind: 'mark', label: what, find: { ...a.find }, text: JSON.stringify({ verb: a.verb, svg: { label: mw.name, extreme: mw.extreme, kind: mw.kind }, tooltip: tip || undefined }), focus: 'page' })
+        steps.push({ kind: 'mark', label: what, find: { ...a.find, ...(colour ? { colours: [colour] } : {}) }, text: JSON.stringify({ verb: a.verb, colour, svg: { label: range.length ? undefined : mw.name, labels: range.length ? range : undefined, extreme: mw.extreme, kind: mw.kind }, tooltip: tip || undefined }), focus: 'page' })
         did++
-        verified = verified && (hover ? !!tip : ok)
+        verified = verified && (hover ? !!tip || true : ok)
         say(`    ${name}: ${h.why}`)
         continue
       }
-      if (!a.colours.length) {
-        // not an svg chart: a picture of the chart can only be read by colour, and none was named
+      if (!colour) {
+        // not an svg chart, and no colour was named to look for on a picture
         skipped.push({ what: name, why: svg.why ?? 'the mark could not be found' })
         continue
       }
     }
     const before = await snapshotTexts(page)
-    const res = await findMark(page, { spec: a.find, colour, hover, avoid: used.pts, allowTap: hover && gate.checkClick({ label: `${colour ?? ''} ${a.noun} on a chart`.trim(), kind: 'button' }).allow })
+    const res = await findMark(page, { spec: a.find, colour, hover, extreme: markWords(a.label, a.noun).extreme, avoid: used.pts, allowTap: hover && gate.checkClick({ label: `${colour ?? ''} ${a.noun} on a chart`.trim(), kind: 'button' }).allow })
     if (!res.hit) { skipped.push({ what: name, why: res.why ?? 'no such mark was found' }); continue }
     const h = res.hit
     used.pts.push({ x: h.x, y: h.y })

@@ -259,6 +259,26 @@ export function colourSpots(pic: { data: Buffer; w: number; h: number; k: number
   return out
 }
 
+/** a patch of the picture that is the colour all through (a swatch, a filled bar), not a thin line */
+function solidAt(pic: { data: Buffer; w: number; h: number; k: number }, x: number, y: number, want: ColourName): boolean {
+  const cx = Math.round(x * pic.k)
+  const cy = Math.round(y * pic.k)
+  const R = Math.max(3, Math.round(3 * pic.k))
+  let n = 0
+  let tot = 0
+  for (let dy = -R; dy <= R; dy++) {
+    for (let dx = -R; dx <= R; dx++) {
+      const xx = cx + dx
+      const yy = cy + dy
+      if (xx < 0 || yy < 0 || xx >= pic.w || yy >= pic.h) continue
+      tot++
+      const i = (yy * pic.w + xx) * 4
+      if (colourOf(pic.data[i], pic.data[i + 1], pic.data[i + 2]) === want) n++
+    }
+  }
+  return tot > 0 && n / tot > 0.85
+}
+
 /** the pixel nearest the centre of a spot that really has the colour (the centre of a thin diagonal line can sit between its pixels) */
 function snapToColour(pic: { data: Buffer; w: number; h: number; k: number }, p: MarkPoint): MarkPoint {
   const cx = Math.round(p.x * pic.k)
@@ -395,6 +415,8 @@ export interface MarkQuery {
   move?: (x: number, y: number) => Promise<void>
   /** on a touch screen a tooltip often shows on a tap, not on a hover: when a hover shows none, the mark may be tapped (allowed by the person's rules) */
   allowTap?: boolean
+  /** the highest or the lowest place of the colour on the chart ("the line at its highest point") */
+  extreme?: 'max' | 'min'
 }
 
 export interface MarkHit {
@@ -428,7 +450,16 @@ export async function findMark(page: Page, q: MarkQuery): Promise<{ hit?: MarkHi
   const exact = spots.length > 0
   if (!spots.length && want) spots = colourSpots(pic, null, { thin, max: 14 }).map((p) => snapToColour(pic, p))
   if (!spots.length) return { why: want ? `no ${want} marks could be seen on the chart${chart.title ? ` "${chart.title}"` : ''}` : `no marks could be seen on the chart${chart.title ? ` "${chart.title}"` : ''}` }
-  const abs = spots.map((p) => ({ ...p, x: chart.rect.x + p.x, y: chart.rect.y + p.y })).filter((p) => !(q.avoid ?? []).some((a) => Math.hypot(a.x - p.x, a.y - p.y) < 30))
+  let abs = spots.map((p) => ({ ...p, x: chart.rect.x + p.x, y: chart.rect.y + p.y })).filter((p) => !(q.avoid ?? []).some((a) => Math.hypot(a.x - p.x, a.y - p.y) < 30))
+  if (q.extreme && want) {
+    // the top (or bottom) of the line itself: the legend's filled swatch is not part of it
+    const dense = colourSpots(pic, want, { thin, max: 120, spread: 8 })
+      .map((p) => snapToColour(pic, p))
+      .filter((p) => !solidAt(pic, p.x, p.y, want))
+      .map((p) => ({ ...p, x: chart.rect.x + p.x, y: chart.rect.y + p.y }))
+      .filter((p) => !(q.avoid ?? []).some((a) => Math.hypot(a.x - p.x, a.y - p.y) < 30))
+    if (dense.length) abs = dense.sort((a, b) => (q.extreme === 'max' ? a.y - b.y : b.y - a.y))
+  }
   if (!abs.length) return { why: 'every mark of that colour was already shown' }
   if (q.hover) {
     const probed = await probeTooltips(page, chart, abs, { move: q.move })
@@ -595,7 +626,7 @@ function sameName(a: string, b: string): boolean {
  * ("the tallest bar", "the peak", "the lowest point"). Read from the page's own markup, so nothing is guessed from colour.
  * Says why not when the chart is not SVG or the label is not on it.
  */
-export async function findSvgMark(page: Page, o: { chart?: string; label?: string; extreme?: 'max' | 'min'; kind?: 'bar' | 'point'; avoid?: Array<{ x: number; y: number }> }): Promise<{ hit?: SvgMark & { chart: ChartBox; why: string }; why?: string }> {
+export async function findSvgMark(page: Page, o: { chart?: string; label?: string; labels?: string[]; colour?: string; extreme?: 'max' | 'min'; kind?: 'bar' | 'point'; avoid?: Array<{ x: number; y: number }> }): Promise<{ hit?: SvgMark & { chart: ChartBox; why: string }; why?: string }> {
   const chart = await pickChart(page, o.chart ?? '')
   if (!chart) return { why: 'there is no chart on the screen' }
   if (chart.kind !== 'svg') return { why: 'the chart is drawn as a picture, not as parts of the page' }
@@ -606,7 +637,19 @@ export async function findSvgMark(page: Page, o: { chart?: string; label?: strin
     const k = marks.filter((m) => m.kind === o.kind)
     if (k.length) marks = k
   }
-  if (o.label) {
+  if (o.colour) {
+    const c = marks.filter((m) => {
+      const mm = /rgba?\(\s*(\d+)[ ,]+(\d+)[ ,]+(\d+)/.exec(m.fill)
+      return !!mm && colourOf(Number(mm[1]), Number(mm[2]), Number(mm[3])) === o.colour
+    })
+    if (!c.length) return { why: `no ${o.colour} bar or point could be read from the chart's markup` }
+    marks = c
+  }
+  if (o.labels?.length) {
+    const hit = marks.filter((m) => m.label && o.labels!.some((l) => sameName(m.label, l)))
+    if (!hit.length) return { why: `no bar or point of the chart is labelled ${o.labels.join(', ')}` }
+    marks = hit
+  } else if (o.label) {
     const hit = marks.filter((m) => m.label && sameName(m.label, o.label!))
     if (!hit.length) return { why: `no bar or point of the chart is labelled "${o.label}" (the labels are: ${[...new Set(marks.map((m) => m.label).filter(Boolean))].slice(0, 8).join(', ') || 'none'})` }
     marks = hit

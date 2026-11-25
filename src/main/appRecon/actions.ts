@@ -277,7 +277,8 @@ function installClickProbe(el: Element): void {
   const f = (e: Event) => {
     const T = w.__vgT
     const p = e.composedPath ? e.composedPath() : []
-    const hit = !!T && (p.includes(T) || p.some((n) => n instanceof Element && T.contains(n)))
+    // the control itself, something inside it, or the button / link / label it sits in (a press on the frame around a text)
+    const hit = !!T && (p.includes(T) || p.some((n) => n instanceof Element && T.contains(n)) || p.slice(0, 3).some((n) => n instanceof Element && n.contains(T) && /^(A|BUTTON|LABEL|SUMMARY|LI)$/.test(n.tagName)))
     w.__vgClicks!.push(hit)
   }
   addEventListener('click', f, true)

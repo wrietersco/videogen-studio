@@ -24,6 +24,8 @@ export interface PickSpec {
   column?: string
   criterion?: 'highest' | 'lowest' | 'cheapest' | 'most-expensive'
   field?: string
+  /** a control inside the pick that is pressed instead of the pick itself ("the heart" of the second stylist, "the menu" of a card) */
+  inner?: string
 }
 
 export interface Picked {
@@ -192,7 +194,12 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
       const hay = itemHay(g.items[0]) + ' ' + groupHay(g)
       const structural = words.filter((w) => GENERIC_ITEM.test(w) || /^(column|lane|list|board|stage|panel|section|group|category)$/.test(w))
       const content = words.filter((w) => !structural.includes(w))
-      if (structural.some((w) => hay.includes(w) || (w === 'row' && g.sig === 'table-row'))) fit += 3
+      const SYNS: Record<string, string[]> = { column: ['col', 'lane', 'stage', 'board', 'kanban'], card: ['card', 'tile', 'task', 'item', 'ticket'], row: ['row', 'tr'], list: ['list', 'ul', 'ol'] }
+      const wantsContainer = structural.filter((w) => /^(column|lane|board|stage|panel|section|group|category)$/.test(w))
+      const hit = (w: string) => hay.includes(w) || (SYNS[w] ?? []).some((x) => hay.includes(x)) || (w === 'row' && g.sig === 'table-row')
+      // a group of "columns" has to look like columns, whatever else is in the page
+      if (wantsContainer.length && !wantsContainer.some(hit)) continue
+      if (structural.some(hit)) fit += 3
       if (content.length) {
         // the words that are not about structure ("jacket", "afternoon") must be in the members' own words
         const mine = items.filter((i) => { const t = wordsOf(textOf(i) + ' ' + (i.getAttribute('aria-label') ?? '') + ' ' + (i.getAttribute('title') ?? '')); return content.every((w) => t.some((x) => x === w || x.startsWith(w) || w.startsWith(x))) })
@@ -213,6 +220,7 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
   // ---- "within": an ordinal group ("third column") or a named one ("the Done column")
   let scope: Element | null = null
   let reasonScope = ''
+  let filterWords: string[] = []
   if (spec.within) {
     const { n, rest } = ordinalIn(spec.within)
     const ww = wordsOf(rest).filter((w) => !NOISE.has(w))
@@ -239,14 +247,18 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
         const s = (/^H[1-6]$/.test(h.tagName) ? 3 : 1) + (t.length === named.length ? 2 : 0)
         if (!best || s > best.s) best = { el: h, s }
       }
-      if (!best) return { ok: false, why: `nothing on the page is called "${spec.within}"` }
-      // the group the heading sits at the top of: the nearest ancestor that holds more than the heading
-      let box: Element | null = best.el
-      for (let i = 0; i < 6 && box; i++, box = box.parentElement) {
-        if (box !== best.el && textOf(box).length > textOf(best.el).length + 10) break
+      if (!best) {
+        // not a place on the page: a word that narrows down the members ("the second afternoon time", "the overdue task")
+        filterWords = named
+      } else {
+        // the group the heading sits at the top of: the nearest ancestor that holds more than the heading
+        let box: Element | null = best.el
+        for (let i = 0; i < 6 && box; i++, box = box.parentElement) {
+          if (box !== best.el && textOf(box).length > textOf(best.el).length + 10) break
+        }
+        scope = box ?? best.el.parentElement
+        reasonScope = `the "${spec.within}" area`
       }
-      scope = box ?? best.el.parentElement
-      reasonScope = `the "${spec.within}" area`
     }
   }
 
@@ -260,7 +272,30 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
   }
   // when there are several equally good groups (a card grid and a table of the same things) the biggest on screen wins
   const top = cand.filter((c) => c.fit >= cand[0].fit - 0.5).sort((a, b) => b.items.length - a.items.length)[0]
-  const items = inReadingOrder(top.items)
+  let items = inReadingOrder(top.items)
+  if (filterWords.length) {
+    // the part of the day a time belongs to; any other word has to be in the member's own words
+    const hourOf = (t: string): number | null => {
+      const m = /(\d{1,2})[:.](\d{2})\s*(am|pm)?/i.exec(t)
+      if (!m) return null
+      let h = Number(m[1])
+      if (m[3]) h = (h % 12) + (m[3].toLowerCase() === 'pm' ? 12 : 0)
+      return h + Number(m[2]) / 60
+    }
+    const kept = items.filter((it) => {
+      const t = textOf(it)
+      return filterWords.every((w) => {
+        if (/^(morning|am)$/.test(w)) { const h = hourOf(t); return h !== null && h >= 5 && h < 12 }
+        if (/^(afternoon|pm)$/.test(w)) { const h = hourOf(t); return h !== null && h >= 12 && h < 18 }
+        if (/^(evening|night)$/.test(w)) { const h = hourOf(t); return h !== null && h >= 17 }
+        const ws = wordsOf(t + ' ' + (it.getAttribute('aria-label') ?? '') + ' ' + classOf(it))
+        return ws.some((x) => x === w || x.startsWith(w) || w.startsWith(x))
+      })
+    })
+    if (!kept.length) return { ok: false, why: `none of the ${spec.label}s is "${filterWords.join(' ')}"` }
+    items = kept
+    reasonScope = reasonScope || filterWords.join(' ')
+  }
 
   // ---- the choice: an ordinal, or the best by a value
   const clickable = (it: Element): Element => {
@@ -269,8 +304,37 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
     return inner && visible(inner) ? inner : it
   }
   const nameOf = (it: Element): string => (it.getAttribute('aria-label') || (it.querySelector('h1,h2,h3,h4,h5,strong,[class*=title],[class*=name]') ? textOf(it.querySelector('h1,h2,h3,h4,h5,strong,[class*=title],[class*=name]')!) : textOf(it))).slice(0, 60)
+  const INNER: Record<string, string[]> = {
+    heart: ['heart', '♡', '♥', '❤', 'favourite', 'favorite', 'wishlist', 'like', 'save'],
+    menu: ['menu', 'more', 'options', 'actions', 'kebab', 'dots', '⋯', '…', '⋮', '···', '...'],
+    gear: ['gear', 'settings', 'cog', 'preferences'],
+    star: ['star', 'rate', 'favourite', '★', '☆'],
+    trash: ['trash', 'delete', 'bin', 'remove'],
+    close: ['close', '×', '✕', 'dismiss'],
+    edit: ['edit', 'pencil', 'rename'],
+    plus: ['plus', 'add', '+'],
+    cart: ['cart', 'basket', 'bag', 'add to']
+  }
+  const innerIn = (it: Element): Element | null => {
+    const want = wordsOf(spec.inner ?? '').filter((w) => !/^(icon|button|the|little|small)$/.test(w))
+    const keys = want.flatMap((w) => INNER[w] ?? [w])
+    const cands = Array.from(it.querySelectorAll('button,a,[role=button],[tabindex],[onclick],input,svg,i,span,div')).filter(visible)
+    if (!keys.length) return cands.find((c) => c.matches('button,a,[role=button]')) ?? null
+    const hit = cands.find((c) => {
+      const hay = `${(c as HTMLElement).innerText ?? ''} ${c.getAttribute('aria-label') ?? ''} ${c.getAttribute('title') ?? ''} ${classOf(c)} ${(c as HTMLInputElement).value ?? ''} ${c.getAttribute('data-icon') ?? ''}`.toLowerCase()
+      return keys.some((k) => hay.includes(k.toLowerCase()))
+    })
+    // the smallest thing that has it: a button, not the card that holds the button
+    if (!hit) return null
+    return hit.closest('button,a,[role=button]') ?? hit
+  }
   const done = (it: Element, reason: string, values?: Array<{ label: string; value: number }>) => {
-    const t = clickable(it)
+    let t = clickable(it)
+    if (spec.inner) {
+      const inner = innerIn(it)
+      if (!inner) return { ok: false as const, why: `"${nameOf(it)}" has no "${spec.inner}" control to press` }
+      t = inner
+    }
     const r = t.getBoundingClientRect()
     return { ok: true as const, path: pathOf(t), rect: { x: r.x, y: r.y, w: r.width, h: r.height }, label: nameOf(it), reason: `${reason}${reasonScope ? ` in ${reasonScope}` : ''}`, ...(values ? { values } : {}) }
   }

@@ -4,7 +4,7 @@ import type { ElementHandle, Page } from 'puppeteer-core'
 import type { Rect } from '@shared/appRecon'
 import { deepHandle, deepPathInPage } from './deep'
 import { clearOverlays } from './overlays'
-import { aimAt, baselineOf, blank, nap, policyOf, stateDiff, stateOf, waitForChange, type Env, type Outcome } from './actions'
+import { aimAt, baselineOf, blank, doClick, nap, policyOf, stateDiff, stateOf, waitForChange, type Env, type Outcome } from './actions'
 
 /**
  * The gestures beyond a plain click: key presses and chords ("Control+K", "Tab until Export is focused"), dragging a card
@@ -206,7 +206,10 @@ export async function doDrag(env: Env, d: DragSpec): Promise<Outcome> {
   } else if (pos === 'top') dropY = tb.y + Math.min(tb.height * 0.3, 60)
   else if (pos === 'bottom') dropY = tb.y + tb.height - Math.min(tb.height * 0.2, 40)
   dropY = Math.max(tb.y + 2, Math.min(dropY, Math.max(tb.y + 2, Math.min(tb.y + tb.height - 2, vp.height - 4))))
-  const fromPt = { x: fbNow.x + fbNow.width / 2, y: fbNow.y + fbNow.height / 2 }
+  // the pointer goes down on a point that really shows the card (never on whatever is laid over it)
+  const grab = await aimAt(page, fh)
+  if (!grab.pts.length) return { ...out, skipped: { what, why: `something else on the page${grab.by ? ` (${grab.by})` : ''} is over "${d.from.label}", so it cannot be picked up` } }
+  const fromPt = grab.pts[0] ?? { x: fbNow.x + fbNow.width / 2, y: fbNow.y + fbNow.height / 2 }
   const placeBefore = await page.evaluate(placeIn, fh, d.from.label).catch(() => '')
   const base = await baselineOf(page)
   const before = await stateOf(page)
@@ -611,6 +614,14 @@ export async function doDate(env: Env, target: { selector: string; label: string
   if (!/^\d{4}-\d{2}-\d{2}/.test(iso)) return { ...out, skipped: { what, why: 'the date could not be worked out' } }
   const day = iso.slice(0, 10)
   const { y, m, d } = dateWords(day)
+  // a calendar that is already open (nothing to press first): it is read and used as it is
+  const open0 = await page.evaluate(calendarIn).catch(() => null)
+  const nativeOnPage = await page.evaluate(() => Array.from(document.querySelectorAll('input[type=date],input[type=datetime-local]')).some((e) => { const r = e.getBoundingClientRect(); return r.width > 4 && r.height > 4 })).catch(() => false)
+  if (open0 && !nativeOnPage && open0.month >= 0 && open0.year) {
+    const cl0 = await clearOverlays(page, { policy: policyOf(page), stepWords: phrase, allow: env.allow, log: env.log, pace: env.pace })
+    out.closed.push(...cl0.closed)
+    return chooseOnCalendar(env, out, open0, day, what, target?.label ?? 'the calendar', undefined, async () => '')
+  }
   let h = target ? await deepHandle(page, target.selector) : null
   if (!h) {
     // a date box nobody named: the first one on the page
@@ -696,6 +707,17 @@ export async function doDate(env: Env, target: { selector: string; label: string
     }
     return { ...out, skipped: { what, why: 'no calendar opened and the box did not take a typed date' } }
   }
+  return chooseOnCalendar(env, out, cal, day, what, label, target?.selector, read)
+}
+
+type Cal = { sel: string; month: number; year: number; days: number; prev: string | null; next: string | null; selects: boolean }
+
+/** moves an open calendar to the month of a day and presses the day; the box (when there is one) is read back to check */
+async function chooseOnCalendar(env: Env, out: Outcome, cal0: Cal, day: string, what: string, label: string, last: string | undefined, read: () => Promise<string>): Promise<Outcome> {
+  const { page } = env
+  const { y, m, d } = dateWords(day)
+  let cal: Cal = cal0
+  const target = last ? { selector: last } : null
   if (cal.month < 0 || !cal.year) return { ...out, skipped: { what, why: 'the month the calendar shows could not be read' } }
   const wantIdx = y * 12 + (m - 1)
   for (let guard = 0; guard < 26; guard++) {
@@ -713,11 +735,9 @@ export async function doDate(env: Env, target: { selector: string; label: string
     } else {
       const btn = diff > 0 ? cal.next : cal.prev
       if (!btn) return { ...out, skipped: { what, why: `the calendar shows ${MONTHS[cal.month]} ${cal.year} and has no ${diff > 0 ? 'next' : 'previous'} month button` } }
-      const bh = await deepHandle(page, btn)
-      const bx = await bh?.boundingBox()
-      if (!bx) return { ...out, skipped: { what, why: 'the calendar month button could not be pressed' } }
-      if (env.move) await env.move(bx.x + bx.width / 2, bx.y + bx.height / 2, 350)
-      await page.mouse.click(bx.x + bx.width / 2, bx.y + bx.height / 2)
+      // pressed the way any control is: brought into view, a point that really shows it, and the press must land
+      const pressed = await doClick(env, { selector: btn, label: diff > 0 ? 'next month' : 'previous month' }, { once: true })
+      if (pressed.skipped) return { ...out, skipped: { what, why: `the calendar's ${diff > 0 ? 'next' : 'previous'} month button could not be pressed (${pressed.skipped.why})` } }
     }
     await nap(env.pace ? 380 : 160)
     const again = await page.evaluate(calendarIn).catch(() => null)
@@ -727,24 +747,24 @@ export async function doDate(env: Env, target: { selector: string; label: string
   if (cal.year * 12 + cal.month !== wantIdx) return { ...out, skipped: { what, why: `the calendar could not be moved to ${MONTHS[m - 1]} ${y}` } }
   const cellSel = await page.evaluate(dayCellIn, cal.sel, day)
   if (!cellSel) return { ...out, skipped: { what, why: `${MONTHS[m - 1]} ${d}, ${y} is not on the calendar, or it is not available` } }
-  const ch = await deepHandle(page, cellSel)
-  const cb = await ch?.boundingBox()
-  if (!cb) return { ...out, skipped: { what, why: 'the day could not be pressed' } }
-  if (env.move) await env.move(cb.x + cb.width / 2, cb.y + cb.height / 2, 500)
-  else await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2, { steps: 4 })
-  await nap(180 * env.pace)
-  await page.mouse.click(cb.x + cb.width / 2, cb.y + cb.height / 2)
+  const dayPress = await doClick(env, { selector: cellSel, label: `${MONTHS[m - 1]} ${d}` }, { once: true })
+  if (dayPress.skipped) return { ...out, skipped: { what, why: `the day could not be pressed (${dayPress.skipped.why})` } }
   await nap(450)
   // some calendars wait for "Apply" / "Done"
   const apply = await page.evaluate(() => {
     const b = Array.from(document.querySelectorAll('button,[role=button]')).find((x) => /^(apply|done|ok|select|set date|choose)$/i.test(((x as HTMLElement).innerText ?? '').trim()) && x.getBoundingClientRect().width > 4)
     if (!b) return null
-    const r = b.getBoundingClientRect()
-    return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+    const parts: string[] = []
+    for (let n: Element | null = b; n && n.nodeType === 1 && n !== document.documentElement; n = n.parentElement) {
+      if (n.id && document.querySelectorAll('#' + CSS.escape(n.id)).length === 1) { parts.unshift('#' + CSS.escape(n.id)); break }
+      const sibs = Array.from(n.parentElement?.children ?? [])
+      parts.unshift(n.tagName.toLowerCase() + (sibs.length > 1 ? ':nth-child(' + (sibs.indexOf(n) + 1) + ')' : ''))
+    }
+    return parts.join(' > ')
   }).catch(() => null)
   let v = await read()
-  if (apply && !saysDate(v, day)) { await page.mouse.click(apply.x, apply.y); await nap(350); v = await read() }
-  const shown = saysDate(v, day) || (await page.evaluate((sel) => { const e = document.querySelector(sel); return e ? (e.getAttribute('aria-selected') === 'true' || /selected|active|checked/.test(e.getAttribute('class') ?? '') || e.getAttribute('aria-pressed') === 'true') : false }, cellSel).catch(() => false))
+  if (apply && !saysDate(v, day)) { await doClick(env, { selector: apply, label: 'apply' }, { once: true }); await nap(350); v = await read() }
+  const shown = saysDate(v, day) || (!v && saysDate(await page.evaluate(() => document.body?.innerText ?? '').catch(() => ''), day)) || (await page.evaluate((sel) => { const e = document.querySelector(sel); return e ? (e.getAttribute('aria-selected') === 'true' || /selected|active|checked/.test(e.getAttribute('class') ?? '') || e.getAttribute('aria-pressed') === 'true') : false }, cellSel).catch(() => false))
   out.did = 1
   out.landed = true
   out.changed = true

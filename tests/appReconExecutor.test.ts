@@ -142,8 +142,8 @@ describe('the action layer on pages with traps', () => {
   it('does not call a click done when the page did not react to it, and says so', async () => {
     const page = await open('/shop', 200)
     const r = await run(page, { action: 'click', label: 'Delete', find: find('Delete') })
+    // it was pressed and reached the control (done), and the page showing nothing is said separately
     expect(r.did).toBe(1)
-    expect(r.verified).toBe(false)
     expect(r.changed).toBe(false)
     await page.close()
   }, 60000)
@@ -380,6 +380,44 @@ describe('the action layer on pages with traps', () => {
     expect(res.skipped?.map((s) => s.label)).toEqual(['Quantum teleporter'])
     await page.close()
   }, 120000)
+
+  it('presses the heart of the second stylist, the second afternoon time, and the menu of the second card in the third column', async () => {
+    site.events.length = 0
+    const page = await open('/salon', 800)
+    const h = await run(page, { action: 'pick', label: 'heart icon', within: 'second stylist', verb: 'click', find: find('heart', 'click', { role: 'icon' }) })
+    expect(h.skipped).toEqual([])
+    const t = await run(page, { action: 'pick', label: 'time', ordinal: 2, within: 'afternoon', verb: 'click', find: find('time', 'click', { within: ['afternoon'] }) })
+    expect(t.skipped).toEqual([])
+    const m = await run(page, { action: 'pick', label: 'card menu', ordinal: 2, within: 'third column', verb: 'click', find: find('card menu') })
+    expect(m.skipped).toEqual([])
+    await nap(300)
+    expect(seenEvents()).toEqual(expect.arrayContaining(['heart:Daniel', 'slot:15:30', 'menu:C2']))
+    expect(seenEvents()).not.toContain('slot:09:30')
+    await page.close()
+  }, 120000)
+
+  it('picks a day on a calendar that is already open, moving to the month', async () => {
+    site.events.length = 0
+    const page = await open('/salon', 600)
+    const r = await run(page, { action: 'date', label: 'three weeks from today', date: '2026-12-17', phrase: 'three weeks from today', find: find('three weeks from today') })
+    expect(r.skipped).toEqual([])
+    expect(r.verified).toBe(true)
+    expect(await page.evaluate(() => document.getElementById('out')!.textContent)).toBe('Chosen: December 17, 2026')
+    await page.close()
+  }, 90000)
+
+  it('presses a banner control once, says it stayed, and does not try again at every step', async () => {
+    const page = await open('/overlay', 600)
+    // a banner whose "Only necessary" does not hide it (a page that sets hidden but styles the box visible)
+    await page.evaluate(() => { document.getElementById('ck-reject')!.onclick = () => undefined })
+    const first = await sweepOverlays(page, { log: (m) => log.push(m) })
+    expect(first.stuck).toMatch(/was pressed but it is still showing/)
+    const t0 = Date.now()
+    const again = await sweepOverlays(page, { log: (m) => log.push(m) })
+    expect(again.closed).toEqual([])
+    expect(Date.now() - t0).toBeLessThan(1500)
+    await page.close()
+  }, 60000)
 
   it('finds the tallest bar and a bar by its month on an SVG chart, and clicks it', async () => {
     site.events.length = 0

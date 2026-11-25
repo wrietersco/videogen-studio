@@ -285,6 +285,9 @@ export interface ClearOptions {
   pace?: number
 }
 
+/** overlays that were pressed and stayed (a page whose "close" does not hide it): not tried again at every step */
+const stayed = new WeakMap<Page, Map<string, number>>()
+
 export interface ClearResult {
   /** what was closed, in words ("closed the cookie banner by pressing "Only necessary"") */
   closed: string[]
@@ -305,7 +308,7 @@ async function gone(page: Page, ov: OverlayInfo): Promise<boolean> {
 }
 
 /** closes one overlay; true when it is gone */
-async function closeOne(page: Page, ov: OverlayInfo, o: ClearOptions, policy: OverlayPolicy): Promise<{ done: boolean; how: string }> {
+async function closeOne(page: Page, ov: OverlayInfo, o: ClearOptions, policy: OverlayPolicy): Promise<{ done: boolean; how: string; pressed?: string }> {
   const roles = ov.controls.map((c) => c.role)
   const order = pressOrder(ov.kind, roles, policy, ov.extra === 'accept' ? 'accept' : undefined).filter((i) => {
     const c = ov.controls[i]
@@ -314,6 +317,7 @@ async function closeOne(page: Page, ov: OverlayInfo, o: ClearOptions, policy: Ov
     return !(o.stepWords && c.label && o.stepWords.toLowerCase().includes(c.label.toLowerCase()) && c.label.length > 2)
   })
   const pause = (ms: number) => nap(ms * (o.pace ?? 1))
+  let pressed: string | undefined
   for (const i of order.slice(0, 2)) {
     const c = ov.controls[i]
     const rect = (await deepRect(page, c.selector)) ?? c.rect
@@ -323,11 +327,14 @@ async function closeOne(page: Page, ov: OverlayInfo, o: ClearOptions, policy: Ov
     else await page.mouse.move(x, y, { steps: 5 })
     await pause(250)
     await page.mouse.click(x, y)
+    pressed = pressed ?? (c.label || c.aria)
     await pause(450)
     for (let k = 0; k < 6; k++) {
       if (await gone(page, ov)) return { done: true, how: `by pressing "${c.label || c.aria}"` }
       await nap(150)
     }
+    // the first control was pressed and the overlay is still there: the next one is not pressed too (that may be "Accept")
+    if (ov.kind === 'cookie') break
   }
   // no control worked or there was none: the keyboard
   await page.keyboard.press('Escape').catch(() => undefined)
@@ -347,7 +354,7 @@ async function closeOne(page: Page, ov: OverlayInfo, o: ClearOptions, policy: Ov
       if (await gone(page, ov)) return { done: true, how: 'by pressing outside it' }
     }
   }
-  return { done: false, how: '' }
+  return { done: false, how: '', pressed }
 }
 
 /**
@@ -368,6 +375,9 @@ export async function clearOverlays(page: Page, o: ClearOptions = {}): Promise<C
     const list = await readOverlays(page, { point, target: o.target, policy })
     const todo = list.filter((ov) => {
       if (tried.has(ov.selector + '|' + ov.text.slice(0, 30))) return false
+      // pressed before and still showing: left alone unless it covers the very thing the step wants (and then once more at most)
+      const seenN = stayed.get(page)?.get(`${ov.kind}|${ov.text.slice(0, 30)}`) ?? 0
+      if (seenN >= (o.sweep ? 1 : 2)) return false
       if (ov.holdsTarget || ov.hasPassword) return false
       // the step is about this very overlay ("Accept all cookies", "No thanks"): it is the step's to deal with
       if (o.stepWords && ov.controls.some((c) => c.label.trim().length > 2 && (o.stepWords!.toLowerCase().includes(c.label.trim().toLowerCase()) || (o.stepWords!.length > 4 && c.label.toLowerCase().includes(o.stepWords!.toLowerCase()))))) return false
@@ -391,7 +401,11 @@ export async function clearOverlays(page: Page, o: ClearOptions = {}): Promise<C
       closed.push(`closed ${what} ${res.how}`)
       o.log?.(`    closed ${what} ${res.how}`)
     } else {
-      stuck = `${what} could not be closed`
+      const m = stayed.get(page) ?? new Map<string, number>()
+      const key = `${ov.kind}|${ov.text.slice(0, 30)}`
+      m.set(key, (m.get(key) ?? 0) + 1)
+      stayed.set(page, m)
+      stuck = res.pressed ? `${what}: "${res.pressed}" was pressed but it is still showing` : `${what} could not be closed`
       o.log?.(`    ${stuck}`)
     }
   }

@@ -627,7 +627,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           focusKind = step.focus
         } else if (step.kind === 'mark' && step.find) {
           // a mark of a chart: found by its colour on screen, or by its label or size when the chart is SVG. The place the rehearsal used is tried first.
-          const info = ((): { verb?: string; colour?: string; fx?: number; fy?: number; tap?: boolean; svg?: { label?: string; extreme?: 'max' | 'min'; kind?: 'bar' | 'point' } } => {
+          const info = ((): { verb?: string; colour?: string; fx?: number; fy?: number; tap?: boolean; svg?: { label?: string; labels?: string[]; extreme?: 'max' | 'min'; kind?: 'bar' | 'point' } } => {
             try {
               return JSON.parse(step.text ?? '{}')
             } catch {
@@ -639,7 +639,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           let at: { x: number; y: number } | null = null
           let alts: Array<{ x: number; y: number }> = []
           if (chart && info.svg) {
-            const sv = await findSvgMark(page, { chart: step.find.chart, label: info.svg.label, extreme: info.svg.extreme, kind: info.svg.kind })
+            const sv = await findSvgMark(page, { chart: step.find.chart, label: info.svg.label, labels: info.svg.labels, colour: info.colour, extreme: info.svg.extreme, kind: info.svg.kind })
             if (!sv.hit) { skipStep(step, sv.why ?? 'no such mark was found'); continue }
             at = { x: sv.hit.x, y: sv.hit.y }
           } else if (chart && typeof info.fx === 'number' && typeof info.fy === 'number') at = { x: chart.rect.x + info.fx * chart.rect.w, y: chart.rect.y + info.fy * chart.rect.h }
