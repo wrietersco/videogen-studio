@@ -135,7 +135,14 @@ export const FindSpec = z.object({
 })
 export type FindSpec = z.infer<typeof FindSpec>
 
-export const StepKind = z.enum(['goto', 'type', 'click', 'press', 'wait', 'expect', 'handoff', 'scroll', 'reveal', 'select', 'scrollto', 'hover', 'mark'])
+/**
+ * The kinds a recorded step can have. The second row is the atom contract (see `Atom` below): a step of one of those kinds
+ * carries its details as JSON in `text` (the same way a 'mark' step does) and the words the person used in `label`/`find`.
+ */
+export const StepKind = z.enum([
+  'goto', 'type', 'click', 'press', 'wait', 'expect', 'handoff', 'scroll', 'reveal', 'select', 'scrollto', 'hover', 'mark',
+  'key', 'drag', 'dblclick', 'slider', 'date', 'scrollUntil', 'whenever'
+])
 export const Step = z.object({
   id: z.string(),
   /** which narrated beat of the video this step belongs to */
@@ -195,4 +202,149 @@ export interface Take {
   log: Array<{ t: number; step: string; note: string }>
   /** elements that should have been blurred but were not, per beat (must be empty to ship) */
   redactionMisses: number
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// The atom contract: the small actions a person's step is read into (parsed by main/appRecon/stepScript.ts, performed by
+// main/appRecon/script.ts, which hands the kinds below the older code does not know to main/appRecon/atomExec.ts).
+//
+// Rules every atom follows:
+//  - `label` is what the person called the thing (or a short description of the action) — used for the chapter name, the
+//    narration facts and the run notes. It is never an instruction to the page.
+//  - `find` (where there is one) is how the control is looked for; `find.target` is the cleaned name (filler and role words removed).
+//  - An executor reports what it DID: `did` counts only actions really performed, `verified` is true only when the page showed the
+//    expected effect afterwards (a key that moved focus, a slider whose value changed, a drag that reordered...). Anything that
+//    could not be done is a `skipped` entry with a plain reason. Nothing is ever dropped silently.
+// ---------------------------------------------------------------------------------------------------------------------------
+
+/** a single key or chord (puppeteer names: "Escape", "Tab", "ArrowDown", "Control+K"); a space separates a sequence ("ArrowDown ArrowDown Enter") */
+export interface KeyAtom {
+  action: 'key'
+  label: string
+  keys: string
+  /** keep pressing the key until this is true: a control with this name has focus, or this text is on screen ("Tab until Export is focused") */
+  repeatUntil?: string
+}
+/** press on `from`, move to `to`, release */
+export interface DragAtom {
+  action: 'drag'
+  label: string
+  /** what is picked up ("the Fix login redirect card") */
+  from: string
+  /** where it is dropped: a column, a list or a card ("In progress", "the Done column") */
+  to: string
+  /** where in `to`, or beside `ref`: before/after a card, or at the top/bottom of the list */
+  position?: 'before' | 'after' | 'top' | 'bottom'
+  /** the card the drop is relative to ("above the first card" → position 'before', ref "the first card") */
+  ref?: string
+  find: FindSpec
+}
+/** two quick clicks on the same control (an inline edit opens). A text to put in follows as a `type` atom with `replace: true` */
+export interface DblClickAtom {
+  action: 'dblclick'
+  label: string
+  find: FindSpec
+}
+/** a range input (single thumb: `value`; a range of two: `min` and `max`), by a number or "about £40–£80" */
+export interface SliderAtom {
+  action: 'slider'
+  label: string
+  value?: number
+  min?: number
+  max?: number
+  find: FindSpec
+}
+/** a calendar day. `date` is computed from today by the parser; `phrase` keeps the person's words and `rule` says which rule was used when the words are ambiguous */
+export interface DateAtom {
+  action: 'date'
+  label: string
+  date: string
+  phrase: string
+  rule?: string
+  find: FindSpec
+}
+/** scroll (the page, or the feed named in `find`) until this text is on screen, with a safety limit */
+export interface ScrollUntilAtom {
+  action: 'scrollUntil'
+  label: string
+  text: string
+  find: FindSpec
+}
+/**
+ * a rule for the whole rest of the run ("if a cookie banner shows, accept only essentials"): armed once, checked before every later
+ * action. (`action` is the atom's discriminant, so what to do is called `then`.)
+ */
+export interface WheneverAtom {
+  action: 'whenever'
+  label: string
+  condition: 'popup' | 'cookie' | 'banner'
+  then: 'close' | 'accept-essential' | 'accept'
+}
+/**
+ * pick one thing out of several by where it is or what it holds, then do `verb` to it ("the second card in the third column",
+ * "the row with the highest total", "the cheapest jacket", "the button under the chart", "the June peak").
+ * `label` is what is picked (the noun: "card", "row", "jacket"); the rest narrows it down.
+ */
+export interface PickAtom {
+  action: 'pick'
+  label: string
+  /** what to do with it (default click) */
+  verb?: 'click' | 'hover' | 'dblclick'
+  /** 1-based position among the matches; -1 is the last */
+  ordinal?: number
+  /** the part of the page it is in ("the chart", "the Done column", "the cart") */
+  within?: string
+  /** which column of a board or table, by number (1-based) or by its heading */
+  column?: number | string
+  /** choose by value: the highest/lowest, the cheapest/most expensive */
+  criterion?: 'highest' | 'lowest' | 'cheapest' | 'most-expensive'
+  /** the value the criterion reads (a table column's heading, "total", "price"); omitted for price words */
+  field?: string
+  find: FindSpec
+}
+
+/** every small action a step is read into */
+export type Atom =
+  /** go to an address the step names, whole (the #fragment can pick the view the page opens on) */
+  | { action: 'open'; label: string; url: string }
+  | { action: 'click'; label: string; find: FindSpec }
+  /** choose one entry in a dropdown ("select Surah An-Nur" in the "Text to Study" dropdown) */
+  | { action: 'select'; label: string; option: string; find: FindSpec }
+  /** `replace`: select what is in the box first and type over it ("change plan to team", "rename it to X"); otherwise the text is added */
+  | { action: 'type'; label: string; text: string; find: FindSpec; replace?: boolean }
+  | { action: 'scroll'; dir: 'down' | 'up'; find: FindSpec }
+  /** scroll until a named part of the page ("the Whole-Quran even–odd circle") is on screen */
+  | { action: 'scrollto'; dir: 'down' | 'up'; label: string; find: FindSpec }
+  /** rest the pointer on something so its tooltip shows */
+  | { action: 'hover'; label: string; find: FindSpec }
+  /** click or hover marks of a chart ("blue, green and orange lines"), found by their colour on screen */
+  | { action: 'mark'; verb: 'click' | 'hover'; label: string; colours: string[]; noun: string; find: FindSpec }
+  | KeyAtom
+  | DragAtom
+  | DblClickAtom
+  | SliderAtom
+  | DateAtom
+  | ScrollUntilAtom
+  | WheneverAtom
+  | PickAtom
+
+/** the atoms whose executors live in main/appRecon/atomExec.ts */
+export type NewAtom = Extract<Atom, { action: 'key' | 'drag' | 'dblclick' | 'slider' | 'date' | 'scrollUntil' | 'whenever' | 'pick' }>
+
+/** what performing one atom did (the shape script.ts keeps for each part of a step) */
+export interface AtomResult {
+  /** the steps to record, without ids */
+  steps: Array<Omit<Step, 'id' | 'beat'>>
+  /** what the page showed while it was done (a tooltip's words, what a click opened), for the narration */
+  seen: string[]
+  /** what could not be done, with a plain reason (never empty when `did` is 0) */
+  skipped: Array<{ what: string; why: string }>
+  /** actions really performed */
+  did: number
+  /** the screen looked different afterwards */
+  changed: boolean
+  /** the page showed the expected effect (focus moved, value set, card moved, day chosen...). Narration facts come only from verified actions */
+  verified: boolean
+  /** the selector of the control last used (a later scroll stays near it) */
+  last?: string
 }

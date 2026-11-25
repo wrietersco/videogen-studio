@@ -1,4 +1,4 @@
-import type { FindSpec } from '@shared/appRecon'
+import type { Atom, FindSpec } from '@shared/appRecon'
 
 /**
  * A list of steps the person wrote, read as a script to perform exactly.
@@ -20,20 +20,7 @@ import type { FindSpec } from '@shared/appRecon'
  * Deterministic, no AI.
  */
 
-export type Atom =
-  /** go to an address the step names, whole (the #fragment can pick the view the page opens on) */
-  | { action: 'open'; label: string; url: string }
-  | { action: 'click'; label: string; find: FindSpec }
-  /** choose one entry in a dropdown ("select Surah An-Nur" in the "Text to Study" dropdown) */
-  | { action: 'select'; label: string; option: string; find: FindSpec }
-  | { action: 'type'; label: string; text: string; find: FindSpec }
-  | { action: 'scroll'; dir: 'down' | 'up'; find: FindSpec }
-  /** scroll until a named part of the page ("the Whole-Quran even–odd circle") is on screen */
-  | { action: 'scrollto'; dir: 'down' | 'up'; label: string; find: FindSpec }
-  /** rest the pointer on something so its tooltip shows */
-  | { action: 'hover'; label: string; find: FindSpec }
-  /** click or hover marks of a chart ("blue, green and orange lines"), found by their colour on screen */
-  | { action: 'mark'; verb: 'click' | 'hover'; label: string; colours: string[]; noun: string; find: FindSpec }
+export type { Atom } from '@shared/appRecon'
 
 export interface ScriptItem {
   n: number
