@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest'
 import { isToneSentence, parseProseScript, parseStepScript, scriptFromActions, type ScriptItem, type StepScript } from '../src/main/appRecon/stepScript'
 import { readDate } from '../src/main/appRecon/dates'
 import { scriptPlan, type ItemResult, type ScriptOutcome } from '../src/main/appRecon/script'
+import { accountFor } from '../src/main/appRecon/agent/brief'
+import type { FilmPlan } from '../src/shared/agentBrief'
 import type { AppMap, Atom } from '../src/shared/appRecon'
 
 const brief = (name: string): string => readFileSync(join(__dirname, 'fixtures', 'qa-briefs', `${name}.md`), 'utf8')
@@ -343,5 +345,22 @@ describe('the run notes and the narration only tell what was done', () => {
     expect(facts).toMatch(/Clicks "Reports"/)
     expect(facts).not.toMatch(/Uses the keyboard/)
     expect(facts).toMatch(/NOT SHOWN: press Ctrl\+K/)
+  })
+})
+
+describe('tone sentences are voice and context, never "unplaced"', () => {
+  const empty: FilmPlan = {
+    goal: '', kind: 'walkthrough', segments: [], music: { none: false, description: '', vocals: 'any', instruments: [], exclude: [], ambience: [], quiet: false },
+    voice: {}, look: { style: null, noAbstract: false }, unplaced: [], source: 'rules'
+  }
+  it('does not list them, and still lists a real instruction nobody carries', () => {
+    const typed = 'hi! i run a small hair salon\nmy customers are not techy so keep it simple\nWarm, quick, no jargon.\nMake the logo spin like a disco ball.'
+    const plan = accountFor(typed, empty)
+    expect(plan.unplaced).toEqual(['Make the logo spin like a disco ball.'])
+  })
+  it('drops a tone sentence the AI writer put in `unplaced`', () => {
+    const typed = 'my customers are not techy so keep it simple.\nWarm, quick, no jargon.'
+    const plan = accountFor(typed, { ...empty, unplaced: ['my customers are not techy so keep it simple', 'Warm, quick, no jargon.'] })
+    expect(plan.unplaced).toEqual([])
   })
 })
