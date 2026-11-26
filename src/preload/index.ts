@@ -160,6 +160,7 @@ const api = {
     attach: () => ipcRenderer.invoke('apprec:attach'),
     start: (id: string, opts?: { reuse?: boolean }) => ipcRenderer.invoke('apprec:start', id, opts),
     pickStyle: (kind: 'images' | 'video') => ipcRenderer.invoke('apprec:pickStyle', kind),
+    signInOnce: (id: string) => ipcRenderer.invoke('apprec:signInOnce', id),
     takeover: () => ipcRenderer.invoke('apprec:takeover'),
     cancel: () => ipcRenderer.invoke('apprec:cancel'),
     handoffDone: () => ipcRenderer.invoke('apprec:handoffDone'),

@@ -4,6 +4,7 @@ import type { Browser, Cookie, Page } from 'puppeteer-core'
 import { type AppMap, type AppPage, type Playbook, type Step, type Take } from '@shared/appRecon'
 import type { LLMProvider, SpeechProvider } from '../providers/types'
 import { asPhone, enforcePolicy, launch } from './browser'
+import { followPopups } from './popups'
 import { scrubMap, scrubText } from './detect'
 import { parseDirectives, readUrls, readUseCase } from './directives'
 import { checkCompatibility, explore, openPage, passInterstitial, settle, type Depth, type Exploration } from './explore'
@@ -131,7 +132,9 @@ export interface RunInput {
   mode: 'walkthrough' | 'launch'
   launch?: LaunchInfo
   /** how the app is signed in to */
-  signIn: 'saved' | 'self' | 'none'
+  signIn: 'saved' | 'self' | 'none' | 'profile'
+  /** with signIn 'profile': the browser profile the person signed in on once (Google and Firebase sign-ins live in it) */
+  profileDir?: string
   vault?: { username: string; password: string }
   /** a public demo account may show its login name; real accounts must not */
   revealUsername?: boolean
@@ -283,15 +286,21 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
   const reveal = !!inp.revealUsername
   const speech = assigned.voice === 'none' ? null : inp.speech
 
-  const browser = await launch({ ...device, userDataDir: join(inp.runDir, 'profile'), headless: inp.signIn !== 'self' })
+  // a signed-in profile is the person's own: the film is recorded in it (not in a throwaway one), so a Google or Firebase sign-in is already there
+  const profile = inp.signIn === 'profile' && inp.profileDir ? inp.profileDir : null
+  const browser = await launch({ ...device, userDataDir: profile ?? join(inp.runDir, 'profile'), headless: inp.signIn !== 'self' }).catch((err) => {
+    if (profile) throw new Error(`The signed-in browser profile could not be opened (${String((err as Error)?.message ?? err).slice(0, 120)}). Close the sign-in window if it is still open, then try again.`)
+    throw err
+  })
   const onAbort = () => void browser.close().catch(() => undefined)
   inp.signal?.addEventListener('abort', onAbort)
   try {
     // ------------------------------------------------------------ explore
     hooks.progress('explore', 'Opening the app')
-    const ctx = await browser.createBrowserContext()
+    const ctx = profile ? browser.defaultBrowserContext() : await browser.createBrowserContext()
     const page = await ctx.newPage()
     await enforcePolicy(page, gate)
+    followPopups(page, gate, (p) => prepare(p, redaction), say)
     await prepare(page, redaction)
     /** the person acts in a visible window with the same session; when they press Done the app carries on from where they left it */
     const takeOver = async (): Promise<string | void> => {
@@ -370,6 +379,9 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
         `No sign-in form was found at ${displayHost(inp.startUrl)}, so the saved login could not be used and no video was made. ` +
           `The page that opened is "${first.title || first.url}". Put the address of the sign-in page in "Your app", choose "I'll sign in myself", or choose "No sign-in needed" if the app is public.`
       )
+    }
+    if (inp.signIn === 'profile' && L.detected) {
+      throw new Error(`The saved sign-in profile is not signed in to ${displayHost(inp.startUrl)} (it still shows the sign-in page), so no video was made. Press "Sign in once" in Record an app, sign in in the window that opens, close it, and start again.`)
     }
     let signedIn = false
 
@@ -579,9 +591,10 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     hooks.progress('record', inp.signIn === 'saved' ? 'Recording (signing in again, attempt 2 of 2)' : 'Recording')
     // what the scout found to be sensitive (a login name, an email box) is blurred in every frame
     const recRedaction: RedactionConfig = { ...redaction, selectors: map.sensitiveSelectors }
-    const rctx = await browser.createBrowserContext()
+    const rctx = profile ? browser.defaultBrowserContext() : await browser.createBrowserContext()
     const rpage: Page = await rctx.newPage()
     await enforcePolicy(rpage, gate)
+    followPopups(rpage, gate, (p) => prepare(p, recRedaction), say)
     await prepare(rpage, recRedaction)
     if (cookies.length) await rpage.setCookie(...cookies.map((c) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path, expires: c.expires, httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite })))
     // a browser check is waited out before the camera rolls, so it is never in the film

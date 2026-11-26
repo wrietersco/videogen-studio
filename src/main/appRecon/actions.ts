@@ -8,6 +8,7 @@ import { findPrivate } from './detect'
 import { deepHandle, framesOf, frameOffset } from './deep'
 import { clearOverlays, policyFromWhenever, type OverlayPolicy, type Whenever } from './overlays'
 import { newTexts, snapshotTexts } from './marks'
+import { popupWatchOf } from './popups'
 
 /**
  * The primitives every action is built from, shared by the rehearsal (script.ts, which learns the steps) and the recording
@@ -401,6 +402,8 @@ export async function doClick(env: Env, target: { selector: string; label: strin
       out.last = sel
       if (!res.changed) out.note = `"${target.label}" was ${o.double ? 'double-clicked' : 'clicked'} but the page did not visibly change`
       if (o.expect) out.verified = !!res.expected
+      // a click that opened a sign-in window (Google, Microsoft, a Firebase handler) is not finished until that window is
+      await popupWatchOf(page)?.settled()
       return out
     }
     env.log(`    the click on "${target.label}" did not reach it${aim.by ? ` (${aim.by} was on top)` : ''}${ai < plan.length - 1 ? '; trying again differently' : ''}`)

@@ -1,5 +1,7 @@
 import { BrowserWindow, dialog, ipcMain, Notification, shell } from 'electron'
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { canShowWindow, findChrome } from './browser'
+import { openSignInWindow, type SignInWindow } from './signInWindow'
 import { videoPoster } from '../assets/probe'
 import { join, resolve, sep } from 'node:path'
 import { DECIDE_CHANNEL, type CapabilityReport, type DecisionAnswer, type DecisionRequest } from '../../shared/agentBrief'
@@ -130,6 +132,27 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
     return { ok: true as const, paths: res.filePaths.map((p) => resolve(p)).slice(0, images ? 3 : 1) }
   })
 
+  /** the plain browser window of "Sign in once" (one at a time) */
+  let signInWin: SignInWindow | null = null
+  ipcMain.handle('apprec:signInOnce', async (_e, id: unknown) => {
+    if (!isAppId(id)) return fail('Invalid app')
+    const app = d.store.get(id)
+    if (!app) return fail('Save the app first, then sign in once')
+    if (current || d.isBusy()) return fail('Another job is running. Wait for it to finish, then try again.')
+    if (signInWin) return fail('The sign-in window is already open. Sign in there and close it.')
+    const exe = findChrome()
+    if (!exe || !canShowWindow(exe)) return fail('Signing in once needs Edge or Chrome installed, because it opens a normal window for you.')
+    try {
+      signInWin = openSignInWindow(exe, d.store.profileDir(id), app.url)
+      await signInWin.closed
+      return { ok: true as const }
+    } catch (err) {
+      return fail(err)
+    } finally {
+      signInWin = null
+    }
+  })
+
   ipcMain.handle('apprec:takeover', () => {
     if (!current) return false
     current.control.takeover = true
@@ -149,6 +172,10 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
     if (current || d.isBusy()) return fail('Another job is running. Wait for it to finish, then try again.')
     const login = d.store.secrets(id)
     if (app.signIn === 'saved' && !login) return fail('Add the username and password first')
+    if (app.signIn === 'profile') {
+      if (signInWin) return fail('The sign-in window is still open. Sign in there, close it, then start the recording.')
+      if (!existsSync(d.store.profileDir(id))) return fail('Press “Sign in once” first: sign in to the app in the window that opens, close it, then start the recording.')
+    }
     const ai = d.ai()
     const useAi = app.useAi && ai.available
 
@@ -213,6 +240,7 @@ export function registerAppReconIpc(d: AppReconIpcDeps): void {
       mode: app.mode,
       launch: app.mode === 'launch' && app.launch ? { ...app.launch, targetSec } : undefined,
       signIn: app.signIn,
+      profileDir: app.signIn === 'profile' ? d.store.profileDir(id) : undefined,
       vault: app.signIn === 'saved' ? (login ?? undefined) : undefined,
       revealUsername: app.revealUsername,
       guardrailText: app.guardrailText,

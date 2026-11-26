@@ -20,7 +20,7 @@ import { brandSourceOf, DEFAULT_CHECKS, DEPTH_LABELS, MAX_EXTRA_URLS, type AppCh
  * Nothing is restricted unless you tick it or type a rule.
  */
 
-type SignIn = 'saved' | 'self' | 'none'
+type SignIn = 'saved' | 'self' | 'none' | 'profile'
 interface Form {
   id?: string
   name: string
@@ -111,6 +111,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [confirmRun, setConfirmRun] = useState<string | null>(null)
+  const [signingIn, setSigningIn] = useState(false)
   const formRef = useRef(form)
   formRef.current = form
 
@@ -169,6 +170,20 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
       return r.app
     } finally {
       setSaving(false)
+    }
+  }
+
+  /** opens a normal browser window on this app's own profile, so a Google (or any single sign-on) login can be done once by hand */
+  const signInOnce = async (): Promise<void> => {
+    setError(null)
+    const saved = await save()
+    if (!saved) return
+    setSigningIn(true)
+    try {
+      const r = await api.appRec.signInOnce(saved.id)
+      if (!r.ok) setError(r.error)
+    } finally {
+      setSigningIn(false)
     }
   }
 
@@ -282,7 +297,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
 
           <Section icon="🔑" title="Signing in" hint="Your password is kept on this computer, sealed with your Windows account, and is never sent to an AI.">
             <div className="flex flex-wrap gap-2">
-              {([['saved', 'Use a saved login'], ['self', "I'll sign in myself"], ['none', 'No sign-in needed']] as const).map(([id, label]) => (
+              {([['saved', 'Use a saved login'], ['profile', 'Sign in with Google (once)'], ['self', "I'll sign in myself"], ['none', 'No sign-in needed']] as const).map(([id, label]) => (
                 <button key={id} onClick={() => set('signIn', id)} className={`rounded-full border-2 px-3 py-1 text-xs font-bold ${form.signIn === id ? 'border-grape bg-grape text-white' : 'border-ink/10 bg-white text-ink/65 hover:border-grape/50'}`}>
                   {label}
                 </button>
@@ -295,6 +310,15 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
                 <label className="flex items-center gap-2 text-xs text-ink/70 md:col-span-2">
                   <input type="checkbox" checked={form.revealUsername} onChange={(e) => set('revealUsername', e.target.checked)} /> Show the username in the video (only for a public demo account)
                 </label>
+              </div>
+            )}
+            {form.signIn === 'profile' && (
+              <div className="mt-3 text-xs text-ink/60">
+                <div>Google, Microsoft and other single sign-on pages refuse a browser that is being remote-controlled. So you sign in once, by hand, in a normal browser window on this app's own saved profile: press the button, sign in in the window that opens (with Google or anything else), then close that window. Every recording after that opens the same profile and is already signed in. We never see what you type, and no password is stored.</div>
+                <button onClick={() => void signInOnce()} disabled={signingIn || saving || !form.url.trim()} className="btn-ghost !px-3 !py-1 !text-xs mt-2">
+                  {signingIn ? 'Sign in in the window that opened, then close it…' : '🔐 Sign in once'}
+                </button>
+                {signingIn && <div className="mt-1 text-[11px] text-ink/45">Recording cannot start while that window is open.</div>}
               </div>
             )}
             {form.signIn === 'self' && <div className="mt-3 text-xs text-ink/60">A browser window opens and waits while you sign in, including any one-time code. We never see what you type.</div>}

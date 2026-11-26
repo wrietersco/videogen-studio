@@ -284,6 +284,7 @@ declare global {
         attach: () => Promise<{ ok: true; document: { name: string; text: string } } | { ok: false; error: string; cancelled?: boolean }>
         start: (id: string, opts?: { reuse?: boolean }) => Promise<{ ok: true; runId: string } | { ok: false; error: string }>
         pickStyle: (kind: 'images' | 'video') => Promise<{ ok: true; paths: string[] } | { ok: false; cancelled: true }>
+        signInOnce: (id: string) => Promise<{ ok: true } | { ok: false; error: string }>
         takeover: () => Promise<boolean>
         cancel: () => Promise<boolean>
         handoffDone: () => Promise<boolean>

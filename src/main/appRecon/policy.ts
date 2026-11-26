@@ -48,6 +48,66 @@ const READ_SEGMENT = new Set(['search', 'query', 'list', 'find', 'filter', 'look
 const wordRe = (w: string): RegExp => new RegExp(`(^|[^a-z])${w.replace(/\s+/g, '\\s+')}([^a-z]|$)`, 'i')
 const matchAny = (words: readonly string[], text: string): string | undefined => words.find((w) => wordRe(w).test(text))
 
+// ---------------------------------------------------------------- sign-in and sign-in-backed hosts
+
+/**
+ * Hosts a web app has to talk to for a person to sign in. "Stay on this app's
+ * sites" is about the app's own pages wandering off, not about the sign-in
+ * service the app is built on: without these, Firebase answers
+ * "auth/network-request-failed" and every Google, Microsoft or Auth0 sign-in
+ * button does nothing. Matched on the hostname (and its subdomains), some also
+ * on the path where the host does much more than sign people in.
+ */
+const SIGN_IN_HOSTS: Array<{ host: string; path?: RegExp }> = [
+  // Firebase / Google Identity: email + password, token refresh, the sign-in pop-up and redirect handler (<project>.firebaseapp.com/__/auth/*)
+  { host: 'identitytoolkit.googleapis.com' },
+  { host: 'securetoken.googleapis.com' },
+  { host: 'oauth2.googleapis.com' },
+  { host: 'firebaseinstallations.googleapis.com' },
+  { host: 'firebase.googleapis.com' },
+  { host: 'content-firebaseappcheck.googleapis.com' },
+  { host: 'firebaseapp.com' },
+  { host: 'accounts.google.com' },
+  { host: 'apis.google.com' },
+  { host: 'www.googleapis.com', path: /^\/(identitytoolkit|oauth2)\// },
+  { host: 'www.google.com', path: /^\/recaptcha\// },
+  { host: 'recaptcha.net' },
+  // other common sign-in providers
+  { host: 'login.microsoftonline.com' },
+  { host: 'login.live.com' },
+  { host: 'appleid.apple.com' },
+  { host: 'github.com', path: /^\/login\// },
+  { host: 'auth0.com' },
+  { host: 'okta.com' }
+]
+
+/** the data side of Firebase: a signed-in Firebase app reads its pages from here */
+const FIREBASE_DATA_HOSTS = ['firestore.googleapis.com', 'firebaseio.com', 'firebasestorage.googleapis.com']
+
+/** requests to a sign-in service that create, change or delete an account (all other sign-in traffic is just signing in or keeping the session alive) */
+const ACCOUNT_CHANGE = /(accounts:(signUp|update|delete|sendOobCode|resetPassword)|setAccountInfo|deleteAccount|createAuthUri\/.*signup|\/mfaEnrollment)/i
+/** Firestore calls that read: the streaming listener and queries all use POST */
+const FIRESTORE_READ = /(\/Listen\/|:runQuery|:runAggregationQuery|:batchGet|:listCollectionIds|:listDocuments)/i
+
+function onHost(host: string, suffix: string): boolean {
+  return host === suffix || host.endsWith('.' + suffix)
+}
+
+/** what kind of backing service a URL is, when it is one the sign-in of an app needs */
+export function backingServiceOf(url: string): 'sign-in' | 'firebase-data' | undefined {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return undefined
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return undefined
+  const host = u.hostname.toLowerCase()
+  if (SIGN_IN_HOSTS.some((h) => onHost(host, h.host) && (!h.path || h.path.test(u.pathname)))) return 'sign-in'
+  if (FIREBASE_DATA_HOSTS.some((h) => onHost(host, h))) return 'firebase-data'
+  return undefined
+}
+
 // ---------------------------------------------------------------- types
 
 export interface Verdict {
@@ -192,7 +252,17 @@ export class PolicyGate {
 
   private decideRequest(r: RequestInfo): Verdict {
     const method = r.method.toUpperCase()
+    // the sign-in service an app is built on is part of the app (Firebase answers "network-request-failed" when it is cut off)
+    const backing = backingServiceOf(r.url)
+    if (backing && this.restrictions.stayOnSites && !this.hostAllowed(r.url)) {
+      if (!MUTATING.has(method) || !this.restrictions.readOnly) return { allow: true, reason: backing === 'sign-in' ? 'sign-in service the app needs' : 'Firebase data the app needs' }
+      // read-only: signing in and keeping the session alive pass; creating, changing or deleting an account, or writing data, does not
+      if (backing === 'sign-in') return ACCOUNT_CHANGE.test(r.url) ? { allow: false, reason: 'read-only: this would create or change an account' } : { allow: true, reason: 'sign-in service the app needs' }
+      return FIRESTORE_READ.test(r.url) ? { allow: true, reason: 'Firebase read' } : { allow: false, reason: 'read-only: this request would change data' }
+    }
     if (!this.hostAllowed(r.url)) {
+      // a provider's page asks for its own icon: harmless, and not worth a line in "the app also tried to reach"
+      if (method === 'GET' && /\/favicon\.ico(\?|$)/i.test(r.url)) return { allow: true, reason: 'site icon' }
       // scripts, styles, fonts and pictures from other hosts only make a page work; they cannot carry anything out
       if (PASSIVE.has(r.resourceType) && method === 'GET') return { allow: true, reason: 'page resource from another host' }
       try {

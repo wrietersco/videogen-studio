@@ -74,6 +74,8 @@ export interface LaunchOptions {
   headless?: boolean
   /** show pages as a phone does: mobile layout, touch, and a phone's user agent (tall films) */
   mobile?: boolean
+  /** more command-line switches for the browser (tests map host names to a local server with them) */
+  extraArgs?: string[]
 }
 
 /** phone user agent per browser, built from the browser's own version so it matches what the site sees elsewhere */
@@ -116,6 +118,7 @@ export async function launch(opts: LaunchOptions): Promise<Browser> {
   const height = opts.height ?? FILM.height
   const args = ['--hide-scrollbars', '--force-color-profile=srgb', '--font-render-hinting=none', '--no-first-run', '--disable-extensions', '--lang=en-US', '--disable-features=Translate,MediaRouter']
   if (wantsWindow) args.push(...windowArgs(width, height))
+  if (opts.extraArgs?.length) args.push(...opts.extraArgs)
   const browser = await puppeteer.launch({
     executablePath,
     // the downloaded headless-only browser uses the classic headless mode

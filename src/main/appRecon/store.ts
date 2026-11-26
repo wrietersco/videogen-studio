@@ -119,7 +119,14 @@ export class AppReconStore {
     delete secrets[id]
     writeFileSync(this.secretsFile, JSON.stringify(secrets, null, 2))
     rmSync(this.planFile(id), { force: true })
+    rmSync(this.profileDir(id), { recursive: true, force: true })
     for (const r of this.runs(id)) rmSync(this.runDir(r.id), { recursive: true, force: true })
+  }
+
+  /** the browser profile the person signed in on once ("Sign in once"); the recording reuses it. Removed with the app. */
+  profileDir(id: string): string {
+    if (!isAppId(id)) throw new Error('Invalid app id')
+    return join(this.rootDir, 'profiles', id)
   }
 
   runDir(runId: string): string {

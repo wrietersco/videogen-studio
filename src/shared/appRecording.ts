@@ -8,7 +8,7 @@ import { isPlatformId } from './shapes'
 import type { PlatformId } from './spec'
 import type { AgentMode } from './agentBrief'
 
-export type SignInMode = 'saved' | 'self' | 'none'
+export type SignInMode = 'saved' | 'self' | 'none' | 'profile'
 export type Depth = 'quick' | 'standard' | 'thorough'
 export type VideoMode = 'walkthrough' | 'launch'
 
@@ -211,7 +211,7 @@ export function validateApp(raw: unknown): { ok: true; value: AppInput } | { ok:
     urls.push(extra.url)
   }
   const name = str(r.name, 80) || new URL(url).hostname
-  const signIn: SignInMode = r.signIn === 'self' || r.signIn === 'none' ? r.signIn : 'saved'
+  const signIn: SignInMode = r.signIn === 'self' || r.signIn === 'none' || r.signIn === 'profile' ? r.signIn : 'saved'
   const depth: Depth = DEPTHS.includes(r.depth as Depth) ? (r.depth as Depth) : 'standard'
   const c = (r.checks && typeof r.checks === 'object' ? r.checks : {}) as Record<string, unknown>
   const checks: AppChecks = {
