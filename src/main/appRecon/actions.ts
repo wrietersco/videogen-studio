@@ -159,7 +159,8 @@ export async function thumbOf(page: Page, rect: Rect): Promise<Buffer | null> {
     const y = Math.max(0, Math.floor(rect.y))
     const w = Math.max(8, Math.min(Math.ceil(rect.w), vp.width - x))
     const h = Math.max(8, Math.min(Math.ceil(rect.h), vp.height - y))
-    const png = (await page.screenshot({ type: 'png', clip: { x, y, width: w, height: h } })) as Uint8Array
+    // the clip is in screen coordinates: without this the picture is taken beyond the viewport, which moves the page on a phone-sized screen
+    const png = (await page.screenshot({ type: 'png', clip: { x, y, width: w, height: h }, captureBeyondViewport: false })) as Uint8Array
     return await sharp(Buffer.from(png)).resize(40, 40, { fit: 'fill' }).greyscale().raw().toBuffer()
   } catch {
     return null
