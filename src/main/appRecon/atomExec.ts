@@ -476,7 +476,7 @@ async function doMarkAtom(a: Extract<Atom, { action: 'mark' }>, ctx: AtomExecCtx
           const r = await clickMarkChecked(env, h.chart.rect, [{ x: h.x, y: h.y }])
           ok = r.ok
           if (r.ok) { changed = true; seen.push(`Clicking ${h.why} ${r.fresh.length ? `brings up: ${r.fresh.join(' · ').slice(0, 300)}` : 'changes the chart'}`) }
-          else { skipped.push({ what: name, why: `${h.why} was clicked but the chart showed no reaction` }); verified = false; continue }
+          else { skipped.push({ what: name, why: `${h.why} was clicked but the chart showed no reaction` }); continue }
         }
         steps.push({ kind: 'mark', label: what, find: { ...a.find, ...(colour ? { colours: [colour] } : {}) }, text: JSON.stringify({ verb: a.verb, colour, svg: { label: range.length ? undefined : mw.name, labels: range.length ? range : undefined, extreme: mw.extreme, kind: mw.kind }, tooltip: tip || undefined }), focus: 'page' })
         did++
@@ -504,8 +504,8 @@ async function doMarkAtom(a: Extract<Atom, { action: 'mark' }>, ctx: AtomExecCtx
     } else {
       const r = await clickMarkChecked(env, h.chart.rect, [{ x: h.x, y: h.y }, ...(h.alts ?? [])])
       if (!r.ok) {
+        // only what was seen to work counts as done; the part that did not is listed as skipped, and the parts that worked are kept
         skipped.push({ what: name, why: `it was clicked in ${r.tries} places on the ${colour ? colour + ' ' : ''}${a.noun} but the chart showed no reaction (no readout or change)` })
-        verified = false
         continue
       }
       changed = true
