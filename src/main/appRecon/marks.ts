@@ -259,6 +259,41 @@ export function colourSpots(pic: { data: Buffer; w: number; h: number; k: number
   return out
 }
 
+/** how wide the run of this colour is, left and right of a point (a bar is wide, a legend swatch is not) */
+function solidWidth(pic: { data: Buffer; w: number; h: number; k: number }, x: number, y: number, c: ColourName): number {
+  const cx = Math.round(x * pic.k)
+  const cy = Math.round(y * pic.k)
+  let n = 0
+  for (const dir of [-1, 1]) {
+    for (let xx = cx; xx >= 0 && xx < pic.w; xx += dir) {
+      const i = (cy * pic.w + xx) * 4
+      if (colourOf(pic.data[i], pic.data[i + 1], pic.data[i + 2]) !== c) break
+      n++
+    }
+  }
+  return n / pic.k
+}
+
+/** a patch of the picture that is the colour all through (a swatch, a filled bar), not a thin line */
+function solidAt(pic: { data: Buffer; w: number; h: number; k: number }, x: number, y: number, want: ColourName): boolean {
+  const cx = Math.round(x * pic.k)
+  const cy = Math.round(y * pic.k)
+  const R = Math.max(3, Math.round(3 * pic.k))
+  let n = 0
+  let tot = 0
+  for (let dy = -R; dy <= R; dy++) {
+    for (let dx = -R; dx <= R; dx++) {
+      const xx = cx + dx
+      const yy = cy + dy
+      if (xx < 0 || yy < 0 || xx >= pic.w || yy >= pic.h) continue
+      tot++
+      const i = (yy * pic.w + xx) * 4
+      if (colourOf(pic.data[i], pic.data[i + 1], pic.data[i + 2]) === want) n++
+    }
+  }
+  return tot > 0 && n / tot > 0.85
+}
+
 /** the pixel nearest the centre of a spot that really has the colour (the centre of a thin diagonal line can sit between its pixels) */
 function snapToColour(pic: { data: Buffer; w: number; h: number; k: number }, p: MarkPoint): MarkPoint {
   const cx = Math.round(p.x * pic.k)
@@ -395,6 +430,8 @@ export interface MarkQuery {
   move?: (x: number, y: number) => Promise<void>
   /** on a touch screen a tooltip often shows on a tap, not on a hover: when a hover shows none, the mark may be tapped (allowed by the person's rules) */
   allowTap?: boolean
+  /** the highest or the lowest place of the colour on the chart ("the line at its highest point") */
+  extreme?: 'max' | 'min'
 }
 
 export interface MarkHit {
@@ -406,6 +443,8 @@ export interface MarkHit {
   /** the tooltip showed when the mark was tapped (a phone), not when the pointer rested on it */
   tapped?: boolean
   chart: ChartBox
+  /** other places of the same colour, to try when a click on this one shows nothing (a click can miss a thin line by a pixel) */
+  alts?: Array<{ x: number; y: number }>
 }
 
 /** the place on a chart to put the pointer: a mark of the colour asked for; for a hover, one that shows a tooltip */
@@ -426,7 +465,25 @@ export async function findMark(page: Page, q: MarkQuery): Promise<{ hit?: MarkHi
   const exact = spots.length > 0
   if (!spots.length && want) spots = colourSpots(pic, null, { thin, max: 14 }).map((p) => snapToColour(pic, p))
   if (!spots.length) return { why: want ? `no ${want} marks could be seen on the chart${chart.title ? ` "${chart.title}"` : ''}` : `no marks could be seen on the chart${chart.title ? ` "${chart.title}"` : ''}` }
-  const abs = spots.map((p) => ({ ...p, x: chart.rect.x + p.x, y: chart.rect.y + p.y })).filter((p) => !(q.avoid ?? []).some((a) => Math.hypot(a.x - p.x, a.y - p.y) < 30))
+  let abs = spots.map((p) => ({ ...p, x: chart.rect.x + p.x, y: chart.rect.y + p.y })).filter((p) => !(q.avoid ?? []).some((a) => Math.hypot(a.x - p.x, a.y - p.y) < 30))
+  if (q.extreme && !want && !thin) {
+    // a bar chart drawn on a canvas: the tallest bar is the one whose block reaches highest (a legend swatch is a small block near the top, not a bar)
+    const blocks = colourSpots(pic, null, { thin: false, max: 160, spread: 10 })
+      .map((p) => snapToColour(pic, p))
+      .filter((p) => solidWidth(pic, p.x, p.y, p.colour) >= 14 || p.y > (pic.h / pic.k) * 0.2)
+      .map((p) => ({ ...p, x: chart.rect.x + p.x, y: chart.rect.y + p.y }))
+      .filter((p) => !(q.avoid ?? []).some((a) => Math.hypot(a.x - p.x, a.y - p.y) < 30))
+    if (blocks.length) abs = blocks.sort((a, b) => (q.extreme === 'max' ? a.y - b.y : b.y - a.y))
+  }
+  if (q.extreme && want) {
+    // the top (or bottom) of the line itself: the legend's filled swatch is not part of it
+    const dense = colourSpots(pic, want, { thin, max: 120, spread: 8 })
+      .map((p) => snapToColour(pic, p))
+      .filter((p) => !solidAt(pic, p.x, p.y, want))
+      .map((p) => ({ ...p, x: chart.rect.x + p.x, y: chart.rect.y + p.y }))
+      .filter((p) => !(q.avoid ?? []).some((a) => Math.hypot(a.x - p.x, a.y - p.y) < 30))
+    if (dense.length) abs = dense.sort((a, b) => (q.extreme === 'max' ? a.y - b.y : b.y - a.y))
+  }
   if (!abs.length) return { why: 'every mark of that colour was already shown' }
   if (q.hover) {
     const probed = await probeTooltips(page, chart, abs, { move: q.move })
@@ -445,7 +502,7 @@ export async function findMark(page: Page, q: MarkQuery): Promise<{ hit?: MarkHi
     return { hit: { x: abs[0].x, y: abs[0].y, colour: want ?? undefined, chart } }
   }
   const pick = abs[0]
-  return { hit: { x: pick.x, y: pick.y, colour: exact ? (pick.colour as string) : (want ?? undefined), chart } }
+  return { hit: { x: pick.x, y: pick.y, colour: exact ? (pick.colour as string) : (want ?? undefined), chart, alts: abs.slice(1, 7).map((a) => ({ x: a.x, y: a.y })) } }
 }
 
 // ---------------------------------------------------------------- what showed up
@@ -472,4 +529,173 @@ export async function hoverText(page: Page, x: number, y: number, o: { move?: (x
   const fresh = await newTexts(page, before, 6)
   if (fresh.length && fresh.length <= 6) return fresh.join(' · ').slice(0, 240)
   return page.evaluate(titleAt, x, y).catch(() => '')
+}
+
+
+// ---------------------------------------------------------------- marks that are in the page's own markup (SVG)
+
+export interface SvgMark {
+  /** where to put the pointer (viewport pixels) */
+  x: number
+  y: number
+  /** what the page calls it: "June", from its own label or the axis text under it */
+  label: string
+  /** a number the page gives it (a label, a title, a data attribute, or the axis scale) */
+  value?: number
+  /** where it stands on screen, higher is bigger: the height of a bar or the place of a point */
+  height: number
+  fill: string
+  kind: 'bar' | 'point'
+}
+
+/** in the page: every bar and point of the svg chart that fills `rect`, with its label and value when the page tells them */
+function svgMarksIn(rect: { x: number; y: number; w: number; h: number }): { marks: Array<{ x: number; y: number; label: string; value: number | null; height: number; fill: string; kind: 'bar' | 'point'; w: number; h: number }>; scaled: boolean } | null {
+  let svg: SVGSVGElement | null = null
+  let bestD = Infinity
+  for (const el of Array.from(document.querySelectorAll('svg'))) {
+    const r = el.getBoundingClientRect()
+    const d = Math.abs(r.left - rect.x) + Math.abs(r.top - rect.y) + Math.abs(r.width - rect.w) + Math.abs(r.height - rect.h)
+    if (d < bestD) { bestD = d; svg = el as SVGSVGElement }
+  }
+  if (!svg || bestD > 80) return null
+  const sr = svg.getBoundingClientRect()
+  const svgArea = sr.width * sr.height
+  const NUMTEXT = /^[£$€]?\s*-?[\d.,]+\s*[kKmM%]?$/
+  const numOf = (t: string): number | null => {
+    const m = /-?\d[\d,]*\.?\d*/.exec(t.replace(/\s/g, ''))
+    if (!m) return null
+    const n = Number(m[0].replace(/,/g, ''))
+    return Number.isFinite(n) ? n : null
+  }
+  const raw: Array<{ el: Element; kind: 'bar' | 'point'; r: DOMRect; fill: string }> = []
+  for (const el of Array.from(svg.querySelectorAll('rect,circle,ellipse'))) {
+    if (el.closest('defs,clipPath,mask,[class*=legend i],[class*=tick i],[class*=grid i],[class*=axis i]')) continue
+    const r = el.getBoundingClientRect()
+    if (r.width < 2 || r.height < 2) continue
+    const cs = getComputedStyle(el)
+    const fill = cs.fill && cs.fill !== 'none' ? cs.fill : ''
+    if (!fill || /rgba\(.*,\s*0\)/.test(fill) || cs.opacity === '0') continue
+    if (el.tagName.toLowerCase() === 'rect') {
+      if (r.width * r.height > svgArea * 0.45 || r.width > sr.width * 0.6) continue // the plot area or the background
+      if (r.width <= 16 && r.height <= 16 && r.top - sr.top < sr.height * 0.2) continue // a legend swatch
+      raw.push({ el, kind: 'bar', r, fill })
+    } else {
+      if (r.width > 30 || r.height > 30) continue
+      raw.push({ el, kind: 'point', r, fill })
+    }
+  }
+  if (raw.length < 2) return null
+  // axis: numbers written at the left give a scale (value = a * y + b)
+  const texts = Array.from(svg.querySelectorAll('text')).map((t) => ({ t: (t.textContent ?? '').trim(), r: t.getBoundingClientRect() })).filter((x) => x.t && x.r.width > 0)
+  const minX = Math.min(...raw.map((m) => m.r.left))
+  const ticks = texts.filter((x) => NUMTEXT.test(x.t) && x.r.right <= minX + 4).map((x) => ({ y: (x.r.top + x.r.bottom) / 2, v: numOf(x.t) as number })).filter((x) => x.v !== null)
+  let scale: { a: number; b: number } | null = null
+  if (ticks.length >= 2) {
+    const n = ticks.length
+    const sy = ticks.reduce((s, t) => s + t.y, 0)
+    const sv = ticks.reduce((s, t) => s + t.v, 0)
+    const syy = ticks.reduce((s, t) => s + t.y * t.y, 0)
+    const syv = ticks.reduce((s, t) => s + t.y * t.v, 0)
+    const den = n * syy - sy * sy
+    if (Math.abs(den) > 1e-6) {
+      const a = (n * syv - sy * sv) / den
+      const b = (sv - a * sy) / n
+      if (a < 0) scale = { a, b }
+    }
+  }
+  const maxBottom = Math.max(...raw.map((m) => m.r.bottom))
+  const cats = texts.filter((x) => !NUMTEXT.test(x.t) && x.r.top >= maxBottom - 14 && x.t.length <= 24)
+  const marks = raw.map((m) => {
+    const cx = (m.r.left + m.r.right) / 2
+    const cy = (m.r.top + m.r.bottom) / 2
+    const own = [m.el.getAttribute('aria-label'), m.el.getAttribute('data-label'), m.el.querySelector('title')?.textContent, m.el.getAttribute('data-name'), m.el.getAttribute('data-month')].filter(Boolean).join(' ')
+    const dv = m.el.getAttribute('data-value') ?? m.el.getAttribute('data-count') ?? m.el.getAttribute('data-total')
+    let value: number | null = dv !== null ? numOf(dv) : null
+    let label = ''
+    if (own) {
+      const parts = own.split(/\s*[:·–—|,]\s*/)
+      label = parts.find((p) => /[A-Za-z]/.test(p)) ?? own
+      if (value === null) {
+        const nums = parts.map((p) => (/^[£$€]?\s*-?[\d.,]+/.test(p) ? numOf(p) : null)).filter((n): n is number => n !== null)
+        if (nums.length) value = nums[0]
+      }
+    }
+    const top = m.kind === 'bar' ? m.r.top : cy
+    if (!label && cats.length) {
+      const c = cats.map((x) => ({ x, d: Math.abs((x.r.left + x.r.right) / 2 - cx) })).sort((p, q) => p.d - q.d)[0]
+      if (c && c.d < Math.max(m.r.width * 1.5, 40)) label = c.x.t
+    }
+    if (value === null && scale) value = Math.round((scale.a * top + scale.b) * 100) / 100
+    return { x: cx, y: m.kind === 'bar' ? Math.min(m.r.bottom - 3, m.r.top + Math.max(3, Math.min(m.r.height / 2, 24))) : cy, label, value, height: sr.bottom - top, fill: m.fill, kind: m.kind, w: m.r.width, h: m.r.height }
+  })
+  return { marks, scaled: !!scale }
+}
+
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december']
+const nameKey = (s: string): string => s.toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
+function sameName(a: string, b: string): boolean {
+  const x = nameKey(a)
+  const y = nameKey(b)
+  if (!x || !y) return false
+  if (x === y) return true
+  // "Jun" is "June"
+  const mx = MONTHS.findIndex((m) => x.length >= 3 && m.startsWith(x))
+  const my = MONTHS.findIndex((m) => y.length >= 3 && m.startsWith(y))
+  if (mx >= 0 && mx === my) return true
+  return x.length >= 3 && y.length >= 3 && (x.startsWith(y) || y.startsWith(x))
+}
+
+/**
+ * A bar or a point of a chart drawn in SVG, by what the person says about it: its label ("the June point"), or its size
+ * ("the tallest bar", "the peak", "the lowest point"). Read from the page's own markup, so nothing is guessed from colour.
+ * Says why not when the chart is not SVG or the label is not on it.
+ */
+export async function findSvgMark(page: Page, o: { chart?: string; label?: string; labels?: string[]; colour?: string; extreme?: 'max' | 'min'; kind?: 'bar' | 'point'; avoid?: Array<{ x: number; y: number }> }): Promise<{ hit?: SvgMark & { chart: ChartBox; why: string }; why?: string }> {
+  const chart = await pickChart(page, o.chart ?? '')
+  if (!chart) return { why: 'there is no chart on the screen' }
+  if (chart.kind !== 'svg') return { why: 'the chart is drawn as a picture, not as parts of the page' }
+  const res = await page.evaluate(svgMarksIn, chart.rect).catch(() => null)
+  if (!res || !res.marks.length) return { why: 'the bars or points of the chart could not be read from the page' }
+  let marks = res.marks
+  if (o.kind) {
+    const k = marks.filter((m) => m.kind === o.kind)
+    if (k.length) marks = k
+  }
+  if (o.colour) {
+    const c = marks.filter((m) => {
+      const mm = /rgba?\(\s*(\d+)[ ,]+(\d+)[ ,]+(\d+)/.exec(m.fill)
+      return !!mm && colourOf(Number(mm[1]), Number(mm[2]), Number(mm[3])) === o.colour
+    })
+    if (!c.length) return { why: `no ${o.colour} bar or point could be read from the chart's markup` }
+    marks = c
+  }
+  if (o.labels?.length) {
+    const hit = marks.filter((m) => m.label && o.labels!.some((l) => sameName(m.label, l)))
+    if (!hit.length) return { why: `no bar or point of the chart is labelled ${o.labels.join(', ')}` }
+    marks = hit
+  } else if (o.label) {
+    const hit = marks.filter((m) => m.label && sameName(m.label, o.label!))
+    if (!hit.length) return { why: `no bar or point of the chart is labelled "${o.label}" (the labels are: ${[...new Set(marks.map((m) => m.label).filter(Boolean))].slice(0, 8).join(', ') || 'none'})` }
+    marks = hit
+  }
+  const avoid = o.avoid ?? []
+  const fresh = marks.filter((m) => !avoid.some((a) => Math.hypot(a.x - m.x, a.y - m.y) < 6))
+  if (!fresh.length) return { why: 'that mark was already shown' }
+  marks = fresh
+  const by = (m: (typeof marks)[number]) => (m.value !== null ? m.value : m.height)
+  const pick = o.extreme === 'min' ? marks.reduce((a, b) => (by(b) < by(a) ? b : a)) : marks.reduce((a, b) => (by(b) > by(a) ? b : a))
+  const hasValues = marks.every((m) => m.value !== null)
+  return {
+    hit: {
+      x: pick.x,
+      y: pick.y,
+      label: pick.label,
+      value: pick.value ?? undefined,
+      height: pick.height,
+      fill: pick.fill,
+      kind: pick.kind,
+      chart,
+      why: `${o.extreme === 'min' ? 'lowest' : o.label ? 'the' : 'highest'} ${pick.kind}${pick.label ? ` "${pick.label}"` : ''}${pick.value !== null ? ` (${pick.value})` : ''}${hasValues || o.label ? '' : ' by its size on screen'}`
+    }
+  }
 }

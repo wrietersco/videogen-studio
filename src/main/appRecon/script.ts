@@ -15,6 +15,7 @@ import { revealHidden, scrollToSection } from './sections'
 import type { Atom } from '@shared/appRecon'
 import { plainStep, type ScriptItem, type StepScript } from './stepScript'
 import { execNewAtom, isNewAtom } from './atomExec'
+import { armWhenever } from './actions'
 
 /**
  * Carries out the steps a person wrote, exactly and in order, on the live app.
@@ -294,6 +295,8 @@ export async function performScript(inp: ScriptInput): Promise<ScriptOutcome> {
   const skippedAll: ScriptOutcome['skipped'] = []
   let actions = 0
   let last: string | undefined
+  // the person's standing rules ("whenever a pop-up shows, close it") hold from the first action, not from the step that names them
+  for (const w of inp.script.whenever ?? []) armWhenever(page, { condition: w.condition, action: w.then })
   const fail = (item: ScriptItem, why: string): ScriptOutcome => ({
     results,
     actions,

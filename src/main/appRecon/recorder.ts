@@ -10,10 +10,17 @@ import { checkSecretFill } from './detect'
 import { classifyField } from './sensitivity'
 import { asPhone } from './browser'
 import { redactionInitScript, cursorInitScript, verifyScript, type RedactionConfig } from './redact'
+import { probeInitScript } from './probes'
 import { findElement, scrollArea } from './resolve'
-import { findMark, pickChart } from './marks'
+import { findMark, findSvgMark, pickChart } from './marks'
 import { scrollToSection } from './sections'
 import { chooseNative, matchOption, readChoices } from './pick'
+import { deepEval, deepRect } from './deep'
+import { sweepOverlays } from './overlays'
+import { armWhenever, clickMarkChecked, doClick, doHover, doType, focusedEditable, policyOf, type Env, type Outcome } from './actions'
+import { doDate, doDrag, doKey, doScrollUntil, doSlider } from './gestures'
+import { dropZone } from './atomExec'
+import { pickByStructure, type PickSpec } from './pageModel'
 import { judgeLogin, type LoginVerdict } from './loginCheck'
 import { isInterstitial } from './explore'
 
@@ -197,6 +204,10 @@ export interface RunResult {
   skipped?: Array<{ step: string; label: string; why: string }>
   /** runs of beats that were filmed on the very same screen, though steps were done in them (the voice would describe screens the film never shows) */
   stuck?: Array<{ from: number; to: number }>
+  /** pop-ups and banners that were closed on the way ("s4: closed the cookie banner by pressing "Only necessary"") */
+  closed?: string[]
+  /** steps that were done but the page did not show any effect (never to be narrated as having worked) */
+  unverified?: Array<{ step: string; label: string; why: string }>
 }
 
 /** the control a saved step meant, found again by its name when its address in the page changed; null unless exactly one fits */
@@ -242,6 +253,7 @@ export async function prepare(page: Page, redaction: RedactionConfig): Promise<v
   const phone = !!page.viewport()?.isMobile
   if (phone) await asPhone(page)
   await page.evaluateOnNewDocument(redactionInitScript(redaction))
+  await page.evaluateOnNewDocument(probeInitScript())
   await page.evaluateOnNewDocument(cursorInitScript(phone))
 }
 
@@ -267,14 +279,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
     return v
   })
 
-  const rectOf = async (selector: string): Promise<Rect | null> =>
-    page.evaluate((sel) => {
-      const el = document.querySelector(sel)
-      if (!el) return null
-      el.scrollIntoView({ block: 'center', inline: 'nearest' })
-      const r = el.getBoundingClientRect()
-      return { x: r.x, y: r.y, w: r.width, h: r.height }
-    }, selector)
+  const rectOf = async (selector: string): Promise<Rect | null> => deepRect(page, selector, { scroll: true })
 
   const glide = async (x: number, y: number, ms: number) => {
     if (pace === 0) { await page.mouse.move(x, y); mouse = { x, y }; return }
@@ -382,6 +387,49 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
     skipped.push({ step: step.id, label: step.label ?? step.find?.target ?? step.selector ?? '', why })
     say(step.id, `SKIPPED: ${why}`)
   }
+  const closedAll: string[] = []
+  const unverified: NonNullable<RunResult['unverified']> = []
+  let current = ''
+  const env: Env = {
+    page,
+    allow: (label) => o.gate.checkClick({ label, kind: 'button' }).allow,
+    log: (m) => say(current, m.trim()),
+    move: (x, y, ms) => glide(x, y, ms ?? 600),
+    pace
+  }
+  /** pop-ups and banners that sit over the page are closed before a step (the privacy-preserving choice), unless the step is about them */
+  const sweep = async (step: Step): Promise<void> => {
+    if (step.kind === 'goto' || step.kind === 'handoff' || step.kind === 'whenever') return
+    try {
+      // where the step is going, so that an overlay it is about (a form it fills) is left alone
+      const where = step.find ? (await findElement(page, step.find, 0).catch(() => ({ found: null }))).found?.selector : step.selector
+      const r = await sweepOverlays(page, { target: where, policy: policyOf(page), allow: env.allow, log: (m) => say(step.id, m.trim()), move: (x, y) => glide(x, y, 450), stepWords: step.label ?? step.find?.target ?? '', pace })
+      for (const c of r.closed) closedAll.push(`${step.id}: ${c}`)
+    } catch {
+      /* a page that is changing under us: the next step looks again */
+    }
+  }
+  const noteOutcome = (step: Step, out: Outcome, what: string) => {
+    for (const c of out.closed) closedAll.push(`${step.id}: ${c}`)
+    if (out.did && !out.verified) unverified.push({ step: step.id, label: step.label ?? step.find?.target ?? '', why: out.note ?? `${what}, but the page did not show the effect` })
+  }
+  /** a control found again by the words the person used (or by its address) */
+  const targetOf = async (step: Step, kindFallback: 'click' | 'type' = 'click', words?: string): Promise<{ selector: string; label: string; rect: Rect } | null> => {
+    const spec = step.find ?? (words ? { target: words, kind: kindFallback } : null)
+    if (spec) {
+      const { found } = await findElement(page, spec, 6000)
+      if (found) return { selector: found.selector, label: found.label || step.label || spec.target, rect: found.rect }
+    }
+    if (step.selector) {
+      const r = await rectOf(step.selector)
+      if (r) return { selector: step.selector, label: step.label ?? step.selector, rect: r }
+    }
+    return null
+  }
+  for (const st of playbook.steps) {
+    // a rule for the whole run is armed from the start
+    if (st.kind === 'whenever') try { const j = JSON.parse(st.text ?? '{}') as { condition?: string; then?: string }; if (j.condition) armWhenever(page, { condition: j.condition, action: j.then ?? 'close' }) } catch { /* a rule that cannot be read is left out */ }
+  }
   const seenViews: Array<{ beat: number; sig: string; acted: boolean }> = []
   const dropped = new Set<string>()
   // the steps are copied: finding a control again by its description changes the copy, never the saved playbook
@@ -421,7 +469,9 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
     let focusRect: Rect | null = null
     for (const step of steps.filter((s) => s.beat === beat)) {
       stepFromUrl = page.url()
+      current = step.id
       try {
+        await sweep(step)
         if (step.kind === 'goto') {
           const url = step.url ?? playbook.startUrl
           if (!o.gate.hostAllowed(url)) return { ok: false, failure: `${step.id}: ${url} is outside the allowed sites`, beats, navigations, log, redactionMisses: misses }
@@ -430,52 +480,72 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           await page.mouse.move(mouse.x, mouse.y) // the pointer reappears on the new page
           say(step.id, `opened ${url}`)
         } else if (step.kind === 'type' && (step.selector || step.find)) {
+          if (step.focused) {
+            // the text goes where the cursor is; the words that named the box are the fallback
+            const f = await focusedEditable(page)
+            if (f) { step.selector = f; step.find = undefined }
+          }
           const found = await locate(step)
           if (found === 'gone') continue
           const r = found
           if (!r && step.find) { skipStep(step, `no box called "${step.label ?? step.find.target}" was found`); continue }
           if (!r) return { ok: false, failure: `${step.id}: could not find "${step.label ?? step.selector}"`, beats, navigations, log, redactionMisses: misses }
-          await glide(r.x + Math.min(r.w * 0.5, 120), r.y + r.h / 2, 600)
-          await sleep(180 * pace)
-          await page.mouse.click(mouse.x, mouse.y)
-          await sleep(220 * pace)
           // a stored secret goes only into the field it is for, on the app's own pages
           for (const m of (step.text ?? '').matchAll(/\{\{secret:(\w+)\}\}/g)) {
-            const h = await page.$eval(step.selector!, (el) => {
+            const h = await deepEval(page, step.selector!, (el) => {
               const i = el as HTMLInputElement
               const lab = i.labels && i.labels[0] ? i.labels[0].innerText : ''
               return { type: i.type || '', name: i.getAttribute('name') ?? '', id: i.id, label: lab || i.getAttribute('aria-label') || '', placeholder: i.getAttribute('placeholder') ?? '', autocomplete: i.getAttribute('autocomplete') ?? '' }
             })
+            if (!h) return { ok: false, failure: `${step.id}: could not find "${step.label ?? step.selector}"`, beats, navigations, log, redactionMisses: misses }
             const fill = checkSecretFill({ secret: m[1], fieldKind: classifyField(h), pageAllowed: o.gate.hostAllowed(page.url()) })
             if (!fill.allow) return { ok: false, failure: `${step.id}: blocked — ${fill.reason}`, beats, navigations, log, redactionMisses: misses }
           }
-          // text the person wrote replaces what the box already holds
-          if (step.find) await page.evaluate((sel) => { const e = document.querySelector(sel) as HTMLInputElement | null; if (e && typeof e.select === 'function') e.select() }, step.selector!).catch(() => undefined)
           const value = resolve(step.text ?? '')
-          await page.keyboard.type(value, { delay: pace === 0 ? 0 : step.find ? 55 : 70 })
-          if (step.find) await sleep(pace === 0 ? 300 : 900) // suggestions arrive a moment later
-          say(step.id, `typed into "${step.label ?? step.selector}" (${value.length} characters)`)
+          const typed = await doType(env, { selector: step.selector!, label: step.label ?? step.find?.target ?? step.selector! }, value, { key: step.replace && step.find ? step.label : undefined, replace: step.replace ?? (step.find ? undefined : true), secret: /\{\{secret:/.test(step.text ?? ''), delay: step.find ? 55 : 70, stepWords: step.label })
+          noteOutcome(step, typed, 'typed')
+          if (typed.skipped) {
+            if (step.find) { skipStep(step, typed.skipped.why); continue }
+            return { ok: false, failure: `${step.id}: ${typed.skipped.why}`, beats, navigations, log, redactionMisses: misses }
+          }
+          say(step.id, `typed into "${step.label ?? step.selector}" (${value.length} characters)${typed.verified ? '' : ' (it does not read back as typed)'}`)
           lastSel = step.selector
-          focusRect = r
+          focusRect = typed.rect ?? r
           focusKind = step.focus
-        } else if (step.kind === 'click' && (step.selector || step.find)) {
-          const found = await locate(step)
+        } else if ((step.kind === 'click' || step.kind === 'dblclick' || step.kind === 'pick') && (step.selector || step.find || /^\{"pick"/.test(step.text ?? ''))) {
+          // a pick by place or by value ("the cheapest jacket") is decided again on the page as it is now
+          let pickNote = ''
+          let pickVerb: string | undefined
+          if (/^\{"pick"/.test(step.text ?? '')) {
+            try {
+              const parsed = JSON.parse(step.text!) as { pick: PickSpec; verb?: string }
+              pickVerb = parsed.verb
+              const spec = parsed.pick
+              const res = await pickByStructure(page, spec)
+              if (!res.ok) { skipStep(step, res.why); continue }
+              step.selector = res.selector
+              pickNote = res.reason
+            } catch {
+              /* a pick that cannot be read keeps the address it was made with */
+            }
+          }
+          const found = pickNote ? await rectOf(step.selector!) : await locate(step)
           if (found === 'gone') continue
           const r = found
           if (!r && step.find) { skipStep(step, `no control called "${step.label ?? step.find.target}" was found`); continue }
           if (!r) return { ok: false, failure: `${step.id}: could not find "${step.label ?? step.selector}"`, beats, navigations, log, redactionMisses: misses }
-          const info = await page.$eval(step.selector!, (el) => {
+          const info = await deepEval(page, step.selector!, (el) => {
             const h = el as HTMLElement
             const label = (h.innerText || (el as HTMLInputElement).value || el.getAttribute('aria-label') || el.getAttribute('title') || el.querySelector('img[alt]')?.getAttribute('alt') || el.querySelector('svg title')?.textContent || '').trim()
             const hint = [el.id, h.className && typeof h.className === 'string' ? h.className : '', el.getAttribute('name'), el.getAttribute('data-testid'), el.getAttribute('data-action')].filter(Boolean).join(' ')
             return { label, hint, kind: el.tagName === 'A' ? 'link' : 'button', href: el.tagName === 'A' ? (el as HTMLAnchorElement).href : undefined }
           })
+          if (!info) { if (step.find) { skipStep(step, 'it disappeared before it could be used'); continue } return { ok: false, failure: `${step.id}: could not find "${step.label ?? step.selector}"`, beats, navigations, log, redactionMisses: misses } }
           const label = info.label
           const verdict = o.gate.checkClick({ label: label || step.label || '', intent: step.intent, kind: info.kind as 'button' | 'link', href: info.href, hint: info.hint })
           if (!verdict.allow && step.find) { skipStep(step, `your own rules do not allow it (${verdict.reason})`); continue }
           if (!verdict.allow) return { ok: false, failure: `${step.id}: blocked by guardrails — ${verdict.reason}`, beats, navigations, log, redactionMisses: misses }
-          // a page that is still drawing (help icons, banners) moves its controls: wait until this one holds still, and look again
-          // after the pointer arrives, so the click lands on the control and not where it used to be
+          // a page that is still drawing (help icons, banners) moves its controls: wait until this one holds still
           let target: Rect = r
           for (let k = 0; k < 15; k++) {
             await sleep(200)
@@ -485,20 +555,20 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
             target = again
             if (still) break
           }
-          await glide(target.x + target.w / 2, target.y + target.h / 2, 700)
-          const landed = await rectOf(step.selector!)
-          if (landed && (Math.abs(landed.y - target.y) > 1 || Math.abs(landed.x - target.x) > 1)) {
-            await glide(landed.x + landed.w / 2, landed.y + landed.h / 2, 350)
-          }
-          await sleep(350 * pace)
           if (step.intent === 'login-submit' || step.intent === 'logout') o.gate.openSessionWindow()
-          const nav = page.waitForNavigation({ waitUntil: 'load', timeout: 8000 }).catch(() => null)
-          await page.mouse.click(mouse.x, mouse.y)
-          await Promise.race([nav, sleep(1800)])
+          const out = await doClick(env, { selector: step.selector!, label: label || step.label || step.selector! }, { double: step.kind === 'dblclick' || pickVerb === 'dblclick', stepWords: step.label ?? step.find?.target })
+          noteOutcome(step, out, 'clicked')
           await page.mouse.move(mouse.x, mouse.y)
-          say(step.id, `clicked "${label || step.label}" (${verdict.reason})`)
+          if (out.skipped) {
+            // a click that did not reach the control is never reported as done; the sign-in has its own check afterwards
+            if (step.intent === 'login-submit') say(step.id, `the sign-in button was not reached (${out.skipped.why}); the sign-in check goes on`)
+            else if (step.find || step.intent === 'logout' || step.intent === 'navigate') { skipStep(step, out.skipped.why); continue }
+            else { skipStep(step, out.skipped.why); continue }
+          } else {
+            say(step.id, `${step.kind === 'dblclick' ? 'double-clicked' : 'clicked'} "${label || step.label}" (${verdict.reason})${out.verified ? '' : ' — the page did not visibly change'}${pickNote ? ` — ${pickNote}` : ''}`)
+          }
           lastSel = step.selector
-          focusRect = r
+          focusRect = out.rect ?? r
           focusKind = step.focus
         } else if (step.kind === 'select' && step.text && (step.selector || step.find)) {
           // choose an entry in a dropdown: the pointer goes to it, then the entry is set (a real <select>'s list is drawn by the
@@ -544,15 +614,20 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           const found = await locate(step)
           if (found === 'gone') continue
           if (!found) { skipStep(step, `nothing called "${step.label ?? step.find?.target}" was found`); continue }
-          await glide(found.x + found.w / 2, found.y + found.h / 2, 800)
-          await sleep(1100 * pace) // the tooltip appears and is read
+          const hv = await doHover(env, { selector: step.selector!, label: step.label ?? step.find?.target ?? step.selector! }, async (x, y) => {
+            await glide(x, y, 800)
+            await sleep(1100 * pace) // the tooltip appears and is read
+            return ''
+          })
+          noteOutcome(step, hv, 'hovered')
+          if (hv.skipped) { skipStep(step, hv.skipped.why); continue }
           say(step.id, `rested the pointer on "${step.label ?? step.selector}"`)
           lastSel = step.selector
-          focusRect = found
+          focusRect = hv.rect ?? found
           focusKind = step.focus
         } else if (step.kind === 'mark' && step.find) {
-          // a mark of a chart: found by its colour on screen. The place the rehearsal used is tried first.
-          const info = ((): { verb?: string; colour?: string; fx?: number; fy?: number; tap?: boolean } => {
+          // a mark of a chart: found by its colour on screen, or by its label or size when the chart is SVG. The place the rehearsal used is tried first.
+          const info = ((): { verb?: string; colour?: string; fx?: number; fy?: number; tap?: boolean; svg?: { label?: string; labels?: string[]; extreme?: 'max' | 'min'; kind?: 'bar' | 'point' } } => {
             try {
               return JSON.parse(step.text ?? '{}')
             } catch {
@@ -562,26 +637,81 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           const hover = info.verb === 'hover'
           const chart = await pickChart(page, step.find.chart ?? '')
           let at: { x: number; y: number } | null = null
-          if (chart && typeof info.fx === 'number' && typeof info.fy === 'number') at = { x: chart.rect.x + info.fx * chart.rect.w, y: chart.rect.y + info.fy * chart.rect.h }
+          let alts: Array<{ x: number; y: number }> = []
+          if (chart && info.svg) {
+            const sv = await findSvgMark(page, { chart: step.find.chart, label: info.svg.label, labels: info.svg.labels, colour: info.colour, extreme: info.svg.extreme, kind: info.svg.kind })
+            if (!sv.hit) { skipStep(step, sv.why ?? 'no such mark was found'); continue }
+            at = { x: sv.hit.x, y: sv.hit.y }
+          } else if (chart && typeof info.fx === 'number' && typeof info.fy === 'number') at = { x: chart.rect.x + info.fx * chart.rect.w, y: chart.rect.y + info.fy * chart.rect.h }
           if (chart && !at) {
             const res = await findMark(page, { spec: step.find, colour: info.colour, hover, move: (x, y) => glide(x, y, 350), allowTap: hover && o.gate.checkClick({ label: `${info.colour ?? ''} ${step.find.noun ?? 'mark'} on a chart`.trim(), kind: 'button' }).allow })
-            if (res.hit) at = { x: res.hit.x, y: res.hit.y }
+            if (res.hit) { at = { x: res.hit.x, y: res.hit.y }; alts = res.hit.alts ?? [] }
             else { skipStep(step, res.why ?? 'no such mark was found'); continue }
           }
           if (!chart || !at) { skipStep(step, 'there is no chart on the screen'); continue }
           if (!hover) {
             const verdict = o.gate.checkClick({ label: `${info.colour ?? ''} ${step.find.noun ?? 'mark'} on a chart`.trim(), kind: 'button' })
             if (!verdict.allow) { skipStep(step, `your own rules do not allow it (${verdict.reason})`); continue }
-          }
-          await glide(at.x, at.y, 800)
-          await sleep((hover ? 1500 : 450) * pace)
-          if (!hover || info.tap) {
-            await page.mouse.click(at.x, at.y) // a phone shows its tooltip on a tap
-            await sleep(900 * pace)
+            // the chart must answer the click: a readout, or the picture changing. A miss by a pixel is tried again elsewhere.
+            const res = await clickMarkChecked(env, chart.rect, [at, ...alts])
+            if (!res.ok) { skipStep(step, `the ${step.label ?? 'mark'} was clicked in ${res.tries} places but the chart showed no reaction`); continue }
+            at = res.at
+          } else {
+            await glide(at.x, at.y, 800)
+            await sleep(1500 * pace)
+            if (info.tap) {
+              await page.mouse.click(at.x, at.y) // a phone shows its tooltip on a tap
+              await sleep(900 * pace)
+            }
           }
           say(step.id, `${hover ? 'rested the pointer on' : 'clicked'} a ${step.label ?? 'mark'} of the chart`)
           focusRect = { x: Math.max(0, at.x - 80), y: Math.max(0, at.y - 80), w: 160, h: 160 }
           focusKind = 'target'
+        } else if (step.kind === 'key') {
+          const j = ((): { keys?: string; repeatUntil?: string } => { try { return JSON.parse(step.text ?? '{}') } catch { return {} } })()
+          if (!j.keys) { skipStep(step, 'no key was named'); continue }
+          const nav = page.waitForNavigation({ waitUntil: 'load', timeout: 3000 }).catch(() => null)
+          const k = await doKey(env, j.keys, j.repeatUntil)
+          noteOutcome(step, k, 'pressed')
+          await Promise.race([nav, sleep(300)])
+          if (k.skipped) { skipStep(step, k.skipped.why); continue }
+          say(step.id, `pressed ${j.keys}${j.repeatUntil ? ` until "${j.repeatUntil}" was focused` : ''}${k.verified ? '' : ' — the page did not visibly react'}`)
+        } else if (step.kind === 'drag') {
+          const j = ((): { from?: string; to?: string; position?: 'before' | 'after' | 'top' | 'bottom'; ref?: string } => { try { return JSON.parse(step.text ?? '{}') } catch { return {} } })()
+          const from = await targetOf(step, 'click', j.from)
+          if (!from) { skipStep(step, `"${j.from ?? step.label}" was not found`); continue }
+          const ref = j.ref ? await targetOf({ ...step, find: { target: j.ref, kind: 'click' }, selector: undefined }) : null
+          const zone = j.to ? (await dropZone(page, j.to))?.found ?? (await targetOf({ ...step, find: { target: j.to, kind: 'click' }, selector: undefined })) : null
+          const d = await doDrag(env, { from: { selector: from.selector, label: from.label }, to: zone ? { selector: zone.selector, label: j.to! } : undefined, ref: ref ? { selector: ref.selector, label: j.ref! } : undefined, position: j.position })
+          noteOutcome(step, d, 'dragged')
+          if (d.skipped) { skipStep(step, d.skipped.why); continue }
+          say(step.id, `dragged "${from.label}"${j.to ? ` to "${j.to}"` : ''}`)
+          focusRect = d.rect ?? from.rect
+          focusKind = 'target'
+        } else if (step.kind === 'slider') {
+          const j = ((): { value?: number; min?: number; max?: number } => { try { return JSON.parse(step.text ?? '{}') } catch { return {} } })()
+          const sl = await doSlider(env, { selector: step.selector, label: step.label ?? step.find?.target ?? 'slider' }, j)
+          noteOutcome(step, sl, 'set')
+          if (sl.skipped) { skipStep(step, sl.skipped.why); continue }
+          say(step.id, `set the slider "${step.label}" to ${j.min !== undefined && j.max !== undefined ? `${j.min}–${j.max}` : j.value}`)
+          focusRect = sl.rect ?? null
+          focusKind = 'target'
+        } else if (step.kind === 'date') {
+          const j = ((): { date?: string; phrase?: string } => { try { return JSON.parse(step.text ?? '{}') } catch { return {} } })()
+          const t = await targetOf(step, 'click')
+          const dt = await doDate(env, t ? { selector: t.selector, label: t.label } : null, j.date ?? '', j.phrase ?? j.date ?? '')
+          noteOutcome(step, dt, 'chose the date')
+          if (dt.skipped) { skipStep(step, dt.skipped.why); continue }
+          say(step.id, `chose the date ${j.date}`)
+          focusRect = dt.rect ?? null
+          focusKind = 'target'
+        } else if (step.kind === 'scrolluntil') {
+          const j = ((): { text?: string; dir?: 'down' | 'up' | 'left' | 'right'; within?: string[] } => { try { return JSON.parse(step.text ?? '{}') } catch { return {} } })()
+          const su = await doScrollUntil(env, j.text ?? '', { dir: j.dir, within: j.within })
+          if (su.skipped) { skipStep(step, su.skipped.why); continue }
+          say(step.id, `scrolled until "${j.text}" was on screen`)
+        } else if (step.kind === 'whenever') {
+          say(step.id, `from now on: ${step.label ?? step.text}`)
         } else if (step.kind === 'press' && step.text) {
           await sleep(200 * pace)
           const nav = page.waitForNavigation({ waitUntil: 'load', timeout: 6000 }).catch(() => null)
@@ -616,7 +746,10 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           await o.onHandoff?.(step)
         }
         const problem = await checkExpect(step)
-        if (problem && o.repair) {
+        if (problem && step.intent === 'logout') {
+          // the sign-out is the engine's own last step: a page that does not show the sign-in form again is not a reason to stop the film
+          say(step.id, `WARNING: ${problem}; carrying on`)
+        } else if (problem && o.repair) {
           // a check that no longer holds must not stop the film: it is taken off the step
           repairs.push(`${step.id}: ${problem}, so that check is left out`)
           step.expect = undefined
@@ -672,5 +805,5 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
     if (j - i >= 2 && seenViews.slice(i + 1, j + 1).some((v) => v.acted)) stuck.push({ from: seenViews[i].beat, to: seenViews[j].beat })
     i = j + 1
   }
-  return { ok: true, beats, navigations, log, redactionMisses: misses, ...(skipped.length ? { skipped } : {}), ...(stuck.length ? { stuck } : {}), ...(o.repair ? { playbook: { ...playbook, steps: kept }, repairs } : {}) }
+  return { ok: true, beats, navigations, log, redactionMisses: misses, ...(skipped.length ? { skipped } : {}), ...(stuck.length ? { stuck } : {}), ...(closedAll.length ? { closed: closedAll } : {}), ...(unverified.length ? { unverified } : {}), ...(o.repair ? { playbook: { ...playbook, steps: kept }, repairs } : {}) }
 }
