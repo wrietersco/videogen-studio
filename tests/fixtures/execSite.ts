@@ -142,7 +142,7 @@ document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLower
   '/late': `${head('Late')}<div class="wrap"><h1>Report</h1><div id="slot"></div></div><script>setTimeout(()=>{document.getElementById('slot').innerHTML='<p>Report ready for download</p>'},3000)</script></body></html>`,
 
   // ------------------------------------------------------------ stylists with hearts, times of day, an open calendar, a board with card menus, a banner that stays
-  '/salon': `${head('Salon')}<div class="wrap"><h2>Stylists</h2>
+  '/salon': `${head('Salon')}<div class="wrap"><style>.st button{opacity:0}.st:hover button{opacity:1}</style><h2>Filters</h2><div class="cats"><label><input type="checkbox"> Hair</label><label><input type="checkbox"> Nails</label><label><input type="checkbox"> Skin</label></div><h2>Stylists</h2>
 <div id="stylists"><div class="card st"><b>Mei</b> Cuts <button aria-label="Favourite" onclick="ev('heart:Mei')">♡</button></div><div class="card st"><b>Daniel</b> Colour <button aria-label="Favourite" onclick="ev('heart:Daniel')">♡</button></div><div class="card st"><b>Sana</b> Styling <button aria-label="Favourite" onclick="ev('heart:Sana')">♡</button></div></div>
 <h2>Times</h2><div id="times"><button class="slot" onclick="ev('slot:09:30')">09:30</button><button class="slot" onclick="ev('slot:11:00')">11:00</button><button class="slot" onclick="ev('slot:14:00')">14:00</button><button class="slot" onclick="ev('slot:15:30')">15:30</button><button class="slot" onclick="ev('slot:18:30')">18:30</button></div>
 <h2>Pick a day</h2><div id="cal" role="grid" aria-label="Calendar" style="width:260px"></div><div id="out"></div>

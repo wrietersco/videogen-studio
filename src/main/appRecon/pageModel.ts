@@ -236,7 +236,8 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
         fit += 2 + (mine.length === g.items.length ? 0 : 1)
       }
       if (!structural.length && !content.length) fit += 1
-      if (spec.inner && items.some((i) => innerIn(i))) fit += 3
+      // a group whose members have the control (even one that only shows when the pointer is on the member) is the one meant
+      if (spec.inner && items.some((i) => innerIn(i, true))) fit += 3
       // an interactive member is what a step can use
       if (items.some((i) => i.matches('a,button,[role=button],[tabindex]') || i.querySelector('a,button,[role=button]'))) fit += 1
       // bigger visible groups beat tiny ones
@@ -336,10 +337,10 @@ function pickIn(spec: PickSpec): { ok: true; path: string; rect: Rect; label: st
     return inner && visible(inner) ? inner : it
   }
   const nameOf = (it: Element): string => (it.getAttribute('aria-label') || (it.querySelector('h1,h2,h3,h4,h5,strong,[class*=title],[class*=name]') ? textOf(it.querySelector('h1,h2,h3,h4,h5,strong,[class*=title],[class*=name]')!) : textOf(it))).slice(0, 60)
-  function innerIn(it: Element): Element | null {
+  function innerIn(it: Element, anyState = false): Element | null {
     const want = wordsOf(spec.inner ?? '').filter((w) => !/^(icon|button|the|little|small)$/.test(w))
     const keys = want.flatMap((w) => INNER[w] ?? [w])
-    const cands = Array.from(it.querySelectorAll('button,a,[role=button],[tabindex],[onclick],input,svg,i,span,div')).filter(visible)
+    const cands = Array.from(it.querySelectorAll('button,a,[role=button],[tabindex],[onclick],input,svg,i,span,div')).filter((c) => anyState || visible(c))
     if (!keys.length) return cands.find((c) => c.matches('button,a,[role=button]')) ?? null
     const matches = cands.filter((c) => {
       const hay = `${(c as HTMLElement).innerText ?? ''} ${c.getAttribute('aria-label') ?? ''} ${c.getAttribute('title') ?? ''} ${classOf(c)} ${(c as HTMLInputElement).value ?? ''} ${c.getAttribute('data-icon') ?? ''}`.toLowerCase()
