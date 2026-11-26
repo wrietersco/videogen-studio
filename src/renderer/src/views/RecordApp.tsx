@@ -259,7 +259,7 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
             <button onClick={addExtraUrl} disabled={form.urls.length >= MAX_EXTRA_URLS || running} className="btn-ghost mt-3 !px-3 !py-1 !text-xs">➕ Add another address</button>
           </Section>
 
-          <Section icon="📝" title="What should the video show?" hint="Type it in your own words, and attach notes if you have them. Notes are read as information only. Write a numbered list of steps (1. log in, 2. click “Ontology” in the left menu, 3. type “psychology” in the search bar ...) and they are done exactly as written, in order, with nothing else added; if one cannot be done the video is not made and you are told which. You can also ask for AI-made footage here, e.g. “add an AI video that illustrates the workflow as a beautiful motion diagram”: the engine makes that clip with your video model and cuts it in.">
+          <Section icon="📝" title="What should the video show?" hint="Type it in your own words, and attach notes if you have them. Notes are read as information only. Write a numbered list of steps (1. log in, 2. click “Ontology” in the left menu, 3. type “psychology” in the search bar ...) and they are done exactly as written, in order, with nothing else added; if one cannot be done it is skipped, the video carries on with the rest, and the notes tell you which step was left out. You can also ask for AI-made footage here, e.g. “add an AI video that illustrates the workflow as a beautiful motion diagram”: the engine makes that clip with your video model and cuts it in.">
             <textarea
               aria-label="What the video should show"
               value={form.context}
@@ -533,9 +533,10 @@ export default function RecordApp({ onOpenSettings }: { onOpenSettings: () => vo
                 <RunPreview run={r} />
                 <div className="px-4 py-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span>{r.status === 'done' ? '✅' : r.status === 'cancelled' ? '⏹️' : r.status === 'running' ? '⏳' : '⚠️'}</span>
-                  <span className="min-w-0 flex-1 truncate" title={r.status === 'done' ? undefined : (r.error ?? r.status)}>
+                  <span>{r.status === 'done' ? (r.partial ? '◐' : '✅') : r.status === 'cancelled' ? '⏹️' : r.status === 'running' ? '⏳' : '⚠️'}</span>
+                  <span className="min-w-0 flex-1 truncate" title={r.status === 'done' ? r.partial?.reason : (r.error ?? r.status)}>
                     {new Date(r.startedAt).toLocaleString()} · {r.status === 'done' ? `${fmtDur(r.durationSec)} · ${r.pages ?? 0} pages explored` : (r.error ?? r.status)}
+                    {r.status === 'done' && r.partial && <span className="ml-1 rounded-full bg-sunny-soft px-2 py-0.5 text-[11px] font-bold text-ink">Partly done</span>}
                   </span>
                   {r.video && <button onClick={() => api.appRec.play(r.id)} className="btn-ghost !px-3 !py-1 !text-xs">▶ Play</button>}
                   {r.video && <button onClick={() => api.appRec.reveal(r.id)} className="btn-ghost !px-3 !py-1 !text-xs">📂 Show</button>}
@@ -651,7 +652,7 @@ function RunPanel({ live, onRevise, onClose, onReviewAnswered, onDecided, onHand
   return (
     <section className="card slide-up mt-6 p-5" aria-label="Recording progress">
       <div className="flex items-center gap-3">
-        <div className="text-base font-black">{done ? (done.status === 'done' ? '✅ Your video is ready' : done.status === 'cancelled' ? '⏹️ Stopped' : '⚠️ It did not finish') : '🤖 The app is driving a browser'}</div>
+        <div className="text-base font-black">{done ? (done.status === 'done' ? (done.partial ? '◐ Your video is ready, with some steps left out' : '✅ Your video is ready') : done.status === 'cancelled' ? '⏹️ Stopped' : '⚠️ It did not finish') : '🤖 The app is driving a browser'}</div>
         <div className="flex-1" />
         {!done && live.stage === 'explore' && !live.handoff && <TakeOver />}
         {!done && <button onClick={() => api.appRec.cancel()} className="btn-ghost !px-3 !py-1 !text-xs">⏹ Stop</button>}
@@ -702,6 +703,7 @@ function RunPanel({ live, onRevise, onClose, onReviewAnswered, onDecided, onHand
             <button onClick={() => api.appRec.play(done.id)} className="btn-primary !px-5 !py-2 !text-sm">▶ Play</button>
             <button onClick={() => api.appRec.reveal(done.id)} className="btn-ghost !py-2 !text-sm">📂 Show in folder</button>
           </div>
+          {done.partial && <div className="mt-3 rounded-xl bg-sunny-soft px-3 py-2 text-sm font-semibold text-ink">◐ Partly done: {done.partial.reason} The video carries on without them and does not claim them; the notes below say which steps were left out.</div>}
           {done.notes.length > 0 && <div className="mt-3 text-xs text-ink/55">{done.notes.join(' · ')}</div>}
           {!!done.advisory?.length && <div className="mt-2 text-xs text-ink/55">Not enforced automatically: {done.advisory.join(' | ')}</div>}
           {!!done.blockedHosts?.length && <div className="mt-2 text-xs text-ink/55">The app also tried to reach: {done.blockedHosts.map((h) => `${h.host} (${h.count}×)`).join(', ')}. Untick “Stay on this app's sites” to allow other hosts.</div>}

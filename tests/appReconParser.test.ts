@@ -364,3 +364,11 @@ describe('tone sentences are voice and context, never "unplaced"', () => {
     expect(plan.unplaced).toEqual([])
   })
 })
+
+describe('a place named with "from the" and no action', () => {
+  it('"from the search bar, click X" is a place for the click, not a step that was not understood', () => {
+    const s = parseStepScript('1. log into the app\n2. from the search bar, click the suggestion "psychology"')!
+    expect(s.items[1].unread).toEqual([])
+    expect(s.items[1].atoms.map((a) => a.action)).toEqual(['click'])
+  })
+})

@@ -125,8 +125,8 @@ export interface Budget {
 }
 export const DEFAULT_BUDGET: Budget = { turns: 10, actions: 14, ms: 200_000, live: 2, support: 5, moves: 3 }
 
-/** atom kinds beyond the original ones that the engine can perform (grows when their executors land) */
-export const NEW_ATOMS_READY: ReadonlySet<string> = new Set<string>()
+/** atom kinds beyond the original ones that the engine can perform (the executor layer performs all of them; `type` with `replace`/`focused` is part of the base `type`) */
+export const NEW_ATOMS_READY: ReadonlySet<string> = new Set<string>(['key', 'drag', 'dblclick', 'slider', 'date', 'scrollUntil', 'pick'])
 const DEFAULT_CAPS: Capable = { newAtoms: NEW_ATOMS_READY }
 
 interface Decision {
@@ -149,7 +149,7 @@ const SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          do: { type: 'string', enum: ['click', 'type', 'select', 'scrollto', 'hover', 'mark', 'key', 'slider', 'dblclick', 'scrollUntil'] },
+          do: { type: 'string', enum: ['click', 'type', 'select', 'scrollto', 'hover', 'mark', 'key', 'slider', 'dblclick', 'scrollUntil', 'drag', 'date', 'pick'] },
           target: { type: 'string' },
           text: { type: 'string' },
           replace: { type: 'boolean' },
@@ -190,7 +190,10 @@ const EXTRA_ACTIONS: Record<string, string> = {
   key: 'key (text = the key or chord, e.g. "Control+K")',
   slider: 'slider (target = the slider, text = the value, or "min-max")',
   dblclick: 'dblclick',
-  scrollUntil: 'scrollUntil (text = words that must appear)'
+  scrollUntil: 'scrollUntil (text = words that must appear)',
+  drag: 'drag (target = what is picked up, text = where it is dropped, near = "before X"/"after X" when the place in the list matters)',
+  date: 'date (target = the date box, text = the day as YYYY-MM-DD)',
+  pick: 'pick (target = the kind of thing, e.g. card, row, product; text = which one: "second", "last", "cheapest", "highest"; near = the part of the page it is in)'
 }
 
 const systemFor = (caps: Capable): string => SYSTEM.replace('{NEW}', [...caps.newAtoms].map((k) => `, ${EXTRA_ACTIONS[k] ?? k}`).join(''))

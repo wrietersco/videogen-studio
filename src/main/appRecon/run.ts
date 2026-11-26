@@ -540,7 +540,11 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     writeFileSync(join(inp.runDir, 'beats.json'), JSON.stringify(plan.beats, null, 2))
     const base: RunOutput = {
       plan, map: safeMap, compat, stoppedBy: exploration.stoppedBy, pages: scriptOut ? scriptOut.results.length : exploration.visits.length, actions: exploration.actions,
-      ...(scriptOut?.mostlyUnchanged && scriptOut.stats ? { partial: { reason: `Only ${scriptOut.stats.effective} of ${scriptOut.stats.total} steps changed the page as written.` } } : {}),
+      ...(scriptOut?.stats && (scriptOut.mostlyUnchanged || scriptOut.stats.notDone > 0 || scriptOut.stats.partial > 0)
+        ? { partial: { reason: scriptOut.mostlyUnchanged
+              ? `Only ${scriptOut.stats.effective} of ${scriptOut.stats.total} steps changed the page as written.`
+              : `${scriptOut.stats.notDone ? `${scriptOut.stats.notDone} of ${scriptOut.stats.total} steps were skipped` : ''}${scriptOut.stats.notDone && scriptOut.stats.partial ? ' and ' : ''}${scriptOut.stats.partial ? `${scriptOut.stats.partial} only done in part` : ''}.` } }
+        : {}),
       blockedHosts: gate.blockedHosts(), enforced, advisory, redactionMisses: 0, runDir: inp.runDir, brandNotes: site?.notes ?? []
     }
     if (inp.stopAfter === 'explore' || inp.stopAfter === 'plan') return base

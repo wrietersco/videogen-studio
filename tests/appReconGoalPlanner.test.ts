@@ -104,6 +104,20 @@ describe('the planner may only do what is on the page and about the goal', () =>
     expect(buildAtom(act({ target: 'Delete data' }), study(), rails())).toMatchObject({ reject: expect.stringMatching(/changes or sends data/) })
     expect(buildAtom(act({ target: 'Billing' }), study(), rails())).toMatchObject({ reject: expect.stringMatching(/opens another page/) })
   })
+  it('offers every action kind the executors perform, and builds each in the shape the contract fixes', async () => {
+    const { NEW_ATOMS_READY } = await import('../src/main/appRecon/goalPlanner')
+    for (const k of ['key', 'drag', 'dblclick', 'slider', 'date', 'scrollUntil', 'pick']) expect(NEW_ATOMS_READY.has(k)).toBe(true)
+    const caps = { newAtoms: NEW_ATOMS_READY }
+    expect(buildAtom(act({ do: 'key', target: '', text: 'Control+K' }), study(), rails({ caps }))).toMatchObject({ atom: { action: 'key', keys: 'Control+K' } })
+    expect(buildAtom(act({ do: 'drag', target: 'Fix login card', text: 'In progress', near: 'before Write docs' }), study(), rails({ caps }))).toMatchObject({ atom: { action: 'drag', from: 'Fix login card', to: 'In progress', position: 'before', ref: 'Write docs' } })
+    expect(buildAtom(act({ do: 'date', target: 'Check-in', text: '2026-12-05' }), study(), rails({ caps }))).toMatchObject({ atom: { action: 'date', date: '2026-12-05' } })
+    expect(buildAtom(act({ do: 'date', target: 'Check-in', text: 'someday' }), study(), rails({ caps }))).toMatchObject({ reject: expect.stringMatching(/not a day/) })
+    expect(buildAtom(act({ do: 'pick', target: 'card', text: 'second', near: 'the Done column' }), study(), rails({ caps }))).toMatchObject({ atom: { action: 'pick', ordinal: 2, within: 'the Done column' } })
+    expect(buildAtom(act({ do: 'pick', target: 'jacket', text: 'cheapest' }), study(), rails({ caps }))).toMatchObject({ atom: { action: 'pick', criterion: 'cheapest' } })
+    expect(buildAtom(act({ do: 'pick', target: 'card', text: 'nice one' }), study(), rails({ caps }))).toMatchObject({ reject: expect.stringMatching(/does not say which/) })
+    // with no capability the same actions are refused
+    expect(buildAtom(act({ do: 'drag', target: 'x', text: 'y' }), study(), rails())).toMatchObject({ reject: expect.stringMatching(/not something the recorder can do/) })
+  })
   it('lets a step the goal needs first through, with a reason, and no more than the limit', () => {
     expect(buildAtom(act({ target: 'Dark mode', relation: 'prerequisite', why: '' }), study(), rails({ goal: 'dark mode check' }))).toMatchObject({ reject: expect.stringMatching(/no reason/) })
     const ok = buildAtom(act({ target: 'Billing', relation: 'navigation', why: 'The invoices are on the billing page.' }), study(), rails())

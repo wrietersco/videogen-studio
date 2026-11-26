@@ -139,7 +139,7 @@ const LEAD_WORDS = '(?:(?:and|then|now|next|please|also|finally|first|lastly|so|
 const CLICK_VERB = new RegExp(`^${LEAD_WORDS}(${ALL_V.join('|')})(?:\\s+(.*))?$`, 'i')
 const LEAD_RE = new RegExp(`^${LEAD_WORDS}`, 'i')
 /** "in Key terms click …", "in the request body change …": the place, then the action */
-const INLINE = new RegExp(String.raw`^(?:from|in|on|at|inside|within)\s+(?:the\s+)?(.+?)\s+((?:${ALL_V.join('|')}|type|enter|search|scroll|hover|double[- ]click|drag|rename|wait|set|change|put|fill|write|slide|use|focus|replace)\b.*)$`, 'i')
+const INLINE = new RegExp(String.raw`^(?:from|in|on|at|inside|within)\s+(?:the\s+)?(?!the\b)(.+?)\s+((?:${ALL_V.join('|')}|type|enter|search|scroll|hover|double[- ]click|drag|rename|wait|set|change|put|fill|write|slide|use|focus|replace)\b.*)$`, 'i')
 const joinsLabel = (verb: string): boolean => new RegExp(`^(?:${JOIN_V.join('|')})$`, 'i').test(verb.replace(/\s+/g, ' ').trim()) || /^log\s?out$|^sign\s?out$/i.test(verb)
 /** words that open a sentence a person means as an instruction to do something (anything that starts like this and was not understood is reported, not dropped) */
 const ACTION_WORDS = new Set(

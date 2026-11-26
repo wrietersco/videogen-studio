@@ -307,6 +307,32 @@ export function buildAtom(a: ModelAction, study: PageStudy, r: Rails): Built {
   if (kind === 'scrolluntil') {
     return { atom: { action: 'scrollUntil', label: target, text: text || target, find: { target: 'scroll', kind: 'scroll' } } as unknown as Atom, label: target, support: false, leaves: false, key: `scrolluntil|${target.toLowerCase()}` }
   }
+  if (kind === 'drag') {
+    if (!text) return { reject: `nothing says where to drop "${target}"` }
+    const pos = /\b(before|above)\b/i.test(a.near ?? '') ? 'before' : /\b(after|below)\b/i.test(a.near ?? '') ? 'after' : undefined
+    const key = `drag|${target.toLowerCase()}|${text.toLowerCase()}`
+    if (r.done.has(key)) return { reject: 'that drag was already done' }
+    const atom = { action: 'drag', label: `drag ${target} to ${text}`, from: target, to: text, ...(pos ? { position: pos, ref: (a.near ?? '').replace(/^(before|above|after|below)\s+/i, '') } : {}), find: { target, kind: 'click' } } as unknown as Atom
+    return { atom, label: `drag ${target}`, support: false, leaves: false, key }
+  }
+  if (kind === 'date') {
+    const iso = /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : Number.isNaN(Date.parse(text)) ? '' : new Date(Date.parse(text) - new Date(Date.parse(text)).getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+    if (!iso) return { reject: `"${text || 'no date'}" is not a day the calendar can be set to (give it as YYYY-MM-DD)` }
+    const key = `date|${target.toLowerCase()}|${iso}`
+    if (r.done.has(key)) return { reject: 'that date was already set' }
+    return { atom: { action: 'date', label: target, date: iso, phrase: text, find: { target, kind: 'click' } } as unknown as Atom, label: target, support: false, leaves: false, key }
+  }
+  if (kind === 'pick') {
+    const words = text.toLowerCase()
+    const ord: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, last: -1 }
+    const o = Object.keys(ord).find((w) => new RegExp(`\\b${w}\\b`).test(words))
+    const criterion = /cheapest|lowest price/.test(words) ? 'cheapest' : /most expensive/.test(words) ? 'most-expensive' : /\bhighest\b/.test(words) ? 'highest' : /\blowest\b/.test(words) ? 'lowest' : undefined
+    if (o === undefined && !criterion) return { reject: `"${text || target}" does not say which ${target} to pick (an ordinal such as "second", or cheapest/highest/lowest)` }
+    const key = `pick|${target.toLowerCase()}|${words}|${(a.near ?? '').toLowerCase()}`
+    if (r.done.has(key)) return { reject: 'that pick was already made' }
+    const atom = { action: 'pick', label: target, verb: 'click', ...(o !== undefined ? { ordinal: ord[o] } : {}), ...(a.near?.trim() ? { within: a.near.trim() } : {}), ...(criterion ? { criterion } : {}), find: { target, kind: 'click' } } as unknown as Atom
+    return { atom, label: target, support: false, leaves: false, key }
+  }
   return { reject: `"${kind}" is not an action the planner may use` }
 }
 
