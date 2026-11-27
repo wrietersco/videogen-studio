@@ -42,6 +42,10 @@ export interface ScriptItem {
   goal?: string
   /** the goal asks for this many distinct examples ("give 3 examples"): the planner shows that many */
   count?: number
+  /** one whole example of a goal (all the presses that make it): the film gives it one beat and tells it by what it shows, not key by key */
+  example?: { n: number; of: number }
+  /** what the narration may say about a step made of many small actions (the planner's reasons, one per action) */
+  summary?: string[]
   /** a step that is only something to say ("explain ...", "provide a conclusion"): nothing is done on the page */
   narration?: boolean
   /** the person asked for the keyboard only: clicks became Tab-until-focused and Enter/Space */

@@ -381,6 +381,8 @@ export async function clearOverlays(page: Page, o: ClearOptions = {}): Promise<C
       if (ov.holdsTarget || ov.hasPassword) return false
       // the step is about this very overlay ("Accept all cookies", "No thanks"): it is the step's to deal with
       if (o.stepWords && ov.controls.some((c) => c.label.trim().length > 2 && (o.stepWords!.toLowerCase().includes(c.label.trim().toLowerCase()) || (o.stepWords!.length > 4 && c.label.toLowerCase().includes(o.stepWords!.toLowerCase()))))) return false
+      // a key of the dialog named by one character (a number pad's "2", "✓"): the step presses exactly that
+      if (o.stepWords && ov.controls.some((c) => c.label.trim() && c.label.trim().toLowerCase() === o.stepWords!.trim().toLowerCase())) return false
       if (ov.extra === 'leave') return false
       if (ov.kind === 'cookie' && policy.cookie === 'leave') return false
       if (ov.kind !== 'cookie' && !ov.extra && policy.popup === 'leave') return false

@@ -130,6 +130,7 @@ export const NEW_ATOMS_READY: ReadonlySet<string> = new Set<string>(['key', 'dra
 const DEFAULT_CAPS: Capable = { newAtoms: NEW_ATOMS_READY }
 
 interface Decision {
+  example: number
   status: 'continue' | 'done' | 'impossible'
   reason: string
   sections: string[]
@@ -143,6 +144,7 @@ const SCHEMA = {
     sections: { type: 'array', items: { type: 'string' }, description: 'headings of the part of the app this goal is about' },
     status: { type: 'string', enum: ['continue', 'done', 'impossible'] },
     reason: { type: 'string' },
+    example: { type: 'integer', description: 'which example (1, 2, 3 ...) the actions of this answer belong to; 0 when the person asked for no examples or these actions only prepare' },
     actions: {
       type: 'array',
       maxItems: 3,
@@ -164,7 +166,7 @@ const SCHEMA = {
       }
     }
   },
-  required: ['sections', 'status', 'reason', 'actions'],
+  required: ['sections', 'status', 'reason', 'example', 'actions'],
   additionalProperties: false
 }
 
@@ -279,7 +281,7 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
 }
 
 function readDecision(raw: unknown): Decision | null {
-  const o = raw as { status?: unknown; reason?: unknown; sections?: unknown; actions?: unknown } | null
+  const o = raw as { status?: unknown; reason?: unknown; sections?: unknown; actions?: unknown; example?: unknown } | null
   if (!o || typeof o !== 'object') return null
   const status = o.status === 'done' || o.status === 'impossible' ? o.status : 'continue'
   const str = (v: unknown, n = 160): string => (typeof v === 'string' ? v.trim().slice(0, n) : '')
@@ -287,7 +289,7 @@ function readDecision(raw: unknown): Decision | null {
     if (!a || typeof a !== 'object') return []
     return [{ do: str(a.do, 20), target: str(a.target, 100), text: str(a.text, 300), replace: a.replace === true, near: str(a.near, 80), relation: str(a.relation, 20), colours: Array.isArray(a.colours) ? a.colours.filter((c): c is string => typeof c === 'string').slice(0, 1) : [], noun: str(a.noun, 20), why: str(a.why, 200) }]
   })
-  return { status, reason: str(o.reason, 400), sections: (Array.isArray(o.sections) ? o.sections : []).filter((s): s is string => typeof s === 'string').map((s) => s.trim().slice(0, 80)).filter(Boolean).slice(0, 4), actions, source: 'model' }
+  return { example: typeof o.example === 'number' && o.example > 0 ? Math.min(Math.round(o.example), 8) : 0, status, reason: str(o.reason, 400), sections: (Array.isArray(o.sections) ? o.sections : []).filter((s): s is string => typeof s === 'string').map((s) => s.trim().slice(0, 80)).filter(Boolean).slice(0, 4), actions, source: 'model' }
 }
 
 interface Ask {
@@ -315,7 +317,7 @@ async function askModel(chat: LLMProvider, a: Ask, caps: Capable): Promise<Decis
   const prompt = [
     `GOAL (the person's words): ${a.goal}`,
     a.explain ? `What the video must make clear: ${a.explain}` : '',
-    a.examples > 1 ? `THE PERSON ASKED FOR ${a.examples} DIFFERENT EXAMPLES. Show exactly ${a.examples} complete examples, one after another, each with different values (different numbers, sizes, options or choices), and let each one finish with its result visible on screen before the next begins. Count them from WHAT HAS BEEN DONE SO FAR. Answer "done" only after example ${a.examples} shows its result.` : '',
+    a.examples > 1 ? `THE PERSON ASKED FOR ${a.examples} DIFFERENT EXAMPLES. Show exactly ${a.examples} complete examples, one after another, each with different values (different numbers, sizes, options or choices), and let each one finish with its result visible on screen before the next begins. Count them from WHAT HAS BEEN DONE SO FAR. Answer \"done\" only after example ${a.examples} shows its result. Set "example" to the number of the example each answer's actions belong to (1 to ${a.examples}); setting up a ruler, entering its length, cutting and confirming are all part of the same example.` : '',
     a.before.length ? `STEPS ALREADY DONE before this goal (do not redo them):\n${a.before.map((s) => `- ${s}`).join('\n')}` : '',
     a.after.length ? `STEPS THAT COME AFTER this goal (the person wrote them; do not do them here):\n${a.after.map((s) => `- ${s}`).join('\n')}` : '',
     a.brief ? `REST OF THE BRIEF (context only; limits like a budget or a person's role matter):\n${a.brief}` : '',
@@ -350,7 +352,7 @@ const SAFE_PRESS = /\b(next|prev(?:ious)?|apply|filter|sort|view|details?|more|e
 function ruleDecision(goal: string, study: PageStudy, o: { sections: string[]; live: number; want: number; usedKeys: Set<string>; refused: number }): Decision {
   const words = goal.replace(/\b(explain|show|demonstrate|section|give|live|examples?|walk|through|the|and|on|dashboard|a|an|of|how|what)\b/gi, ' ')
   const sec = o.sections[0] ? { heading: o.sections[0], y: study.sections.find((s) => s.heading === o.sections[0])?.y ?? 0 } : bestSection(study, words)
-  if (!sec) return { status: 'impossible', reason: `no part of the page is called anything like what the goal names; the headings are: ${study.sections.slice(0, 8).map((s) => s.heading).join('; ') || 'none'}`, sections: [], actions: [], source: 'rules' }
+  if (!sec) return { example: 0, status: 'impossible', reason: `no part of the page is called anything like what the goal names; the headings are: ${study.sections.slice(0, 8).map((s) => s.heading).join('; ') || 'none'}`, sections: [], actions: [], source: 'rules' }
   const actions: ModelAction[] = []
   if (!o.usedKeys.has(`scrollto|${sec.heading.toLowerCase()}`)) actions.push({ do: 'scrollto', target: sec.heading, relation: 'feature', why: `Bring "${sec.heading}" into view.` })
   const mine = study.controls.filter((c) => c.section === sec.heading && !c.disabled && c.kind !== 'link')
@@ -366,8 +368,8 @@ function ruleDecision(goal: string, study: PageStudy, o: { sections: string[]; l
   if (o.live + actions.filter((a) => a.do !== 'scrollto').length < o.want && study.charts.some((c) => likelyIn(c.title, sec.heading))) {
     actions.push({ do: 'mark', target: sec.heading, text: 'click', noun: 'bar', relation: 'feature', why: `Pick a bar of the ${sec.heading} chart to show its value.` })
   }
-  if (!actions.length) return { status: o.live > 0 ? 'done' : 'impossible', reason: o.live > 0 ? 'the section was shown' : `"${sec.heading}" was found but offers nothing safe to try`, sections: [sec.heading], actions: [], source: 'rules' }
-  return { status: 'continue', reason: '', sections: [sec.heading], actions, source: 'rules' }
+  if (!actions.length) return { example: 0, status: o.live > 0 ? 'done' : 'impossible', reason: o.live > 0 ? 'the section was shown' : `"${sec.heading}" was found but offers nothing safe to try`, sections: [sec.heading], actions: [], source: 'rules' }
+  return { example: 0, status: 'continue', reason: '', sections: [sec.heading], actions, source: 'rules' }
 }
 const likelyIn = (a: string, b: string): boolean => tokens(a).some((w) => tokens(b).includes(w))
 
@@ -386,6 +388,8 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
   const report: GoalReport = { n: written, said: goal, sections: [], status: 'partial', reason: '', shown: [], refused: [], live: 0, turns: 0, modelCalls: 0, ms: 0, mode: deps.chat ? 'model' : 'rules' }
   const items: ScriptItem[] = []
   const results: ItemResult[] = []
+  /** the example each performed batch belongs to (0: none), parallel to `items` */
+  const exampleOf: number[] = []
   const skipped: ScriptOutcome['skipped'] = []
   let actions = 0
   const done = new Set<string>()
@@ -513,6 +517,7 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
     }
     items.push(item)
     results.push(r)
+    exampleOf.push(N > 1 ? d.example : 0)
     // "pressed twice already" is about the same control pressed again and again; once something else was done, a tool of a game (Size, Cut) may be used again
     for (const k of [...done]) if (k.endsWith('#2') && !built.some((b) => `${b.key}#2` === k)) done.delete(k)
     const did = built.map((b) => `${notDone(b.label) ? 'COULD NOT' : 'DID'} ${describeAtom(b.atom)}${b.why ? ` (${b.why})` : ''}`)
@@ -523,6 +528,9 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
   }
   if (!report.reason) finish(report.live >= 1 ? 'partial' : 'stopped', 'the planner stopped before the goal was met')
   report.ms = Date.now() - t0
+
+  // "give 3 examples": the presses of one example are one beat of the film, told as one story
+  if (N > 1 && results.length > 1 && exampleOf.some((e) => e > 0)) mergeExamples(items, results, exampleOf, N, goal)
 
   // a goal that produced no action still has to be said in the film's notes: honest about what was and was not shown
   if (!results.length) {
@@ -537,6 +545,50 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
   }
   log(`${report.status}: ${report.reason.slice(0, 140)} — ${report.live} live interaction(s), ${actions} action(s), ${(report.ms / 1000).toFixed(1)} s, ${report.modelCalls} model call(s)`)
   return { items, results, skipped, actions, report }
+}
+
+/** the batches of each example (same number, next to each other) become one item and one result, in place */
+function mergeExamples(items: ScriptItem[], results: ItemResult[], exampleOf: number[], N: number, goal: string): void {
+  const outItems: ScriptItem[] = []
+  const outResults: ItemResult[] = []
+  for (let i = 0; i < items.length; ) {
+    const e = exampleOf[i]
+    let j = i + 1
+    if (e > 0) while (j < items.length && exampleOf[j] === e) j++
+    if (j - i === 1 && e === 0) {
+      outItems.push(items[i])
+      outResults.push(results[i])
+      i = j
+      continue
+    }
+    const group = results.slice(i, j)
+    const first = items[i]
+    const whys = [...new Set(items.slice(i, j).flatMap((it) => it.notes).filter(Boolean))]
+    const item: ScriptItem = {
+      ...first,
+      said: e > 0 ? `Example ${e} of ${N}: ${goal.slice(0, 120)}` : first.said,
+      atoms: items.slice(i, j).flatMap((it) => it.atoms),
+      notes: [],
+      summary: whys,
+      ...(e > 0 ? { example: { n: e, of: N } } : {})
+    }
+    const merged: ItemResult = {
+      item,
+      steps: [...group.flatMap((g) => g.steps), { kind: 'wait', intent: 'inspect', focus: 'page' } as ItemResult['steps'][number]],
+      areaText: group[group.length - 1].areaText,
+      picks: group.flatMap((g) => g.picks),
+      skipped: group.flatMap((g) => g.skipped),
+      seen: group.flatMap((g) => g.seen),
+      parts: group.flatMap((g) => g.parts),
+      ...(group.every((g) => g.unchanged) ? { unchanged: true } : {}),
+      status: group.every((g) => g.status === 'done') ? 'done' : group.some((g) => g.status === 'done' || g.status === 'partial') ? 'partial' : group[0].status
+    }
+    outItems.push(item)
+    outResults.push(merged)
+    i = j
+  }
+  items.splice(0, items.length, ...outItems)
+  results.splice(0, results.length, ...outResults)
 }
 
 /** the run notes for one goal: what was decided to be shown and why, and what could not be done */

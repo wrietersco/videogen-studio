@@ -399,10 +399,12 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
   }
   /** pop-ups and banners that sit over the page are closed before a step (the privacy-preserving choice), unless the step is about them */
   const sweep = async (step: Step): Promise<void> => {
-    if (step.kind === 'goto' || step.kind === 'handoff' || step.kind === 'whenever') return
+    // (a pause or a look at the result after a click is no reason to clear the page: the dialog that click opened is the next step's to use)
+    if (step.kind === 'goto' || step.kind === 'handoff' || step.kind === 'whenever' || step.kind === 'wait') return
     try {
       // where the step is going, so that an overlay it is about (a form it fills) is left alone
-      const where = step.find ? (await findElement(page, step.find, 0).catch(() => ({ found: null }))).found?.selector : step.selector
+      // (a dialog that has only just opened fades in: its keys are looked for for a moment, so that the step's own dialog is not swept away)
+      const where = step.find ? (await findElement(page, step.find, 1200).catch(() => ({ found: null }))).found?.selector : step.selector
       const r = await sweepOverlays(page, { target: where, policy: policyOf(page), allow: env.allow, log: (m) => say(step.id, m.trim()), move: (x, y) => glide(x, y, 450), stepWords: step.label ?? step.find?.target ?? '', pace })
       for (const c of r.closed) closedAll.push(`${step.id}: ${c}`)
     } catch {

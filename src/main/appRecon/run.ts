@@ -820,6 +820,15 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
       writeFileSync(join(inp.runDir, 'pari-report.json'), JSON.stringify(report, null, 2))
       mediaNotes.push(...(pari?.notes ?? []).map((n) => `Choice: ${n}`), ...report.shortfalls)
     }
+    // showing what was asked for (every step, every example) takes the time it takes: a film longer than the length chosen says so
+    const asked = inp.targetSec ?? inp.launch?.targetSec
+    const shownGoals = (script ?? goalScript)?.items.filter((i) => i.goal) ?? []
+    if (asked && res.durationSec && res.durationSec > asked * 1.15 && shownGoals.length) {
+      const n = Math.max(0, ...shownGoals.map((i) => i.count ?? 0))
+      const note = `This film is ${Math.round(res.durationSec)} s long, longer than the ${asked} s you chose: ${n > 1 ? `showing ${n} real examples in full` : 'showing what you asked for in full'} needs the time. Choose a longer length to give it more room, or ask for fewer examples to make it shorter.`
+      plan.notes.push(note)
+      mediaNotes.push(note)
+    }
     return { ...base, plan, video: res.file, durationSec: res.durationSec, redactionMisses: take.redactionMisses, mediaNotes, aiClips: inserts.length, aiMusic: res.musicSource === 'ai', pari: report, editable }
   } finally {
     inp.signal?.removeEventListener('abort', onAbort)
