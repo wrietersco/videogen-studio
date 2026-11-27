@@ -184,6 +184,8 @@ Rules:
 - Do not repeat an action that already worked. If an action was refused or skipped, do not propose it again as it is; choose another control or say "impossible".
 - "why" is one plain sentence for a viewer: what this shows. It must only claim what the page will really show; never state a value you have not been shown.
 - Only these actions work: click, type (text = what to type; replace = true to select what is in the box and type over it, for a code editor or a field that already has a value), select (text = the option to choose), scrollto, hover, mark (text = "click" or "hover"; noun = bar/line/point/slice; colours = [the colour] or []; target = the chart's title) for drawn charts{NEW}.
+- Propose only controls that are on the page NOW. An action that opens something (a dialog, a number pad, a menu, a confirm bar) ends your batch: the controls it shows are proposed in the next answer.
+- Games and canvas apps: play them like a person would. Press the buttons that start, size, cut or choose; enter numbers by pressing the digit keys one at a time and then the confirm key; then confirm and look at the result before doing the next thing. A symbol is a control's name when it has no words (✓, ✔, ⌫, ✕, ＋, －).
 - Give at most 3 actions per answer, in the order they must happen. Answer with JSON only.`
 
 const EXTRA_ACTIONS: Record<string, string> = {
@@ -297,6 +299,8 @@ interface Ask {
   shot: { mimeType: string; base64: string } | null
   live: number
   want: number
+  /** how many distinct examples the person asked for (0: not said) */
+  examples: number
   used: number
   max: number
   pushed: boolean
@@ -311,6 +315,7 @@ async function askModel(chat: LLMProvider, a: Ask, caps: Capable): Promise<Decis
   const prompt = [
     `GOAL (the person's words): ${a.goal}`,
     a.explain ? `What the video must make clear: ${a.explain}` : '',
+    a.examples > 1 ? `THE PERSON ASKED FOR ${a.examples} DIFFERENT EXAMPLES. Show exactly ${a.examples} complete examples, one after another, each with different values (different numbers, sizes, options or choices), and let each one finish with its result visible on screen before the next begins. Count them from WHAT HAS BEEN DONE SO FAR. Answer "done" only after example ${a.examples} shows its result.` : '',
     a.before.length ? `STEPS ALREADY DONE before this goal (do not redo them):\n${a.before.map((s) => `- ${s}`).join('\n')}` : '',
     a.after.length ? `STEPS THAT COME AFTER this goal (the person wrote them; do not do them here):\n${a.after.map((s) => `- ${s}`).join('\n')}` : '',
     a.brief ? `REST OF THE BRIEF (context only; limits like a budget or a person's role matter):\n${a.brief}` : '',
@@ -370,7 +375,9 @@ const likelyIn = (a: string, b: string): boolean => tokens(a).some((w) => tokens
 
 export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<GoalRun> {
   const t0 = Date.now()
-  const B: Budget = { ...DEFAULT_BUDGET, ...deps.budget }
+  const N = Math.max(0, Math.min(goalItem.count ?? 0, 8))
+  // "give 3 examples": three separate demonstrations, each of several actions, take more rounds, actions and time than one goal
+  const B: Budget = { ...DEFAULT_BUDGET, ...(N > 1 ? { turns: DEFAULT_BUDGET.turns + 5 * N, actions: DEFAULT_BUDGET.actions + 9 * N, ms: DEFAULT_BUDGET.ms + 100_000 * N, live: Math.max(DEFAULT_BUDGET.live, 2 * N) } : {}), ...deps.budget }
   const caps = deps.caps ?? DEFAULT_CAPS
   const scrub = (t: string): string => scrubText(t, { values: deps.secrets })
   const goal = (goalItem.goal ?? goalItem.said).trim()
@@ -408,7 +415,7 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
     if (model) {
       const shot = model.supportsVision?.() === false ? null : await screenshotForModel(deps.page)
       report.modelCalls++
-      const ask = { goal, explain: goalItem.explain, brief, history, study, shot, live: report.live, want: B.live, used: actions, max: B.actions, pushed, known: deps.known, scrub, before: deps.around?.before ?? [], after: deps.around?.after ?? [] }
+      const ask = { goal, explain: goalItem.explain, brief, history, study, shot, live: report.live, want: B.live, examples: N, used: actions, max: B.actions, pushed, known: deps.known, scrub, before: deps.around?.before ?? [], after: deps.around?.after ?? [] }
       d = await askModel(model, ask, caps)
       if (!d) {
         // one more try: a slow answer is not a reason to hand the goal to rules half way through
@@ -447,6 +454,11 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
     const built: Array<{ atom: Atom; why: string; label: string; key: string; leaves: boolean; support: boolean }> = []
     for (const a of d.actions) {
       const b = buildAtom(a, study, rails)
+      // a control that only appears after an earlier action of this batch (a number pad, a confirm bar) is not wrong, it is early: the batch ends here and the next look at the page offers it
+      if ('reject' in b && built.length && /^no (?:control|text box|dropdown) called/.test(b.reject)) {
+        history.push(`("${a.target}" is not on the page yet; propose it after the page has changed)`)
+        break
+      }
       if ('reject' in b) {
         report.refused.push(`${a.do} "${a.target}": ${b.reject}`)
         history.push(`REFUSED ${a.do} "${a.target}": ${b.reject}`)

@@ -40,6 +40,8 @@ export interface ScriptItem {
   unread: string[]
   /** the step is a goal ("show how a customer books a colour appointment"), not a list of clicks: it needs a plan made from the page */
   goal?: string
+  /** the goal asks for this many distinct examples ("give 3 examples"): the planner shows that many */
+  count?: number
   /** a step that is only something to say ("explain ...", "provide a conclusion"): nothing is done on the page */
   narration?: boolean
   /** the person asked for the keyboard only: clicks became Tab-until-focused and Enter/Space */
@@ -54,6 +56,8 @@ export interface StepScript {
   source: 'list' | 'prose' | 'plan'
   /** sentences of the brief that ask for no action (voice, tone, context): never a step and never "unplaced" */
   tone: string[]
+  /** who the film is for, when the brief says ("your 7yo kid" is a parent of a 7-year-old): the narration speaks to them */
+  audience?: string
   /** the rules for the whole run ("if a cookie banner shows ...") found in the steps, in the order written */
   whenever: Array<Extract<Atom, { action: 'whenever' }>>
 }
@@ -1046,6 +1050,83 @@ function splitClauses(doing: string): string[] {
 
 const wheneverOf = (items: ScriptItem[]): Whenever[] => items.flatMap((i) => i.atoms.filter((a): a is Whenever => a.action === 'whenever'))
 
+// ---------------------------------------------------------------- goals with a count, audience
+
+const NUMBER_WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 }
+const COUNTED = /\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:(?:different|distinct|separate|more|worked|quick|simple|short|kinds?\s+of|types?\s+of)\s+)*(?:examples?|ways?|options?|cases?|scenarios?|levels?|games?|problems?|sums?|questions?|rounds?|variations?|demos?|samples?|situations?|sizes?|ideas?|activities)\b/i
+
+/** "give 3 examples", "show three different ways": how many distinct examples were asked for (2-8; one is no count) */
+export function exampleCount(text: string): number | undefined {
+  const m = COUNTED.exec(text)
+  if (!m) return undefined
+  const n = /^\d/.test(m[1]) ? Number(m[1]) : NUMBER_WORDS[m[1].toLowerCase()]
+  return n >= 2 ? Math.min(n, 8) : undefined
+}
+
+/** who the film is for, from words such as "your 7yo kid", "a 5 year old": a short plain phrase for the narrator */
+export function audienceOf(text: string): string | undefined {
+  const age = /\b(\d{1,2})\s*(?:-|\s)?(?:yo|y\/o|yrs?|years?)(?:\s*-?\s*old)?\s+(kid|child|son|daughter|boy|girl|student|pupil|toddler|baby|learner)s?\b/i.exec(text)
+  if (age) return `a parent or teacher of a ${age[1]}-year-old ${/boy|son/i.test(age[2]) ? 'boy' : /girl|daughter/i.test(age[2]) ? 'girl' : 'child'}`
+  const who = /\b(?:for|to)\s+(parents|teachers|beginners|students|kids|children|homeschool\w*|small\s+business\w*|developers|managers|customers|patients|clients)\b/i.exec(text)
+  return who ? who[1].toLowerCase() : undefined
+}
+
+const stripLead = (s: string): string => clean(s).replace(/^(?:(?:and|then|now|next|please|also)[,\s]+)+/i, '')
+
+/** a step of its own for words that ask for something to be shown, worked out on the page */
+function goalItemOf(n: number, said: string, written?: number): ScriptItem {
+  const g = stripLead(said)
+  return { n, said: g, login: false, atoms: [], notes: [], unread: [], goal: g, ...(exampleCount(g) ? { count: exampleCount(g) } : {}), ...(written ? { written } : {}) }
+}
+
+/** words that are only a count for the goal before them ("give 3 examples", "3 different ways please") */
+const isCountOnly = (s: string): boolean => !!exampleCount(s) && clean(s).split(/\s+/).length <= 8 && !/\bhow\b/i.test(s)
+
+const GOAL_TAIL = /\s*(?:,\s*)?\b(?:and\s+then|and|then)\s+(?=(?:show|demonstrate|walk|illustrate|explain|find|figure|work|compare|give|try|play|do|run|test|let|teach)\b)/gi
+
+/** 'click "Start" and show how it works': the click, and the goal after it (null when there is no goal after a click) */
+export function splitGoalTail(text: string): [string, string] | null {
+  const quoted: Array<[number, number]> = []
+  for (const q of text.matchAll(QUOTED_G)) quoted.push([q.index ?? 0, (q.index ?? 0) + q[0].length])
+  for (const m of text.matchAll(GOAL_TAIL)) {
+    const at = m.index ?? 0
+    if (quoted.some(([a, b]) => at >= a && at < b)) continue
+    const head = clean(text.slice(0, at))
+    const tail = clean(text.slice(at + m[0].length))
+    if (!head || !tail) continue
+    const hi = parseLine(1, head)
+    if (!hi.atoms.length && !hi.login) continue
+    // the tail is a goal when it says so, or asks for a counted number of examples; other tails ("then scroll down") stay clicks
+    const ti = parseLine(2, tail)
+    if (ti.atoms.length) continue
+    if (GOAL_RE.test(tail) || EXAMPLES_RE.test(tail) || exampleCount(tail)) return [head, tail]
+  }
+  return null
+}
+
+/** goal steps in their own words (the whole sentence, not its first clause), with the count of examples; a bare "give 3 examples" joins the goal before it */
+function tidyGoals(items: ScriptItem[]): ScriptItem[] {
+  const out: ScriptItem[] = []
+  for (const it of items) {
+    if (it.goal && !it.atoms.length && !it.login) {
+      const g = stripLead(it.said)
+      it.goal = g
+      it.unread = []
+      const c = exampleCount(g)
+      if (c) it.count = c
+      const prev = out[out.length - 1]
+      if (prev?.goal && !prev.atoms.length && isCountOnly(g)) {
+        prev.goal = `${prev.goal.replace(/[.!?\s]+$/, '')}. ${g}`
+        prev.said = prev.goal
+        if (c) prev.count = c
+        continue
+      }
+    }
+    out.push(it)
+  }
+  return out.map((it, i) => ({ ...it, n: i + 1 }))
+}
+
 /** the person's list of steps, or null when what they wrote is not a list of at least two steps */
 export function parseStepScript(context: string): StepScript | null {
   let typed = (context.split(/\n\s*Attached notes \(information only\):/)[0] ?? '').replace(/\r/g, '')
@@ -1065,9 +1146,12 @@ export function parseStepScript(context: string): StepScript | null {
   for (const line of lines) {
     const m = BULLET.exec(line)
     if (m) {
-      const it = parseLine(++n, clean(m[2]))
+      const said = clean(m[2])
+      const cut = splitGoalTail(said)
+      const it = parseLine(++n, cut ? cut[0] : said)
       if (m[1]) it.written = Number(m[1])
       items.push(it)
+      if (cut) items.push(goalItemOf(++n, cut[1], m[1] ? Number(m[1]) : undefined))
     }
     else if (line.trim()) {
       // a wrapped line belongs to the step above it
@@ -1081,7 +1165,8 @@ export function parseStepScript(context: string): StepScript | null {
   }
   // a list where nothing was understood and nothing is a goal is not a script (the brief is read some other way)
   if (!items.some((i) => i.atoms.length || i.explain || i.goal || i.login)) return null
-  return { items, goal: rest.join(' '), source: 'list', tone: [], whenever: wheneverOf(items) }
+  const audience = audienceOf(typed)
+  return { items: tidyGoals(items), goal: rest.join(' '), source: 'list', tone: [], whenever: wheneverOf(items), ...(audience ? { audience } : {}) }
 }
 
 // ---------------------------------------------------------------- prose
@@ -1112,13 +1197,18 @@ export function parseProseScript(context: string): StepScript | null {
   let n = 0
   for (const sentence of sentences) {
     // one sentence can hold a chain of steps ("first X, then Y")
-    const pieces = splitChain(sentence)
+    const pieces = splitChain(sentence).flatMap((p) => splitGoalTail(p) ?? [p])
     let any = false
     const made: ScriptItem[] = []
     for (const piece of pieces) {
       const it = parseLine(n + made.length + 1, piece)
       const concrete = it.atoms.length > 0 || it.login
       if (concrete && !stepIsTone(piece)) { made.push(it); any = true }
+      // something to show, worked out on the page ("show different options of how a kid can play", "give 3 examples"); a bare count joins the goal before it
+      else if (!concrete && (GOAL_RE.test(piece) || EXAMPLES_RE.test(piece) || exampleCount(piece)) && !stepIsTone(piece)) {
+        const before = made[made.length - 1] ?? items[items.length - 1]
+        if (isCountOnly(piece) && before?.goal) { before.goal = before.goal.replace(/[.!?\s]+$/, '') + '. ' + clean(piece); before.said = before.goal; before.count = exampleCount(piece); any = true } else { made.push(goalItemOf(n + made.length + 1, piece)); any = true }
+      }
     }
     if (any) {
       for (const it of made) { it.n = ++n; items.push(it) }
@@ -1126,9 +1216,10 @@ export function parseProseScript(context: string): StepScript | null {
     else context2.push(sentence)
   }
   const steps = items.filter((i) => i.atoms.length)
-  // at least two sentences that do something (a lone "click reports" in a story is read by the brief reader as before)
-  if (steps.length + (items.some((i) => i.login) ? 0 : 0) < 2 && !(items.some((i) => i.login) && steps.length >= 1)) return null
-  return { items, goal: context2.join(' '), source: 'prose', tone, whenever: wheneverOf(items) }
+  // at least two sentences that do something (a lone "click reports" in a story is read by the brief reader as before); a step together with a goal to show counts too
+  if (steps.length < 2 && !(items.some((i) => i.login) && steps.length >= 1) && !(steps.length >= 1 && items.some((i) => i.goal))) return null
+  const audience = audienceOf(typed)
+  return { items: tidyGoals(items), goal: context2.join(' '), source: 'prose', tone, whenever: wheneverOf(items), ...(audience ? { audience } : {}) }
 }
 
 function splitChain(sentence: string): string[] {
@@ -1160,7 +1251,7 @@ export function scriptFromActions(actions: string[], goal = ''): StepScript | nu
     items.push(it)
   }
   if (!items.some((i) => i.atoms.length || i.login || i.goal || i.explain)) return null
-  return { items, goal, source: 'plan', tone: [], whenever: wheneverOf(items) }
+  return { items: tidyGoals(items), goal, source: 'plan', tone: [], whenever: wheneverOf(items) }
 }
 
 /** the step in plain words for the narrator when no AI writes it: the person's own words, tidied */

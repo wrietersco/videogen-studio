@@ -14,7 +14,7 @@ import { planBeats, type Plan } from './planner'
 import { interpretGuardrails, PolicyGate, type RestrictionChecks } from './policy'
 import { produce, recordingScreen, type CardPlan, type InsertPlan } from './produce'
 import { performScript, scriptPlan, type ScriptOutcome, type VisionPick } from './script'
-import { parseProseScript, parseStepScript, scriptFromActions, type StepScript } from './stepScript'
+import { audienceOf, parseProseScript, parseStepScript, scriptFromActions, type StepScript } from './stepScript'
 import { goalNotes, goalPlanHook, goalSegments, scriptFromPlan } from './goalPlanner'
 import { ambientBrief, chooseMusic, clipSeconds, parseMediaAsk, parseMusicAsk, parseStructure, planMedia, withStyle, withoutProductionSentences, type Placement } from './aiMedia'
 import { musicBrief } from '../audio/cue'
@@ -222,7 +222,10 @@ function stepsFromProse(brief: string, plan: FilmPlan | null): StepScript | null
   const clicks = (x: StepScript | null): number => (x ? x.items.reduce((n, i) => n + i.atoms.length + (i.login ? 1 : 0), 0) : 0)
   if (!prose) return fromPlan
   if (!fromPlan) return prose
-  return clicks(fromPlan) >= clicks(prose) ? { ...fromPlan, tone: prose.tone, goal: prose.goal || fromPlan.goal } : prose
+  // the sentences themselves keep a goal's whole wording and its count ("give 3 examples"), which the plan's short action lines lose
+  const goals = (x: StepScript): number => x.items.filter((i) => i.goal).length
+  if (goals(prose) > 0 && clicks(fromPlan) <= clicks(prose)) return prose
+  return clicks(fromPlan) >= clicks(prose) ? { ...fromPlan, tone: prose.tone, goal: prose.goal || fromPlan.goal, ...(prose.audience ? { audience: prose.audience } : {}) } : prose
 }
 
 export class RunCancelled extends Error {
@@ -582,7 +585,7 @@ export async function runAppRecording(inp: RunInput, hooks: RunHooks): Promise<R
     const clipsPossible = !!inp.media?.tools && !ask.declined
     const clipPlaces: Placement[] = !clipsPossible ? [] : ask.requests.length ? [...new Set(ask.requests.map((r) => r.placement))] : inp.media?.clips && !fp ? ['start'] : []
     const problemAsked = fp ? wantsProblemCard(fp, clipsPossible && ask.requests.some((r) => r.part === 'problem')) : structure.problem
-    const narration = await narrate({ chat: inp.chat, speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: fpBeats ? narrationBrief(fpBeats) : ctxClean, secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, problem: problemAsked, clips: clipPlaces, voiceStyle: fp?.voice.tone, opening: framedAsked.intro, closing: framedAsked.outro, product: inp.launch?.feature.split(/\s+/)[0]?.replace(/['\u2019]s$/i, ''), dir: inp.runDir, say })
+    const narration = await narrate({ chat: inp.chat, speech, beats: plan.beats, mode: inp.mode, launch: inp.launch, context: fpBeats ? narrationBrief(fpBeats) : ctxClean, audience: script?.audience ?? audienceOf(ctxClean), secrets, targetSec: inp.targetSec, styleDirection: inp.styleDirection, brand: brand || look ? { accent: brand?.accent ?? look?.accent.slice(1), logo: brand?.logo } : undefined, problem: problemAsked, clips: clipPlaces, voiceStyle: fp?.voice.tone, opening: framedAsked.intro, closing: framedAsked.outro, product: inp.launch?.feature.split(/\s+/)[0]?.replace(/['\u2019]s$/i, ''), dir: inp.runDir, say })
     // a result the person asked to see stays on screen long enough to be taken in, whatever the narration length
     for (const b of plan.beats) if ((b.kind === 'result' || b.kind === 'detail') && (narration.minSec.get(b.beat) ?? 0) < RESULT_HOLD_SEC) narration.minSec.set(b.beat, RESULT_HOLD_SEC)
     check()

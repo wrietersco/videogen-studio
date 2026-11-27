@@ -47,10 +47,15 @@ export const tokens = (s: string): string[] =>
     .filter((w) => w && !STOP.has(w))
     .map(stem)
 
+/** the symbols of a label that has no letters or digits (a ✓ key, a trash can), compared as they are; variation selectors and full-width forms are not part of the name */
+const symbols = (s: string): string => s.normalize('NFKC').replace(/[\s︎️‍]+/g, '').replace(/[\p{L}\p{N}]/gu, '')
+
 /** 0..1: how much of the two phrases is the same */
 export function likeness(a: string, b: string): number {
   const x = tokens(a)
   const y = tokens(b)
+  // a control named only by a symbol (✓ ⌫ ✕ ✔ ＋ 🏠): the symbol is its name
+  if (!x.length && !y.length) return symbols(a) && symbols(a) === symbols(b) ? 1 : 0
   if (!x.length || !y.length) return 0
   if (x.join(' ') === y.join(' ')) return 1
   const common = x.filter((w) => y.includes(w)).length
@@ -133,7 +138,8 @@ export interface Rails {
 
 export type Built = { atom: Atom; label: string; support: boolean; leaves: boolean; key: string } | { reject: string }
 
-const inFeature = (c: StudyControl, sections: string[]): boolean => !sections.length || sections.some((s) => likeness(s, c.section) >= 0.5 || (c.section && tokens(s).every((w) => tokens(c.section).includes(w))))
+// a button of the page's own chrome (a toolbar of a single-screen app) sits under no heading: it belongs to every part of the app; risky() and the policy gate still judge what it does
+const inFeature = (c: StudyControl, sections: string[]): boolean => !sections.length || (!c.section && c.kind !== 'link') || sections.some((s) => likeness(s, c.section) >= 0.5 || (c.section && tokens(s).every((w) => tokens(c.section).includes(w))))
 
 /**
  * which of several controls that share a label is meant, and how to say where it is: the planner names text from the same card or

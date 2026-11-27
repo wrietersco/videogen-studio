@@ -3,7 +3,7 @@ import type { CardSegment, ClipSegment, FilmPlan, BriefInput, MusicSpec, Narrati
 import { scrubText } from '../detect'
 import { isDurationSentence, isStyleSentence, parseClipStyle, partSeconds } from '../aiMedia'
 import { parseDirectives } from '../directives'
-import { BULLET, isToneSentence, parseStepScript } from '../stepScript'
+import { BULLET, isToneSentence, parseProseScript, parseStepScript } from '../stepScript'
 
 /**
  * PLAN stage, part 1: read the WHOLE typed brief into a FilmPlan.
@@ -421,6 +421,10 @@ export function readBriefByRules(input: BriefInput, typedIn?: string): FilmPlan 
   const endClips: Segment[] = []
   let scriptDone = false
   const script = parseStepScript(typed)
+  // no list: sentences that are a click and something to show ("click "Let's Play" and show 3 examples") are one script page, carried word for word
+  const prose = script ? null : parseProseScript(typed)
+  const proseSaid = prose ? prose.items.map((i) => normText(i.said)).filter(Boolean) : []
+  let proseDone = false
   let structureSaid = ''
 
   while (pending.length) {
@@ -443,6 +447,21 @@ export function readBriefByRules(input: BriefInput, typedIn?: string): FilmPlan 
     }
     // a header such as "steps:" or "# recorded steps to show:"
     if (isLeadIn(unit)) continue
+
+    // a sentence the prose script carries (a click, a goal to show): the whole script is one page segment, in the person's own words
+    if (prose && proseSaid.some((p) => normText(unit).includes(p) || p.includes(normText(unit)))) {
+      if (!proseDone) {
+        proseDone = true
+        const first = urlsIn(unit)[0]
+        segs.push({ id: '',
+          kind: 'page', said: units.filter((u) => proseSaid.some((p) => normText(u).includes(p) || p.includes(normText(u)))).join(' '), required: true, how: 'script', emphasis: 'normal',
+          ...(first ? { url: first } : {}),
+          actions: prose.items.filter((i) => !i.login).map((i) => i.said),
+          ...(prose.items.some((i) => i.explain) ? { explain: prose.items.flatMap((i) => (i.explain ? [i.explain] : [])) } : {})
+        } as PageSegment)
+      }
+      continue
+    }
 
     // AI video / clip
     if (CLIP_WORD.test(unit) && MEDIA_NOUN.test(unit) && !CLIP_NEG.test(unit) && !url.length) {
@@ -590,7 +609,8 @@ export function readBriefByRules(input: BriefInput, typedIn?: string): FilmPlan 
   if (direction && !voice.none) voice.tone = direction
   const clipStyle = globalStyle.style ?? (withIds.some((s) => s.kind === 'ai-clip' && s.style === 'infographic') ? 'infographic' : null)
   const plan: FilmPlan = {
-    goal: goal || input.launch?.tagline || '',
+    // what was understood, in the person's words: the steps and what to show (not only the launch tagline)
+    goal: goal || (prose ? prose.items.map((i) => i.said.replace(/[.!?s]+$/, '')).join(', then ') + (prose.audience ? ` (for ${prose.audience})` : '') : '') || input.launch?.tagline || '',
     kind: input.mode === 'launch' || /\blaunch\b/i.test(goal) ? 'launch' : /\bexplain(?:er)?\b/i.test(goal) ? 'explainer' : 'walkthrough',
     ...(product ?? input.launch?.feature ? { product: product ?? input.launch?.feature } : {}),
     ...(heroFeature ?? input.launch?.feature ? { heroFeature: heroFeature ?? input.launch?.feature } : {}),
