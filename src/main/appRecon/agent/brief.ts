@@ -424,8 +424,15 @@ export function readBriefByRules(input: BriefInput, typedIn?: string): FilmPlan 
   // no list: sentences that are a click and something to show ("click "Let's Play" and show 3 examples") are one script page, carried word for word
   const proseRaw = script ? null : parseProseScript(typed)
   // only when it works something out on a page (a goal): a brief that is mostly clips, cards and music keeps its own reader
-  const prose = proseRaw && proseRaw.items.some((i) => i.goal) ? proseRaw : null
+  // or steps written as plain sentences ("from the bottom of the page, click the cut icon. the modal appears. from the modal, click 2.")
+  const prose = proseRaw && (proseRaw.items.some((i) => i.goal) || proseRaw.items.filter((i) => i.atoms.length).length >= 2) ? proseRaw : null
   const proseSaid = prose ? prose.items.map((i) => normText(i.said)).filter(Boolean) : []
+  // what the person says should happen between the steps ("the modal appears", "and the scale divides into two"): part of the same script
+  const OUTCOME = /\b(?:appears?|opens?|closes?|shows?|shown|displays?|displayed|changes?|becomes?|divides?|divided|splits?|updates?|turns?|pops?\s+up|confirm\w*|disappears?|loads?|is\s+(?:cut|split|added|done))\b/i
+  const proseContext = prose ? normText(prose.goal) : ''
+  const isProseOutcome = (u: string): boolean => !!prose && OUTCOME.test(u) && u.length <= 120 && !urlsIn(u).length && !!normText(u) && proseContext.includes(normText(u)) && !MUSIC_WORD.test(u) && !VOICE_WORD.test(u)
+  const proseOutcomes = units.filter(isProseOutcome)
+  const isProseUnit = (u: string): boolean => proseSaid.some((p) => normText(u).includes(p) || p.includes(normText(u))) || proseOutcomes.includes(u)
   let proseDone = false
   let structureSaid = ''
 
@@ -451,12 +458,12 @@ export function readBriefByRules(input: BriefInput, typedIn?: string): FilmPlan 
     if (isLeadIn(unit)) continue
 
     // a sentence the prose script carries (a click, a goal to show): the whole script is one page segment, in the person's own words
-    if (prose && proseSaid.some((p) => normText(unit).includes(p) || p.includes(normText(unit)))) {
+    if (prose && isProseUnit(unit)) {
       if (!proseDone) {
         proseDone = true
         const first = urlsIn(unit)[0]
         segs.push({ id: '',
-          kind: 'page', said: units.filter((u) => proseSaid.some((p) => normText(u).includes(p) || p.includes(normText(u)))).join(' '), required: true, how: 'script', emphasis: 'normal',
+          kind: 'page', said: units.filter(isProseUnit).join(' '), required: true, how: 'script', emphasis: 'normal',
           ...(first ? { url: first } : {}),
           actions: prose.items.filter((i) => !i.login).map((i) => i.said),
           ...(prose.items.some((i) => i.explain) ? { explain: prose.items.flatMap((i) => (i.explain ? [i.explain] : [])) } : {})

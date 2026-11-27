@@ -297,6 +297,17 @@ function locate(spec: FindSpec, minScore: number): Result {
     const set: string[] = [spec.target]
     const s = stripFiller(spec.target)
     if (s && s !== spec.target) set.push(s)
+    // a symbol described in words ("the green button with tick mark", "the cross"): the symbol is the control's name
+    const SYMBOL_WORDS: Array<[RegExp, string]> = [
+      [/\b(?:tick|check)\s*-?\s*marks?\b|\bcheckmarks?\b|\bticks?\b|\bcheck\s+sign\b/gi, '✓'],
+      [/\b(?:cross|x)\s*-?\s*marks?\b|\bcross\b/gi, '✕'],
+      [/\bbackspace\b|\bdelete\s+key\b/gi, '⌫']
+    ]
+    for (const [re, symbol] of SYMBOL_WORDS) {
+      if (!re.test(spec.target)) continue
+      const rest = normWords(spec.target.replace(re, ' ')).filter((w) => !COLOUR_WORDS.has(w) && !STOP.has(w) && !['with', 'sign', 'symbol', 'key', 'mark', 'shaped', 'that', 'ha', 'has', 'showing', 'small', 'big', 'round'].includes(w))
+      if (!rest.length) { set.push(symbol); break }
+    }
     return set
   })()
   const keys = variants.map((v) => ({ full: v, key: keyOf(v) })).filter((k) => k.key.length)
