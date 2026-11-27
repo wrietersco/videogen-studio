@@ -95,8 +95,8 @@ describe('a control named by a symbol', () => {
 // ------------------------------------------------------------------ the real page
 
 type Answer = Record<string, unknown>
-const decision = (status: 'continue' | 'done' | 'impossible', actions: Array<Record<string, unknown>> = [], extra: { sections?: string[]; reason?: string } = {}): Answer => ({
-  status, reason: extra.reason ?? '', sections: extra.sections ?? [], actions: actions.map((a) => ({ text: '', near: '', relation: 'feature', colours: [], noun: '', why: '', ...a }))
+const decision = (status: 'continue' | 'done' | 'impossible', actions: Array<Record<string, unknown>> = [], extra: { sections?: string[]; reason?: string; example?: number } = {}): Answer => ({
+  example: extra.example ?? 0, status, reason: extra.reason ?? '', sections: extra.sections ?? [], actions: actions.map((a) => ({ text: '', near: '', relation: 'feature', colours: [], noun: '', why: '', ...a }))
 })
 function fakeModel(answers: Answer[]): LLMProvider & { prompts: GenerateJSONRequest[] } {
   const prompts: GenerateJSONRequest[] = []
@@ -160,22 +160,22 @@ describe.skipIf(!findChrome())('the planner plays a kids\' division game (SVG ru
     game.events.length = 0
     const model = fakeModel([
       // "1" is not on the page until Size opens the pad: it is early, not wrong
-      decision('continue', [click('📏 Size', 'Set the ruler first.'), click('1')]),
-      decision('continue', [click('1', 'a 12 cm ruler'), click('2'), click('✓')]),
-      decision('continue', [click('✂️ Cut', 'Cut it into equal parts.')]),
-      decision('continue', [click('3', 'three equal parts'), click('✓')]),
-      decision('continue', [click('✔', 'Confirm the cut.')]),
-      decision('continue', [click('📏 Size', 'A second ruler: 10 cm.')]),
-      decision('continue', [click('1'), click('0'), click('✓')]),
-      decision('continue', [click('✂️ Cut')]),
-      decision('continue', [click('4', 'four parts: a decimal answer'), click('✓')]),
-      decision('continue', [click('✔')]),
-      decision('continue', [click('📏 Size', 'A third ruler: 9 cm.')]),
-      decision('continue', [click('9'), click('✓')]),
-      decision('continue', [click('✂️ Cut')]),
-      decision('continue', [click('2'), click('✓')]),
-      decision('continue', [click('✔')]),
-      decision('continue', [click('🔬 Max', 'Zoom all the way in to see the millimetres.')]),
+      decision('continue', [click('📏 Size', 'Set the ruler first.'), click('1')], { example: 1 }),
+      decision('continue', [click('1', 'a 12 cm ruler'), click('2'), click('✓')], { example: 1 }),
+      decision('continue', [click('✂️ Cut', 'Cut it into equal parts.')], { example: 1 }),
+      decision('continue', [click('3', 'three equal parts'), click('✓')], { example: 1 }),
+      decision('continue', [click('✔', 'Confirm the cut.')], { example: 1 }),
+      decision('continue', [click('📏 Size', 'A second ruler: 10 cm.')], { example: 2 }),
+      decision('continue', [click('1'), click('0'), click('✓')], { example: 2 }),
+      decision('continue', [click('✂️ Cut')], { example: 2 }),
+      decision('continue', [click('4', 'four parts: a decimal answer'), click('✓')], { example: 2 }),
+      decision('continue', [click('✔')], { example: 2 }),
+      decision('continue', [click('📏 Size', 'A third ruler: 9 cm.')], { example: 3 }),
+      decision('continue', [click('9'), click('✓')], { example: 3 }),
+      decision('continue', [click('✂️ Cut')], { example: 3 }),
+      decision('continue', [click('2'), click('✓')], { example: 3 }),
+      decision('continue', [click('✔')], { example: 3 }),
+      decision('continue', [click('🔬 Max', 'Zoom all the way in to see the millimetres.')], { example: 0 }),
       decision('done', [], { reason: 'Three examples show their results: 12 ÷ 3 = 4, 10 ÷ 4 = 2.5, 9 ÷ 2 = 4.5.' })
     ])
     const goal = { n: 2, written: 2, said: 'show different options of how your 7yo kid can play and learn to divide using this game. give 3 examples', goal: 'show different options of how your 7yo kid can play and learn to divide using this game. give 3 examples', count: 3, login: false, atoms: [], notes: [], unread: [] }
@@ -194,6 +194,11 @@ describe.skipIf(!findChrome())('the planner plays a kids\' division game (SVG ru
     // the model was told how many examples the person asked for
     expect(model.prompts[0].prompt).toMatch(/ASKED FOR 3 DIFFERENT EXAMPLES/)
     expect(out.skipped).toEqual([])
+    // each example is one beat of the film, told by what it shows: the presses of an example are one item, in order
+    const exampleItems = out.items.filter((i) => i.example)
+    expect(exampleItems.map((i) => i.example)).toEqual([{ n: 1, of: 3 }, { n: 2, of: 3 }, { n: 3, of: 3 }])
+    expect(exampleItems[0].atoms.map((a) => (a as { label: string }).label)).toEqual(['📏 Size', '1', '2', '✓', '✂️ Cut', '3', '✓', '✔'])
+    expect(out.results.length).toBe(out.items.length)
     await page.close()
   }, 240000)
 })
