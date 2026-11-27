@@ -422,7 +422,9 @@ export function readBriefByRules(input: BriefInput, typedIn?: string): FilmPlan 
   let scriptDone = false
   const script = parseStepScript(typed)
   // no list: sentences that are a click and something to show ("click "Let's Play" and show 3 examples") are one script page, carried word for word
-  const prose = script ? null : parseProseScript(typed)
+  const proseRaw = script ? null : parseProseScript(typed)
+  // only when it works something out on a page (a goal): a brief that is mostly clips, cards and music keeps its own reader
+  const prose = proseRaw && proseRaw.items.some((i) => i.goal) ? proseRaw : null
   const proseSaid = prose ? prose.items.map((i) => normText(i.said)).filter(Boolean) : []
   let proseDone = false
   let structureSaid = ''
