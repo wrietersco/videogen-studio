@@ -194,6 +194,8 @@ export async function execNewAtom(atom: NewAtom, ctx: AtomExecCtx): Promise<Atom
       if (a.to) {
         to = await dropZone(page, a.to)
         if (!to) to = await find(a.to)
+        // "away from the others", "to an empty spot": any free place on the drawing the piece lives on
+        if (!to.found && !refTarget?.found) to = (await freeDropArea(page, a.to)) ?? to
         if (!to.found && !refTarget?.found) return miss(`dragging "${a.from}" to "${a.to}"`, `nothing called "${a.to}" was found to drop it on${nearWords(to)}`)
       }
       const o = await doDrag(env, {
@@ -203,7 +205,7 @@ export async function execNewAtom(atom: NewAtom, ctx: AtomExecCtx): Promise<Atom
         position: a.position
       })
       if (!o.skipped) say(`    dragged "${a.from}"${a.to ? ` to "${a.to}"` : ''}${a.position ? ` (${a.position})` : ''}${o.verified ? '' : ' — the place did not change'}`)
-      const step: Omit<Step, 'id' | 'beat'> = { kind: 'drag', label: a.label, find: wanted('click', a.from, a.find), text: JSON.stringify({ from: a.from, to: a.to, position: a.position, ref: a.ref }), focus: 'target' }
+      const step: Omit<Step, 'id' | 'beat'> = { kind: 'drag', label: a.label, selector: from.found.selector, find: wanted('click', a.from, a.find), text: JSON.stringify({ from: a.from, to: a.to, position: a.position, ref: a.ref }), focus: 'target' }
       return done(o, [...from.prep, ...(o.verified ? [step] : [])])
     }
 
@@ -398,6 +400,20 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
 }
 
 /** a list or column named by its heading ("the Done column"): the box that holds its cards */
+/** "away from the others", "to an empty spot": any free place on the biggest drawing (SVG or canvas) of the page */
+export async function freeDropArea(page: Page, words: string): Promise<Located | null> {
+  if (!/(?:empty|blank|free|open|clear|away|aside|elsewhere|space|spot|below|beside)/i.test(words)) return null
+  const area = await page
+    .evaluate(() => {
+      const big = Array.from(document.querySelectorAll('svg,canvas')).map((e) => ({ e, r: e.getBoundingClientRect() })).filter((x) => x.r.width > 200 && x.r.height > 100).sort((p, q) => q.r.width * q.r.height - p.r.width * p.r.height)[0]
+      if (!big) return null
+      big.e.setAttribute('data-vg-drop', '1')
+      return { x: big.r.x, y: big.r.y, w: big.r.width, h: big.r.height }
+    })
+    .catch(() => null)
+  return area ? { found: { selector: '[data-vg-drop="1"]', rect: area, label: words, score: 50 }, prep: [] } : null
+}
+
 export async function dropZone(page: Page, name: string): Promise<Located | null> {
   const clean = name.replace(/\b(the|column|lane|list|board|section|area)\b/gi, ' ').replace(/\s+/g, ' ').trim()
   if (!clean) return null

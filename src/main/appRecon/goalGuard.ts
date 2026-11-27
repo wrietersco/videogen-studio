@@ -119,6 +119,8 @@ const wordIn = (re: RegExp, goal: string, label: string): boolean => {
   if (!m) return true
   const w = (m[1] ?? m[0]).toLowerCase()
   if (new RegExp(`\\b${w.replace(/\s+/g, '\\s*')}`, 'i').test(goal) || tokens(goal).some((t) => t === stem(w))) return true
+  // "show what each of the buttons does" asks for every button, a game's Reset included
+  if ((w === 'reset' || w === 'clear') && /(?:each|every|all)[^.]{0,30}(?:buttons?|tools?|controls?|icons?)/i.test(goal)) return true
   return !!IMPLIED[w]?.test(goal)
 }
 

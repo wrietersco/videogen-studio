@@ -19,7 +19,7 @@ import { deepEval, deepRect } from './deep'
 import { sweepOverlays } from './overlays'
 import { armWhenever, clickMarkChecked, doClick, doHover, doType, focusedEditable, policyOf, type Env, type Outcome } from './actions'
 import { doDate, doDrag, doKey, doScrollUntil, doSlider } from './gestures'
-import { dropZone } from './atomExec'
+import { dropZone, freeDropArea } from './atomExec'
 import { pickByStructure, type PickSpec } from './pageModel'
 import { judgeLogin, type LoginVerdict } from './loginCheck'
 import { isInterstitial } from './explore'
@@ -683,7 +683,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
           const from = await targetOf(step, 'click', j.from)
           if (!from) { skipStep(step, `"${j.from ?? step.label}" was not found`); continue }
           const ref = j.ref ? await targetOf({ ...step, find: { target: j.ref, kind: 'click' }, selector: undefined }) : null
-          const zone = j.to ? (await dropZone(page, j.to))?.found ?? (await targetOf({ ...step, find: { target: j.to, kind: 'click' }, selector: undefined })) : null
+          const zone = j.to ? (await dropZone(page, j.to))?.found ?? (await targetOf({ ...step, find: { target: j.to, kind: 'click' }, selector: undefined })) ?? (await freeDropArea(page, j.to))?.found ?? null : null
           const d = await doDrag(env, { from: { selector: from.selector, label: from.label }, to: zone ? { selector: zone.selector, label: j.to! } : undefined, ref: ref ? { selector: ref.selector, label: j.ref! } : undefined, position: j.position })
           noteOutcome(step, d, 'dragged')
           if (d.skipped) { skipStep(step, d.skipped.why); continue }

@@ -42,6 +42,8 @@ export interface ScriptItem {
   goal?: string
   /** the goal asks for this many distinct examples ("give 3 examples"): the planner shows that many */
   count?: number
+  /** the goal is one small step in plain words ("make the ruler 6 cm long"): worked out on the page, done exactly, then stopped */
+  small?: boolean
   /** one whole example of a goal (all the presses that make it): the film gives it one beat and tells it by what it shows, not key by key */
   example?: { n: number; of: number }
   /** what the narration may say about a step made of many small actions (the planner's reasons, one per action) */
@@ -1112,6 +1114,13 @@ export function splitGoalTail(text: string): [string, string] | null {
 function tidyGoals(items: ScriptItem[]): ScriptItem[] {
   const out: ScriptItem[] = []
   for (const it of items) {
+    // a step in plain words that names no control ("make the ruler 6 cm long", "zoom all the way in"): not a click the reader knows, but a small goal the planner can do on the real page
+    if (!it.goal && !it.atoms.length && !it.login && !it.explain && !it.narration && (it.unread.length === 1 || (!it.unread.length && it.notes.length > 0)) && !QUOTED.test(it.said) && it.said.trim().split(/\s+/).length >= 3 && !isToneSentence(it.said) && !NARRATE_RE.test(clean(it.said))) {
+      it.notes = []
+      it.goal = stripLead(it.said)
+      it.small = true
+      it.unread = []
+    }
     if (it.goal && !it.atoms.length && !it.login) {
       const g = stripLead(it.said)
       it.goal = g

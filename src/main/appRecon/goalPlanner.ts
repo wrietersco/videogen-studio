@@ -303,6 +303,8 @@ interface Ask {
   want: number
   /** how many distinct examples the person asked for (0: not said) */
   examples: number
+  /** one small step: do exactly it and stop */
+  small: boolean
   used: number
   max: number
   pushed: boolean
@@ -317,6 +319,7 @@ async function askModel(chat: LLMProvider, a: Ask, caps: Capable): Promise<Decis
   const prompt = [
     `GOAL (the person's words): ${a.goal}`,
     a.explain ? `What the video must make clear: ${a.explain}` : '',
+    a.small ? 'THIS GOAL IS ONE SMALL STEP of a list the person wrote. Do exactly what it says on the page, nothing more: no extra examples, no exploring. As soon as the page visibly shows it done, answer "done" with no actions.' : '',
     a.examples > 1 ? `THE PERSON ASKED FOR ${a.examples} DIFFERENT EXAMPLES. Show exactly ${a.examples} complete examples, one after another, each with different values (different numbers, sizes, options or choices), and let each one finish with its result visible on screen before the next begins. Count them from WHAT HAS BEEN DONE SO FAR. Answer \"done\" only after example ${a.examples} shows its result. Set "example" to the number of the example each answer's actions belong to (1 to ${a.examples}); setting up a ruler, entering its length, cutting and confirming are all part of the same example.` : '',
     a.before.length ? `STEPS ALREADY DONE before this goal (do not redo them):\n${a.before.map((s) => `- ${s}`).join('\n')}` : '',
     a.after.length ? `STEPS THAT COME AFTER this goal (the person wrote them; do not do them here):\n${a.after.map((s) => `- ${s}`).join('\n')}` : '',
@@ -379,7 +382,8 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
   const t0 = Date.now()
   const N = Math.max(0, Math.min(goalItem.count ?? 0, 8))
   // "give 3 examples": three separate demonstrations, each of several actions, take more rounds, actions and time than one goal
-  const B: Budget = { ...DEFAULT_BUDGET, ...(N > 1 ? { turns: DEFAULT_BUDGET.turns + 5 * N, actions: DEFAULT_BUDGET.actions + 9 * N, ms: DEFAULT_BUDGET.ms + 100_000 * N, live: Math.max(DEFAULT_BUDGET.live, 2 * N) } : {}), ...deps.budget }
+  const small = !!goalItem.small
+  const B: Budget = { ...DEFAULT_BUDGET, ...(small ? { turns: 8, actions: 10, ms: 100_000, live: 1, support: 3, moves: 1 } : {}), ...(N > 1 ? { turns: DEFAULT_BUDGET.turns + 5 * N, actions: DEFAULT_BUDGET.actions + 9 * N, ms: DEFAULT_BUDGET.ms + 100_000 * N, live: Math.max(DEFAULT_BUDGET.live, 2 * N) } : {}), ...deps.budget }
   const caps = deps.caps ?? DEFAULT_CAPS
   const scrub = (t: string): string => scrubText(t, { values: deps.secrets })
   const goal = (goalItem.goal ?? goalItem.said).trim()
@@ -419,7 +423,7 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
     if (model) {
       const shot = model.supportsVision?.() === false ? null : await screenshotForModel(deps.page)
       report.modelCalls++
-      const ask = { goal, explain: goalItem.explain, brief, history, study, shot, live: report.live, want: B.live, examples: N, used: actions, max: B.actions, pushed, known: deps.known, scrub, before: deps.around?.before ?? [], after: deps.around?.after ?? [] }
+      const ask = { goal, explain: goalItem.explain, brief, history, study, shot, live: report.live, want: B.live, examples: N, small, used: actions, max: B.actions, pushed, known: deps.known, scrub, before: deps.around?.before ?? [], after: deps.around?.after ?? [] }
       d = await askModel(model, ask, caps)
       if (!d) {
         // one more try: a slow answer is not a reason to hand the goal to rules half way through
@@ -445,7 +449,7 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
       break
     }
     if (d.status === 'done' && !d.actions.length) {
-      if (report.live < B.live && !pushed && turn < B.turns && d.source === 'model') {
+      if (report.live < B.live && !pushed && turn < B.turns && d.source === 'model' && !small) {
         pushed = true
         history.push(`(you said done with ${report.live} live interaction${report.live === 1 ? '' : 's'}; more are wanted)`)
         continue

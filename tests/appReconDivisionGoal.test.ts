@@ -53,6 +53,14 @@ describe('a click, then something to show, with a count', () => {
     expect(splitGoalTail('click "Save and show" then click Done')).toBeNull()
   })
 
+  it('a step in plain words that names no control is a small goal for the planner, not a skipped step', () => {
+    const s = parseStepScript("1. click Let's Play\n2. make the ruler 6 cm long\n3. cut it into 3 equal parts\n4. zoom all the way in to see the millimetres")!
+    expect(s.items.map((i) => (i.atoms.length ? 'click' : i.goal ? 'goal' : 'unread'))).toEqual(['click', 'goal', 'goal', 'goal'])
+    expect(s.items.slice(1).every((i) => i.small && i.unread.length === 0)).toBe(true)
+    // a step that names a thing in quotes stays what it was
+    expect(parseStepScript('1. click Start\n2. frobnicate "the widget" now')!.items[1].small).toBeUndefined()
+  })
+
   it('does not call a brief with one click and no goal a script', () => {
     expect(parseProseScript('click "Pricing"')).toBeNull()
   })

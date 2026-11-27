@@ -198,6 +198,20 @@ async function visionFind(page: Page, find: FindSpec, said: string, vision: Visi
         out.push({ i: out.length, text, kind: el.getAttribute('role') ?? el.tagName.toLowerCase(), rect: { x: r.x, y: r.y + scrollY, w: r.width, h: r.height }, path: path(el) })
         if (out.length >= 90) break
       }
+      // things drawn on a canvas of SVG (a game's ruler pieces, a chart's bars) have no words: they are offered by their kind, colour and size, and the model looks at the picture to say which one
+      const seen = new Set<string>()
+      for (const el of Array.from(document.querySelectorAll('svg g[class], svg g[data-id], svg rect, svg path, svg circle, svg ellipse, svg polygon'))) {
+        if (out.length >= 130) break
+        const r = el.getBoundingClientRect()
+        const cs = getComputedStyle(el)
+        if (r.width < 14 || r.height < 14 || cs.visibility === 'hidden' || cs.display === 'none' || (r.width > innerWidth * 0.9 && r.height > innerHeight * 0.7)) continue
+        const key = [r.x, r.y, r.width, r.height].map(Math.round).join(',')
+        if (seen.has(key)) continue
+        seen.add(key)
+        const fill = (el.getAttribute('fill') || cs.fill || '').replace(/^url\(.*\)$/, 'gradient')
+        const cls = (el.getAttribute('class') || '').split(/\s+/)[0]
+        out.push({ i: out.length, text: `drawn ${el.tagName.toLowerCase()}${cls ? ' .' + cls : ''} ${fill && fill !== 'none' ? fill + ' ' : ''}${Math.round(r.width)}x${Math.round(r.height)}`.slice(0, 70), kind: 'drawn', rect: { x: r.x, y: r.y + scrollY, w: r.width, h: r.height }, path: path(el) })
+      }
       return out
     })
     .catch(() => [])
