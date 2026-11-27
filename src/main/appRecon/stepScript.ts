@@ -1110,12 +1110,15 @@ export function splitGoalTail(text: string): [string, string] | null {
   return null
 }
 
+/** the plain-words steps a small goal can be made of start with a verb the planner knows; anything else stays "not understood" */
+const SMALL_VERB = /^(?:make|set|zoom|change|adjust|move|resize|turn|increase|decrease|enlarge|shrink|choose|pick|select|try|play|solve|find|show|open|use|rotate|slide|fill|enter|add|remove|cut|split|divide|draw|count|compare|measure|fit|switch|toggle|drag|build|place|stack|pour|roll|flip|spin|type|answer|guess|start|finish|zoom)/i
+
 /** goal steps in their own words (the whole sentence, not its first clause), with the count of examples; a bare "give 3 examples" joins the goal before it */
 function tidyGoals(items: ScriptItem[]): ScriptItem[] {
   const out: ScriptItem[] = []
   for (const it of items) {
     // a step in plain words that names no control ("make the ruler 6 cm long", "zoom all the way in"): not a click the reader knows, but a small goal the planner can do on the real page
-    if (!it.goal && !it.atoms.length && !it.login && !it.explain && !it.narration && (it.unread.length === 1 || (!it.unread.length && it.notes.length > 0)) && !QUOTED.test(it.said) && it.said.trim().split(/\s+/).length >= 3 && !isToneSentence(it.said) && !NARRATE_RE.test(clean(it.said))) {
+    if (!it.goal && !it.atoms.length && !it.login && !it.explain && !it.narration && (it.unread.length === 1 || (!it.unread.length && it.notes.length > 0)) && !QUOTED.test(it.said) && it.said.trim().split(/\s+/).length >= 3 && SMALL_VERB.test(stripLead(it.said)) && !isToneSentence(it.said) && !NARRATE_RE.test(clean(it.said))) {
       it.notes = []
       it.goal = stripLead(it.said)
       it.small = true
