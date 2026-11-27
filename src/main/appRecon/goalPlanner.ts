@@ -578,7 +578,11 @@ function mergeExamples(items: ScriptItem[], results: ItemResult[], exampleOf: nu
     }
     const merged: ItemResult = {
       item,
-      steps: [...group.flatMap((g) => g.steps), { kind: 'wait', intent: 'inspect', focus: 'page' } as ItemResult['steps'][number]],
+      // the presses of an example run on one after another (the number pad's keys quickly); only the finished result is looked at
+      steps: [
+        ...group.flatMap((g) => g.steps).filter((st) => !(st.kind === 'wait' && st.intent === 'inspect')).map((st) => (st.kind === 'click' ? { ...st, fast: true } : st)),
+        { kind: 'wait', intent: 'inspect', focus: 'page' } as ItemResult['steps'][number]
+      ],
       areaText: group[group.length - 1].areaText,
       picks: group.flatMap((g) => g.picks),
       skipped: group.flatMap((g) => g.skipped),

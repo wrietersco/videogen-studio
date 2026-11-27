@@ -169,6 +169,8 @@ export const Step = z.object({
   focus: z.enum(['target', 'form', 'banner', 'page']).optional(),
   /** how long to stay on this step once done, in ms (scaled by the recording's pace) */
   holdMs: z.number().optional(),
+  /** a quick press in a run of them (a key of a number pad): done at a third of the usual pace, so a film of a game is not mostly typing */
+  fast: z.boolean().optional(),
   /** a type step: select what the box holds and type over it (false adds to it); a code editor or contenteditable is only replaced when true */
   replace: z.boolean().optional(),
   /** a type step: type into whatever has focus now (a palette that a key opened, an inline edit); `find` is the fallback */

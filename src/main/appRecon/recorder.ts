@@ -82,6 +82,25 @@ export class FrameRecorder {
   private n = 0
   private t0 = 0
   private endTs = 0
+  /** the film's clock runs `speed` times faster than the wall clock after `wallAt` (a stretch of quick presses is shown fast-forwarded) */
+  private speed = 1
+  private wallAt = 0
+  private clockAt = 0
+
+  /** the film's clock (seconds, same origin as the wall clock) at a wall-clock moment */
+  private clock(wall: number): number {
+    return this.clockAt + (wall - this.wallAt) / this.speed
+  }
+
+  /** from now on, time passes `factor` times as fast in the film (1 = real time); frames and beat times follow the same clock */
+  setSpeed(factor: number): void {
+    const f = Math.max(1, Math.min(8, factor))
+    if (f === this.speed) return
+    const wall = Date.now() / 1000
+    this.clockAt = this.clock(wall)
+    this.wallAt = wall
+    this.speed = f
+  }
 
   constructor(private readonly page: Page, readonly dir: string) {
     mkdirSync(dir, { recursive: true })
@@ -89,7 +108,7 @@ export class FrameRecorder {
 
   /** seconds since recording began */
   now(): number {
-    return Date.now() / 1000 - this.t0
+    return this.clock(Date.now() / 1000) - this.t0
   }
 
   private stills: Promise<void> | null = null
@@ -104,6 +123,9 @@ export class FrameRecorder {
   async start(width: number, height: number, o: { sharp?: boolean } = {}): Promise<void> {
     this.client = await this.page.createCDPSession()
     this.t0 = Date.now() / 1000
+    this.wallAt = this.t0
+    this.clockAt = this.t0
+    this.speed = 1
     if (o.sharp) {
       const client = this.client
       const vp = this.page.viewport() ?? { width, height }
@@ -113,7 +135,7 @@ export class FrameRecorder {
       // three pictures in flight at once keep the frame rate up while each one is being encoded
       const worker = async () => {
         while (this.rolling) {
-          const ts = Date.now() / 1000
+          const ts = this.clock(Date.now() / 1000)
           // the clip is in page coordinates, not screen ones: once the page has been scrolled a clip at 0,0 is blank white, so it follows the view
           const at = await client.send('Page.getLayoutMetrics').then((m) => ({ x: m.cssVisualViewport?.pageX ?? 0, y: m.cssVisualViewport?.pageY ?? 0 })).catch(() => ({ x: 0, y: 0 }))
           const shot = await client.send('Page.captureScreenshot', { format: 'jpeg', quality: 90, optimizeForSpeed: true, clip: { ...clip, x: at.x, y: at.y } }).catch(() => null)
@@ -133,7 +155,7 @@ export class FrameRecorder {
     }
     this.client.on('Page.screencastFrame', (f) => {
       const n = ++this.n
-      this.frames.push({ n, ts: f.metadata.timestamp ?? Date.now() / 1000 })
+      this.frames.push({ n, ts: this.clock(f.metadata.timestamp ?? Date.now() / 1000) })
       this.writes.push(writeFile(join(this.dir, `f${String(n).padStart(6, '0')}.jpg`), Buffer.from(f.data, 'base64')))
       void this.client?.send('Page.screencastFrameAck', { sessionId: f.sessionId }).catch(() => undefined)
     })
@@ -142,7 +164,7 @@ export class FrameRecorder {
 
   /** stops, and writes the frame list ffmpeg needs (each picture is shown until the next arrives) */
   async stop(): Promise<{ listFile: string; durationSec: number; frameCount: number }> {
-    this.endTs = Date.now() / 1000
+    this.endTs = this.clock(Date.now() / 1000)
     this.rolling = false
     await this.stills
     await this.client?.send('Page.stopScreencast').catch(() => undefined)
@@ -283,7 +305,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
 
   const glide = async (x: number, y: number, ms: number) => {
     if (pace === 0) { await page.mouse.move(x, y); mouse = { x, y }; return }
-    const steps = Math.max(8, Math.round((ms * pace) / 16))
+    const steps = Math.max(8, Math.round((ms * env.pace) / 16))
     const { x: x0, y: y0 } = mouse
     // a slight arc, the way a hand moves
     const bow = Math.min(60, Math.hypot(x - x0, y - y0) * 0.12)
@@ -472,6 +494,10 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
     for (const step of steps.filter((s) => s.beat === beat)) {
       stepFromUrl = page.url()
       current = step.id
+      // a quick press (a number pad's key) is done at a third of the pace: the mouse still travels, but the film is not mostly typing
+      env.pace = step.fast && pace > 0 ? pace * 0.3 : pace
+      // ... and shown three times as fast in the film (the screen still shows every press and the result)
+      o.recorder?.setSpeed(step.fast && pace > 0 ? 3 : 1)
       try {
         await sweep(step)
         if (step.kind === 'goto') {
@@ -781,6 +807,7 @@ export async function runPlaybook(page: Page, playbook: Playbook, o: RunOptions)
         return { ok: false, failure: `${step.id}: ${(err as Error).message}`, beats, navigations, log, redactionMisses: misses }
       }
     }
+    o.recorder?.setSpeed(1)
     // hold the beat for as long as its narration needs
     const need = (o.beatMinSec?.get(beat) ?? 0) * 1000
     const left = need - (Date.now() - startMs)

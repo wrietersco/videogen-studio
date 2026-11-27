@@ -387,11 +387,11 @@ export async function doClick(env: Env, target: { selector: string; label: strin
     } catch (e) {
       env.log(`    the press failed: ${desc(e)}`)
     }
-    await Promise.race([nav, nap(env.pace ? 1500 : 700)])
+    await Promise.race([nav, nap(env.pace ? Math.max(300, 1500 * Math.min(1, env.pace)) : 700)])
     const landedRaw = await readClickProbe(frame)
     const urlMoved = before.url !== page.url()
     const landed = landedRaw === null ? (urlMoved ? true : null) : landedRaw || urlMoved
-    const res = await waitForChange(page, before, { ms: env.pace ? 1800 : 2200, thumb: thumbRect ? { rect: thumbRect, was } : undefined, expect: o.expect })
+    const res = await waitForChange(page, before, { ms: env.pace ? Math.max(600, 1800 * Math.min(1, env.pace)) : 2200, thumb: thumbRect ? { rect: thumbRect, was } : undefined, expect: o.expect })
     if (landed !== false || res.changed) {
       // the click reached the control (or the page changed in response to it): whatever happened is the answer
       if (res.changed) env.log(`    after "${target.label}": ${res.why.join(', ')}`)

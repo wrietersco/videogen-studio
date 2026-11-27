@@ -742,7 +742,7 @@ export function scriptPlan(inp: ScriptPlanInput): Plan {
         const left = r.skipped.length > 0
         const facts: string[] = [left ? `The person's own instruction for this step (part of it could not be done on the page, see below): "${s(r.item.said)}"` : `The person's own instruction for this step: "${s(r.item.said)}"`]
         // facts come only from parts that were performed and verified
-        if (r.item.example) facts.push(`This beat is example ${r.item.example.n} of ${r.item.example.of}, played on the real page. Tell it as one story (what was set up, what was done, what the screen then shows), never press by press.`)
+        if (r.item.example) facts.push(`This beat is example ${r.item.example.n} of ${r.item.example.of}, played on the real page. Tell it as one story in one or two short sentences (about 15 words: what was set up, what the screen then shows), never press by press.`)
         for (const w of r.item.summary ?? []) facts.push(s(w))
         r.item.atoms.forEach((a, i) => {
           if (r.item.example) return // an example is told by what it shows, not by each key pressed

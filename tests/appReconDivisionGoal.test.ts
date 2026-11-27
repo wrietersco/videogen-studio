@@ -6,7 +6,7 @@ import type { Browser, Page } from 'puppeteer-core'
 import type { GenerateJSONRequest, LLMProvider } from '../src/main/providers/types'
 import { enforcePolicy, findChrome, launch } from '../src/main/appRecon/browser'
 import { interpretGuardrails, PolicyGate } from '../src/main/appRecon/policy'
-import { prepare } from '../src/main/appRecon/recorder'
+import { FrameRecorder, prepare, runPlaybook } from '../src/main/appRecon/recorder'
 import { findElement } from '../src/main/appRecon/resolve'
 import { accountFor, readBriefByRules } from '../src/main/appRecon/agent/brief'
 import { audienceOf, exampleCount, parseProseScript, parseStepScript, scriptFromActions, splitGoalTail } from '../src/main/appRecon/stepScript'
@@ -162,6 +162,30 @@ describe.skipIf(!findChrome())('the planner plays a kids\' division game (SVG ru
     await page.close()
   }, 60000)
 
+  it('fast-forwards a stretch of quick presses in the film: its frames and the beat clock run three times as fast', async () => {
+    const { page } = await open()
+    const dir = mkdtempSync(join(tmpdir(), 'vg-frames-'))
+    const rec = new FrameRecorder(page, dir)
+    const nap = (ms: number) => new Promise((r) => setTimeout(r, ms))
+    await rec.start(1280, 720, { sharp: true })
+    await nap(1200)
+    rec.setSpeed(3)
+    const a = rec.now()
+    await nap(3000)
+    const b = rec.now()
+    rec.setSpeed(1)
+    await nap(800)
+    const out = await rec.stop()
+    // 3 s of quick presses count as about 1 s of film
+    expect(b - a).toBeGreaterThan(0.8)
+    expect(b - a).toBeLessThan(1.3)
+    // 1.2 s + 1 s + 0.8 s of film, not 5 s
+    expect(out.durationSec).toBeGreaterThan(2.3)
+    expect(out.durationSec).toBeLessThan(3.8)
+    rmSync(dir, { recursive: true, force: true })
+    await page.close()
+  }, 60000)
+
   it('shows 3 different division examples, each with its result on screen, and does not call an early control "refused"', async () => {
     const { page, gate } = await open()
     await page.click('#start')
@@ -207,6 +231,32 @@ describe.skipIf(!findChrome())('the planner plays a kids\' division game (SVG ru
     expect(exampleItems.map((i) => i.example)).toEqual([{ n: 1, of: 3 }, { n: 2, of: 3 }, { n: 3, of: 3 }])
     expect(exampleItems[0].atoms.map((a) => (a as { label: string }).label)).toEqual(['📏 Size', '1', '2', '✓', '✂️ Cut', '3', '✓', '✔'])
     expect(out.results.length).toBe(out.items.length)
+    // the film of it is short: an example's steps hold no look-at-the-result pause between presses, and the keys of the pad are quick
+    const exampleSteps = out.results.filter((r) => r.item.example).map((r) => r.steps)
+    for (const st of exampleSteps) {
+      expect(st.filter((x) => x.kind === 'wait').length).toBe(1)
+      expect(st.at(-1)).toMatchObject({ kind: 'wait', intent: 'inspect' })
+      expect(st.filter((x) => x.kind === 'click').every((x) => x.fast)).toBe(true)
+    }
     await page.close()
-  }, 240000)
+
+    // ... and recorded again at the film's own pace, all three examples take little time and nothing is skipped
+    const again = await open()
+    const steps = [{ kind: 'click' as const, label: "Let's Play", find: { target: "Let's Play", kind: 'click' as const }, focus: 'target' as const }, ...exampleSteps.flat()].map((x, i) => ({ ...x, id: 's' + i, beat: 0 }))
+    const frameDir = mkdtempSync(join(tmpdir(), 'vg-frames-'))
+    const rec = new FrameRecorder(again.page, frameDir)
+    await rec.start(1280, 720, { sharp: true })
+    const t0 = Date.now()
+    const run = await runPlaybook(again.page, { version: 1, title: 'division', startUrl: game.url, steps } as never, { vault: {}, gate: again.gate, redaction: { selectors: [], values: [], privacy: false }, pace: 1, recorder: rec, log: () => undefined })
+    const wall = (Date.now() - t0) / 1000
+    const film = (await rec.stop()).durationSec
+    rmSync(frameDir, { recursive: true, force: true })
+    expect(run.ok).toBe(true)
+    expect(run.skipped ?? []).toEqual([])
+    expect(await again.page.$$eval('#book li', (l) => l.length)).toBe(3)
+    // before this the same three examples were 65 s of film; the presses now run quick and fast-forwarded, the results are still looked at
+    expect(wall).toBeGreaterThan(film)
+    expect(film).toBeLessThan(34)
+    await again.page.close()
+  }, 300000)
 })
