@@ -127,7 +127,9 @@ function placeIn(el: Element | null, label: string): string {
   const col = e.closest('[class*=col i],[class*=lane i],[class*=list i],[class*=board i],[class*=stage i],section,ul,ol') ?? e.parentElement
   const head = col?.querySelector('h1,h2,h3,h4,h5,[class*=title i],[class*=head i],legend')
   const sibs = e.parentElement ? Array.from(e.parentElement.children) : []
-  return `${norm((head as HTMLElement | null)?.innerText ?? '')}|${sibs.indexOf(e)}/${sibs.length}|${e.parentElement?.id ?? ''}`
+  // a piece drawn in an SVG (a game's ruler piece) is moved by its position, not by its place in a list
+  const drawn = e.closest('svg') ? (() => { const r = e!.getBoundingClientRect(); return `|at ${Math.round(r.x / 12)},${Math.round(r.y / 12)}` })() : ''
+  return `${norm((head as HTMLElement | null)?.innerText ?? '')}|${sibs.indexOf(e)}/${sibs.length}|${e.parentElement?.id ?? ''}${drawn}`
 }
 
 /** in the page: the members of the list a drop goes into (siblings like the thing that is dragged) */
@@ -214,6 +216,11 @@ export async function doDrag(env: Env, d: DragSpec): Promise<Outcome> {
   const base = await baselineOf(page)
   const before = await stateOf(page)
   before.noisy = base.noisy
+  // "away from the others" on a drawing: a free spot a little way from where the piece is, inside the drawing (not its very edge, where a toolbar sits)
+  if (d.to?.selector === '[data-vg-drop="1"]') {
+    dropX = Math.max(tb.x + 40, Math.min(fromPt.x + 70, tb.x + tb.width - 40))
+    dropY = Math.max(tb.y + 40, Math.min(fromPt.y + 150, tb.y + tb.height - 110))
+  }
   const moved = async (): Promise<boolean> => {
     await nap(env.pace ? 700 : 450)
     const after = await page.evaluate(placeIn, (await deepHandle(page, d.from.selector)) as ElementHandle<Element> | null, d.from.label).catch(() => '')
