@@ -226,7 +226,8 @@ export async function doDrag(env: Env, d: DragSpec): Promise<Outcome> {
     await page.mouse.down()
     await nap(120)
     // a drag library wants a few pixels of movement before it lets go of a click
-    await page.mouse.move(fromPt.x + 6, fromPt.y + 6, { steps: 3 })
+    // (one quick move of a dozen pixels: a game tells a piece being dragged from the canvas being panned by the size of the very first move)
+    await page.mouse.move(fromPt.x + 12, fromPt.y + 8, { steps: 1 })
     if (jiggle) { await page.mouse.move(fromPt.x + 14, fromPt.y + 10, { steps: 4 }); await nap(120) }
     const steps = env.pace ? 22 : 10
     for (let i = 1; i <= steps; i++) {
