@@ -513,6 +513,8 @@ export async function runGoal(goalItem: ScriptItem, deps: GoalDeps): Promise<Goa
     }
     items.push(item)
     results.push(r)
+    // "pressed twice already" is about the same control pressed again and again; once something else was done, a tool of a game (Size, Cut) may be used again
+    for (const k of [...done]) if (k.endsWith('#2') && !built.some((b) => `${b.key}#2` === k)) done.delete(k)
     const did = built.map((b) => `${notDone(b.label) ? 'COULD NOT' : 'DID'} ${describeAtom(b.atom)}${b.why ? ` (${b.why})` : ''}`)
     history.push(`${did.join('; ')} → ${r.unchanged ? 'the screen did not change' : diff.navigated ? `moved to ${after.url.replace(/^https?:\/\/[^/]+/, '')}` : diff.appeared.length ? `newly on screen: ${scrub(diff.appeared.slice(0, 4).join(' · ')).slice(0, 260)}` : diff.moved ? 'the view scrolled' : 'no new text'}${diff.gone.length ? `; gone: ${scrub(diff.gone.slice(0, 2).join(' · ')).slice(0, 100)}` : ''}`)
     if (d.status === 'done') { finish(report.live >= 1 ? 'done' : 'partial', d.reason || 'the goal is on screen'); break }

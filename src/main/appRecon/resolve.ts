@@ -100,7 +100,7 @@ function locate(spec: FindSpec, minScore: number): Result {
   }
   const COLOUR_WORDS = new Set(['red', 'orange', 'yellow', 'green', 'teal', 'cyan', 'blue', 'purple', 'violet', 'pink', 'brown', 'black', 'gray', 'grey', 'white', 'navy', 'gold', 'silver', 'maroon', 'magenta', 'crimson', 'olive', 'lime', 'indigo', 'beige', 'tan', 'khaki', 'turquoise'])
   const APOS = /['’‘ʼ`´]/g
-  const norm = (s: string): string[] =>
+  const normWords = (s: string): string[] =>
     (s || '')
       // arrows say which way a control goes: "< match" is the previous one, "match >" the next one
       .replace(/[<‹«◀◄←⟵❮⏴]/g, ' prev ')
@@ -115,6 +115,13 @@ function locate(spec: FindSpec, minScore: number): Result {
       .split(' ')
       .filter(Boolean)
       .map((w) => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w))
+  // a control named only by a symbol (a ✓ key, a ⌫ key, a trash can) has no words: its symbol is its name, the same mark in any of its forms
+  const norm = (s: string): string[] => {
+    const words = normWords(s)
+    if (words.length) return words
+    const sym = (s || '').normalize('NFKC').replace(/[\s\uFE0E\uFE0F\u200D]+/g, '').replace(/[✔☑✅]/g, '✓').replace(/[✕✖✗✘×]/g, '✕').replace(/[−–—]/g, '-')
+    return sym ? ['sym' + Array.from(sym).map((c) => (c.codePointAt(0) ?? 0).toString(16)).join('_')] : []
+  }
   const keyOf = (s: string): string[] => {
     const all = norm(s)
     const k = all.filter((w) => !STOP.has(w))
