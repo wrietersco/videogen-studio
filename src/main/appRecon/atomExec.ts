@@ -402,7 +402,7 @@ async function onElement(a: Extract<Atom, { action: 'click' | 'dblclick' | 'hove
 /** a list or column named by its heading ("the Done column"): the box that holds its cards */
 /** "away from the others", "to an empty spot": any free place on the biggest drawing (SVG or canvas) of the page */
 export async function freeDropArea(page: Page, words: string): Promise<Located | null> {
-  if (!/(?:empty|blank|free|open|clear|away|aside|elsewhere|space|spot|below|beside)/i.test(words)) return null
+  if (!/\b(?:empty|blank|free|open|clear|away|aside|elsewhere|space|spot|below|beside)\b/i.test(words)) return null
   const area = await page
     .evaluate(() => {
       const big = Array.from(document.querySelectorAll('svg,canvas')).map((e) => ({ e, r: e.getBoundingClientRect() })).filter((x) => x.r.width > 200 && x.r.height > 100).sort((p, q) => q.r.width * q.r.height - p.r.width * p.r.height)[0]
