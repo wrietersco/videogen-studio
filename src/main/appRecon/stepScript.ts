@@ -1100,6 +1100,8 @@ export function splitGoalTail(text: string): [string, string] | null {
     const head = clean(text.slice(0, at))
     const tail = clean(text.slice(at + m[0].length))
     if (!head || !tail) continue
+    // "click the lines and explain how to read them" is a click with a spoken explanation, not a goal to work out
+    if (/^explain\b/i.test(tail) && !/\bwhat\s+happens\b/i.test(tail) && !exampleCount(tail)) continue
     const hi = parseLine(1, head)
     if (!hi.atoms.length && !hi.login) continue
     // the tail is a goal when it says so, or asks for a counted number of examples; other tails ("then scroll down") stay clicks
@@ -1111,7 +1113,7 @@ export function splitGoalTail(text: string): [string, string] | null {
 }
 
 /** the plain-words steps a small goal can be made of start with a verb the planner knows; anything else stays "not understood" */
-const SMALL_VERB = /^(?:make|set|zoom|change|adjust|move|resize|turn|increase|decrease|enlarge|shrink|choose|pick|select|try|play|solve|find|show|open|use|rotate|slide|fill|enter|add|remove|cut|split|divide|draw|count|compare|measure|fit|switch|toggle|drag|build|place|stack|pour|roll|flip|spin|type|answer|guess|start|finish|zoom)/i
+const SMALL_VERB = /^(?:make|set|zoom|change|adjust|move|resize|turn|increase|decrease|enlarge|shrink|choose|pick|select|try|play|solve|find|show|open|use|rotate|slide|fill|enter|add|remove|cut|split|divide|draw|count|compare|measure|fit|switch|toggle|drag|build|place|stack|pour|roll|flip|spin|type|answer|guess|start|finish|zoom)\b/i
 
 /** goal steps in their own words (the whole sentence, not its first clause), with the count of examples; a bare "give 3 examples" joins the goal before it */
 function tidyGoals(items: ScriptItem[]): ScriptItem[] {
