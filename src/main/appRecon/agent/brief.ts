@@ -424,15 +424,18 @@ export function readBriefByRules(input: BriefInput, typedIn?: string): FilmPlan 
   // no list: sentences that are a click and something to show ("click "Let's Play" and show 3 examples") are one script page, carried word for word
   const proseRaw = script ? null : parseProseScript(typed)
   // only when it works something out on a page (a goal): a brief that is mostly clips, cards and music keeps its own reader
-  // or steps written as plain sentences ("from the bottom of the page, click the cut icon. the modal appears. from the modal, click 2.")
-  const prose = proseRaw && (proseRaw.items.some((i) => i.goal) || proseRaw.items.filter((i) => i.atoms.length).length >= 2) ? proseRaw : null
-  const proseSaid = prose ? prose.items.map((i) => normText(i.said)).filter(Boolean) : []
   // what the person says should happen between the steps ("the modal appears", "and the scale divides into two"): part of the same script
   const OUTCOME = /\b(?:appears?|opens?|closes?|shows?|shown|displays?|displayed|changes?|becomes?|divides?|divided|splits?|updates?|turns?|pops?\s+up|confirm\w*|disappears?|loads?|is\s+(?:cut|split|added|done))\b/i
-  const proseContext = prose ? normText(prose.goal) : ''
-  const isProseOutcome = (u: string): boolean => !!prose && OUTCOME.test(u) && u.length <= 120 && !urlsIn(u).length && !!normText(u) && proseContext.includes(normText(u)) && !MUSIC_WORD.test(u) && !VOICE_WORD.test(u)
-  const proseOutcomes = units.filter(isProseOutcome)
-  const isProseUnit = (u: string): boolean => proseSaid.some((p) => normText(u).includes(p) || p.includes(normText(u))) || proseOutcomes.includes(u)
+  const saidOf = (p: NonNullable<typeof proseRaw>): string[] => p.items.map((i) => normText(i.said)).filter(Boolean)
+  const carriedBy = (p: NonNullable<typeof proseRaw>, u: string): boolean => saidOf(p).some((s) => normText(u).includes(s) || s.includes(normText(u)))
+  const outcomeOf = (p: NonNullable<typeof proseRaw>, u: string): boolean => OUTCOME.test(u) && u.length <= 120 && !urlsIn(u).length && !!normText(u) && normText(p.goal).includes(normText(u)) && !MUSIC_WORD.test(u) && !VOICE_WORD.test(u)
+  // or a brief that is nothing but steps written as plain sentences ("from the bottom of the page, click the cut icon. the modal
+  // appears. from the modal, click 2."): every sentence is a step, what should happen, or a heading
+  const onlySteps = !!proseRaw && proseRaw.items.filter((i) => i.atoms.length).length >= 2 && units.every((u) => isLeadIn(u) || carriedBy(proseRaw, u) || outcomeOf(proseRaw, u))
+  const prose = proseRaw && (proseRaw.items.some((i) => i.goal) || onlySteps) ? proseRaw : null
+  const proseSaid = prose ? saidOf(prose) : []
+  const proseOutcomes = prose ? units.filter((u) => outcomeOf(prose, u)) : []
+  const isProseUnit = (u: string): boolean => !!prose && (carriedBy(prose, u) || proseOutcomes.includes(u))
   let proseDone = false
   let structureSaid = ''
 
